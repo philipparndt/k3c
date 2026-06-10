@@ -314,6 +314,9 @@ func Create(cfg *config.Config) error {
 	if other := otherRunningServer(cfg); other != "" {
 		return fmt.Errorf("cluster container '%s' is running; stop it first (clusters share host ports)", other)
 	}
+	if cfg.ConfigFile == "" {
+		logger.Warn("no project config (k3c.yaml) found — creating '" + cfg.Cluster + "' with generic defaults; run from the project directory or pass --config if that is not intended")
+	}
 	if err := SpawnDaemons(cfg); err != nil {
 		return err
 	}
