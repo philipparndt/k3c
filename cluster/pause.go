@@ -62,11 +62,10 @@ func vzProcessPID(name string) int {
 	return pid
 }
 
-// Pause freezes a running cluster in memory.
+// Pause freezes a running cluster in memory. It is idempotent: an
+// already (or partially) frozen cluster is re-frozen and the marker
+// refreshed, so an interrupted or outdated pause heals itself.
 func Pause(cfg *config.Config) error {
-	if _, err := os.Stat(pausedMarker(cfg)); err == nil {
-		return fmt.Errorf("cluster '%s' is already paused", cfg.Cluster)
-	}
 	if !containerExists(cfg.ServerName, true) {
 		return fmt.Errorf("cluster '%s' is not running", cfg.Cluster)
 	}
