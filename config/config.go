@@ -22,15 +22,19 @@ import (
 // unset fields fall through to the previous layer.
 type FileConfig struct {
 	Cluster struct {
-		Name          string   `yaml:"name"`          // default cluster name
-		Image         string   `yaml:"image"`         // k3s image
-		ContextPrefix string   `yaml:"contextPrefix"` // kube context = <prefix><name>
-		APIHost       string   `yaml:"apiHost"`       // TLS SAN + kubeconfig server host
-		ClusterCIDR   string   `yaml:"clusterCidr"`
-		ServiceCIDR   string   `yaml:"serviceCidr"`
-		CPUs          int      `yaml:"cpus"`   // default: all host cores
-		Memory        string   `yaml:"memory"` // e.g. 48G
-		ExtraK3sArgs  []string `yaml:"extraK3sArgs"`
+		Name          string `yaml:"name"`          // default cluster name
+		Image         string `yaml:"image"`         // k3s image
+		ContextPrefix string `yaml:"contextPrefix"` // kube context = <prefix><name>
+		APIHost       string `yaml:"apiHost"`       // TLS SAN + kubeconfig server host
+		ClusterCIDR   string `yaml:"clusterCidr"`
+		ServiceCIDR   string `yaml:"serviceCidr"`
+		CPUs          int    `yaml:"cpus"`   // default: all host cores
+		Memory        string `yaml:"memory"` // e.g. 48G
+		// strip CPU/memory requests from pods via admission webhook, so
+		// charts with production sizing fit on a laptop
+		IgnoreCPURequests    *bool    `yaml:"ignoreCpuRequests"`
+		IgnoreMemoryRequests *bool    `yaml:"ignoreMemoryRequests"`
+		ExtraK3sArgs         []string `yaml:"extraK3sArgs"`
 	} `yaml:"cluster"`
 	Ports struct {
 		Ingress int `yaml:"ingress"` // host port the cluster's :443 is published on
@@ -67,6 +71,9 @@ type Config struct {
 	ServiceCIDR string
 	CPUs        string
 	Memory      string
+
+	IgnoreCPURequests    bool
+	IgnoreMemoryRequests bool
 
 	ExtraK3sArgs []string
 
@@ -137,6 +144,12 @@ func merge(dst *FileConfig, src FileConfig) {
 	s(&dst.Cluster.ServiceCIDR, src.Cluster.ServiceCIDR)
 	i(&dst.Cluster.CPUs, src.Cluster.CPUs)
 	s(&dst.Cluster.Memory, src.Cluster.Memory)
+	if src.Cluster.IgnoreCPURequests != nil {
+		dst.Cluster.IgnoreCPURequests = src.Cluster.IgnoreCPURequests
+	}
+	if src.Cluster.IgnoreMemoryRequests != nil {
+		dst.Cluster.IgnoreMemoryRequests = src.Cluster.IgnoreMemoryRequests
+	}
 	l(&dst.Cluster.ExtraK3sArgs, src.Cluster.ExtraK3sArgs)
 	i(&dst.Ports.Ingress, src.Ports.Ingress)
 	i(&dst.Ports.Proxy, src.Ports.Proxy)
@@ -226,33 +239,36 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 
 	contextPrefix := def(fc.Cluster.ContextPrefix, "k3c-")
 	return &Config{
-		Cluster:         cluster,
-		ServerName:      cluster + "-server",
-		RegistryName:    cluster + "-registry",
-		KubeContext:     contextPrefix + cluster,
-		Image:           def(fc.Cluster.Image, "docker.io/rancher/k3s:v1.33.9-k3s1"),
-		APIHost:         def(fc.Cluster.APIHost, "127.0.0.1"),
-		ClusterCIDR:     def(fc.Cluster.ClusterCIDR, "10.42.0.0/16"),
-		ServiceCIDR:     def(fc.Cluster.ServiceCIDR, "10.43.0.0/16"),
-		CPUs:            strconv.Itoa(cpus),
-		Memory:          def(fc.Cluster.Memory, "8G"),
-		ExtraK3sArgs:    fc.Cluster.ExtraK3sArgs,
-		VmnetGateway:    "192.168.64.1",
-		ProxyPort:       port(fc.Ports.Proxy, 3128),
-		IngressPort:     port(fc.Ports.Ingress, 8444),
-		RegistryEnabled: fc.LocalRegistry.Enabled != nil && *fc.LocalRegistry.Enabled,
-		RegistryPort:    port(fc.LocalRegistry.HostPort, 5001),
-		CACertGlobs:     fc.CACerts,
-		EgressDomains:   fc.Egress.Domains,
-		IngressDomains:  fc.Egress.IngressDomains,
-		Registries:      fc.Registries,
-		BaseDir:         baseDir,
-		ConfigFile:      configFile,
+		Cluster:              cluster,
+		ServerName:           cluster + "-server",
+		RegistryName:         cluster + "-registry",
+		KubeContext:          contextPrefix + cluster,
+		Image:                def(fc.Cluster.Image, "docker.io/rancher/k3s:v1.33.9-k3s1"),
+		APIHost:              def(fc.Cluster.APIHost, "127.0.0.1"),
+		ClusterCIDR:          def(fc.Cluster.ClusterCIDR, "10.42.0.0/16"),
+		ServiceCIDR:          def(fc.Cluster.ServiceCIDR, "10.43.0.0/16"),
+		CPUs:                 strconv.Itoa(cpus),
+		Memory:               def(fc.Cluster.Memory, "8G"),
+		ExtraK3sArgs:         fc.Cluster.ExtraK3sArgs,
+		IgnoreCPURequests:    fc.Cluster.IgnoreCPURequests != nil && *fc.Cluster.IgnoreCPURequests,
+		IgnoreMemoryRequests: fc.Cluster.IgnoreMemoryRequests != nil && *fc.Cluster.IgnoreMemoryRequests,
+		VmnetGateway:         "192.168.64.1",
+		ProxyPort:            port(fc.Ports.Proxy, 3128),
+		IngressPort:          port(fc.Ports.Ingress, 8444),
+		RegistryEnabled:      fc.LocalRegistry.Enabled != nil && *fc.LocalRegistry.Enabled,
+		RegistryPort:         port(fc.LocalRegistry.HostPort, 5001),
+		CACertGlobs:          fc.CACerts,
+		EgressDomains:        fc.Egress.Domains,
+		IngressDomains:       fc.Egress.IngressDomains,
+		Registries:           fc.Registries,
+		BaseDir:              baseDir,
+		ConfigFile:           configFile,
 	}, nil
 }
 
 func (c *Config) RunDir() string        { return filepath.Join(c.BaseDir, "clusters", c.Cluster) }
 func (c *Config) K3sEtcDir() string     { return filepath.Join(c.RunDir(), "k3s-etc") }
+func (c *Config) ImagesDir() string     { return filepath.Join(c.RunDir(), "images") }
 func (c *Config) ProxyPidFile() string  { return filepath.Join(c.BaseDir, "proxy.pid") }
 func (c *Config) SNIPidFile() string    { return filepath.Join(c.BaseDir, "sni-gateway.pid") }
 func (c *Config) DaemonLogFile() string { return filepath.Join(c.BaseDir, "daemons.log") }

@@ -198,12 +198,25 @@ func serve(addr string, handler func(net.Conn)) error {
 // RunDaemons runs both listeners in the foreground (the hidden `daemons`
 // subcommand, spawned detached by create/start).
 func RunDaemons(cfg *config.Config) error {
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	go func() { errCh <- serve("0.0.0.0:"+cfg.ProxyPort, handleProxyConn) }()
 	go func() {
 		errCh <- serve("0.0.0.0:443", func(c net.Conn) { handleSNIConn(c, cfg) })
 	}()
+	if len(ignoredResources(cfg)) > 0 {
+		go func() { errCh <- serveWebhook(cfg) }()
+	}
 	return <-errCh
+}
+
+// portOpen reports whether a local TCP port accepts connections.
+func portOpen(port string) bool {
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 func pidAlive(pidFile string) bool {
@@ -226,8 +239,13 @@ func pidAlive(pidFile string) bool {
 // already running. Both pidfiles point at the same process.
 func SpawnDaemons(cfg *config.Config) error {
 	if pidAlive(cfg.ProxyPidFile()) {
-		logger.Info("host daemons already running")
-		return nil
+		if len(ignoredResources(cfg)) > 0 && !portOpen(webhookPort) {
+			logger.Info("restarting host daemons (webhook newly enabled)")
+			StopDaemons(cfg)
+		} else {
+			logger.Info("host daemons already running")
+			return nil
+		}
 	}
 	logger.Info("starting host daemons (proxy :" + cfg.ProxyPort + ", sni-gateway :443)")
 	if err := os.MkdirAll(cfg.BaseDir, 0o755); err != nil {

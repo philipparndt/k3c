@@ -80,6 +80,35 @@ A running cluster is stopped for the (sub-second) clone and restarted, so
 expect a few seconds of API downtime per save. Restore requires the cluster
 container to exist (the snapshot captures state, not the container).
 
+### Local images
+
+Two ways to run locally built images:
+
+- **Local registry** (`localRegistry.enabled: true`): a registry container
+  published on the host. Push with
+  `container image push --scheme http localhost:5001/my/image:dev` and
+  reference it in pods; add a `registries` mirror entry so the node reaches
+  it via the vmnet gateway (see the example config).
+- **`k3c image import IMAGE [CLUSTER]`**: loads an image from the host's
+  `container` image store into the cluster under its original name — no
+  registry involved.
+
+### Ignoring resource requests
+
+Charts sized for production rarely fit on a laptop. With
+
+```yaml
+cluster:
+  ignoreCpuRequests: true
+  ignoreMemoryRequests: true
+```
+
+k3c registers a mutating admission webhook (served by the k3c host daemon —
+no in-cluster components) that replaces pod CPU/memory requests with
+negligible values at creation, so everything schedules regardless of the
+node size. Limits are kept. `failurePolicy: Ignore` means pods keep their
+requests if the daemon is down.
+
 ## Configuration
 
 Layered, all optional:

@@ -95,6 +95,9 @@ func prepareNodeConfig(cfg *config.Config) error {
 	if err := os.MkdirAll(etc, 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(cfg.ImagesDir(), 0o755); err != nil {
+		return err
+	}
 	_ = os.Remove(filepath.Join(etc, "k3s.yaml"))
 	if cfg.Registries != "" {
 		if err := os.WriteFile(filepath.Join(etc, "registries.yaml"), []byte(cfg.Registries), 0o644); err != nil {
@@ -139,6 +142,9 @@ func startServer(cfg *config.Config) error {
 		"--tmpfs", "/run",
 		"--tmpfs", "/var/run",
 		"-v", cfg.K3sEtcDir()+":/etc/rancher/k3s",
+		// k3s watches this directory and imports image tarballs dropped
+		// into it (used by `k3c image import`)
+		"-v", cfg.ImagesDir()+":/var/lib/rancher/k3s/agent/images",
 		"-e", "HTTP_PROXY="+proxyURL,
 		"-e", "HTTPS_PROXY="+proxyURL,
 		"-e", "NO_PROXY="+cfg.NoProxy(),
@@ -251,6 +257,10 @@ func kubectl(cfg *config.Config, args ...string) (string, error) {
 	return runOut("kubectl", append([]string{"--context", cfg.KubeContext}, args...)...)
 }
 
+func kubectlCommand(cfg *config.Config, args ...string) *exec.Cmd {
+	return exec.Command("kubectl", append([]string{"--context", cfg.KubeContext}, args...)...)
+}
+
 func waitReady(cfg *config.Config) error {
 	logger.Info("waiting for node to become Ready")
 	for i := 0; i < 60; i++ {
@@ -325,6 +335,9 @@ func Create(cfg *config.Config) error {
 	if err := setupCoreDNS(cfg); err != nil {
 		return err
 	}
+	if err := applyIgnoreCPUWebhook(cfg); err != nil {
+		return err
+	}
 	logger.Info("cluster is up (context: " + cfg.KubeContext + ")")
 	return nil
 }
@@ -364,11 +377,16 @@ func Start(cfg *config.Config) error {
 		return err
 	}
 	_, _ = runOut("container", "start", cfg.RegistryName)
-	if out, err := runOut("container", "start", cfg.ServerName); err != nil {
-		return fmt.Errorf("start failed: %s", out)
+	if !containerExists(cfg.ServerName, true) {
+		if out, err := runOut("container", "start", cfg.ServerName); err != nil {
+			return fmt.Errorf("start failed: %s", out)
+		}
 	}
 	_, _ = runOut("kubectl", "config", "use-context", cfg.KubeContext)
 	if err := waitReady(cfg); err != nil {
+		return err
+	}
+	if err := applyIgnoreCPUWebhook(cfg); err != nil {
 		return err
 	}
 	logger.Info("cluster '" + cfg.Cluster + "' resumed (context: " + cfg.KubeContext + ")")
