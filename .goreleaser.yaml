@@ -41,6 +41,42 @@ brews:
   - name: k3c
     homepage: https://github.com/philipparndt/k3c
     description: "Local k3s clusters on Apple container — like k3d, without Docker"
+    license: "Apache-2.0"
+
+    url_template: "https://github.com/philipparndt/k3c/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+
+    commit_author:
+      name: Philipp Arndt
+      email: opensource@rnd7.de
+
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+
+    directory: Formula
+
+    install: |
+      bin.install "k3c"
+
+      begin
+        bash_output = Utils.safe_popen_read({ "SHELL" => "bash" }, "#{bin}/k3c completion bash")
+        (bash_completion/"k3c").write bash_output
+      rescue => e
+        opoo "Failed to install bash completion: #{e}"
+      end
+
+      begin
+        zsh_output = Utils.safe_popen_read({ "SHELL" => "zsh" }, "#{bin}/k3c completion zsh")
+        (zsh_completion/"_k3c").write zsh_output
+      rescue => e
+        opoo "Failed to install zsh completion: #{e}"
+      end
+
+      begin
+        fish_output = Utils.safe_popen_read({ "SHELL" => "fish" }, "#{bin}/k3c completion fish")
+        (fish_completion/"k3c.fish").write fish_output
+      rescue => e
+        opoo "Failed to install fish completion: #{e}"
+      end
+
     repository:
       owner: philipparndt
       name: homebrew-k3c
