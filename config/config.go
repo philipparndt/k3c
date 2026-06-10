@@ -304,6 +304,9 @@ func (c *Config) K3sCommand() string {
 	return `for b in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
 	ln -sf xtables-legacy-multi /bin/aux/$b
 done
+# the kernel defaults (128/8192) are far too low for a node full of
+# file-watching workloads (kind/k3d raise them the same way)
+sysctl -w fs.inotify.max_user_instances=1024 fs.inotify.max_user_watches=1048576
 exec k3s server ` + strings.Join(args, " ") + "\n"
 }
 
