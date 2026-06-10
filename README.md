@@ -8,16 +8,16 @@ layer. Just macOS 26+, the Apple `container` tool, and `kubectl`.
 
 ```console
 $ k3c cluster create
-2026/06/10 16:22:07 INFO starting host daemons (proxy :3128, sni-gateway :443)
-2026/06/10 16:22:07 INFO starting local registry on port 5001
-2026/06/10 16:22:09 INFO preparing node config (registries.yaml, CA bundle)
-2026/06/10 16:22:09 INFO starting k3s server (14 cpus, 48G memory)
-2026/06/10 16:22:10 INFO waiting for kubeconfig
-2026/06/10 16:22:12 INFO merging kubeconfig (context: k3d-vehub)
-2026/06/10 16:22:12 INFO waiting for node to become Ready
-NAME           STATUS   ROLES                  AGE   VERSION
-vehub-server   Ready    control-plane,master   3s    v1.33.9+k3s1
-2026/06/10 16:22:19 INFO configuring CoreDNS egress override
+2026-06-10T17:03:57+02:00 [   0] INFO  [  1] starting host daemons (proxy :3128, sni-gateway :443)
+2026-06-10T17:03:57+02:00 [   0] INFO  [  1] preparing node config (registries.yaml, CA bundle)
+2026-06-10T17:03:57+02:00 [   0] INFO  [  1] starting k3s server (14 cpus, 8G memory)
+2026-06-10T17:03:58+02:00 [   1] INFO  [  1] waiting for kubeconfig
+2026-06-10T17:04:00+02:00 [   3] INFO  [  1] merging kubeconfig (context: k3c-k3c)
+2026-06-10T17:04:00+02:00 [   3] INFO  [  1] waiting for node to become Ready
+NAME         STATUS   ROLES                  AGE   VERSION
+k3c-server   Ready    control-plane,master   3s    v1.33.9+k3s1
+2026-06-10T17:04:07+02:00 [  10] INFO  [  1] configuring CoreDNS egress override
+2026-06-10T17:04:28+02:00 [  31] INFO  [  1] cluster is up (context: k3c-k3c)
 ```
 
 ## Why
@@ -104,8 +104,10 @@ registries: |                  # verbatim k3s registries.yaml
     "docker.io":
       endpoint:
         - https://mirror.example.com
+  # note: k3s' containerd ignores a wildcard ("*") TLS entry here — list
+  # every private-CA registry host explicitly
   configs:
-    "*":
+    "mirror.example.com":
       tls:
         ca_file: /etc/rancher/k3s/ca-bundle.pem
 ```
