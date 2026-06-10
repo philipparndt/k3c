@@ -34,7 +34,7 @@ var clusterStartCmd = &cobra.Command{
 	Short: "Resume a stopped cluster",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.Start(loadConfig(args)))
+		fail(cluster.Start(loadConfigDefault(args)))
 	},
 }
 
@@ -43,7 +43,7 @@ var clusterStopCmd = &cobra.Command{
 	Short: "Stop a cluster, keeping its state",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.Stop(loadConfig(args)))
+		fail(cluster.Stop(loadConfigDefault(args)))
 	},
 }
 
@@ -52,7 +52,7 @@ var clusterPauseCmd = &cobra.Command{
 	Short: "Freeze a running cluster in memory (instant resume, pods keep running)",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.Pause(loadConfig(args)))
+		fail(cluster.Pause(loadConfigDefault(args)))
 	},
 }
 
@@ -61,7 +61,7 @@ var clusterResumeCmd = &cobra.Command{
 	Short: "Unfreeze a paused cluster",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.Resume(loadConfig(args)))
+		fail(cluster.Resume(loadConfigDefault(args)))
 	},
 }
 

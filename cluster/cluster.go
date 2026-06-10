@@ -418,9 +418,9 @@ func Start(cfg *config.Config) error {
 	return nil
 }
 
-// List prints all k3c clusters (containers named <cluster>-server) with
-// their server/registry state.
-func List(cfg *config.Config) error {
+// clusterStates maps cluster names to their server/registry container
+// states.
+func clusterStates() map[string]map[string]string {
 	out, _ := runOut("container", "ls", "-a")
 	state := map[string]map[string]string{}
 	for _, line := range strings.Split(out, "\n")[1:] {
@@ -439,6 +439,28 @@ func List(cfg *config.Config) error {
 			}
 		}
 	}
+	return state
+}
+
+// OnlyClusterName returns the name of the only existing cluster, or ""
+// when there are none or several.
+func OnlyClusterName() string {
+	names := []string{}
+	for cluster, parts := range clusterStates() {
+		if parts["-server"] != "" {
+			names = append(names, cluster)
+		}
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return ""
+}
+
+// List prints all k3c clusters (containers named <cluster>-server) with
+// their server/registry state.
+func List(cfg *config.Config) error {
+	state := clusterStates()
 	fmt.Printf("%-16s %-10s %-10s %s\n", "NAME", "SERVER", "REGISTRY", "CONTEXT")
 	for cluster, parts := range state {
 		if parts["-server"] == "" {

@@ -6,6 +6,7 @@ import (
 	"github.com/philipparndt/go-logger"
 	"github.com/spf13/cobra"
 
+	"k3c/cluster"
 	"k3c/config"
 )
 
@@ -53,6 +54,17 @@ func loadConfig(args []string) *config.Config {
 		logger.Panic("Failed to load config", err)
 	}
 	return cfg
+}
+
+// loadConfigDefault resolves the cluster config like loadConfig, but when
+// no name is given and exactly one cluster exists, that cluster is used.
+func loadConfigDefault(args []string) *config.Config {
+	if len(args) == 0 {
+		if name := cluster.OnlyClusterName(); name != "" {
+			args = []string{name}
+		}
+	}
+	return loadConfig(args)
 }
 
 func fail(err error) {
