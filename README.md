@@ -62,6 +62,24 @@ k3c cluster list              k3c version
 Multiple clusters are supported; only one can *run* at a time (they share
 the published host ports). `stop`/`start` preserves cluster state.
 
+### Snapshots
+
+```
+k3c cluster snapshot save [CLUSTER] [NAME]     # default name: timestamp
+k3c cluster snapshot restore [CLUSTER] NAME
+k3c cluster snapshot list [CLUSTER]
+k3c cluster snapshot delete [CLUSTER] NAME
+```
+
+Snapshots APFS-clone the cluster's VM root filesystem (copy-on-write):
+saving and restoring is **instant** and a snapshot costs almost no disk
+space. Snapshot a fully provisioned cluster once, then reset to it in
+seconds instead of reinstalling — also after destructive experiments.
+
+A running cluster is stopped for the (sub-second) clone and restarted, so
+expect a few seconds of API downtime per save. Restore requires the cluster
+container to exist (the snapshot captures state, not the container).
+
 ## Configuration
 
 Layered, all optional:
