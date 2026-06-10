@@ -87,6 +87,12 @@ type Config struct {
 	ProxyPort    string
 	IngressPort  string
 
+	// per-cluster private host ports (set from the cluster state by the
+	// cluster package; default to the legacy shared ports)
+	APIPortInternal      string
+	IngressPortInternal  string
+	RegistryPortInternal string
+
 	RegistryEnabled bool
 	RegistryPort    string
 

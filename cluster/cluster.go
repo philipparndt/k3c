@@ -77,7 +77,7 @@ func startRegistry(cfg *config.Config) error {
 	logger.Info("starting local registry on port " + cfg.RegistryPort)
 	out, err := runOut("container", "run", "-d",
 		"--name", cfg.RegistryName,
-		"-p", "0.0.0.0:"+cfg.RegistryPort+":5000",
+		"-p", "127.0.0.1:"+cfg.RegistryPortInternal+":5000",
 		"docker.io/registry:2")
 	if err != nil {
 		return fmt.Errorf("registry start failed: %s", out)
@@ -148,8 +148,8 @@ func startServer(cfg *config.Config) error {
 		"-e", "HTTP_PROXY="+proxyURL,
 		"-e", "HTTPS_PROXY="+proxyURL,
 		"-e", "NO_PROXY="+cfg.NoProxy(),
-		"-p", "0.0.0.0:6443:6443",
-		"-p", "127.0.0.1:"+cfg.IngressPort+":443",
+		"-p", "0.0.0.0:"+cfg.APIPortInternal+":6443",
+		"-p", "127.0.0.1:"+cfg.IngressPortInternal+":443",
 		"--entrypoint", "/bin/sh",
 		cfg.Image,
 		"-c", cfg.K3sCommand())
@@ -184,10 +184,9 @@ func kubeconfig(cfg *config.Config, wait bool) (string, error) {
 	}
 	kc := string(raw)
 	kc = strings.ReplaceAll(kc, ": default", ": "+cfg.KubeContext)
-	if cfg.APIHost != "127.0.0.1" {
-		kc = strings.ReplaceAll(kc,
-			"server: https://127.0.0.1:6443", "server: https://"+cfg.APIHost+":6443")
-	}
+	kc = strings.ReplaceAll(kc,
+		"server: https://127.0.0.1:6443",
+		"server: https://"+cfg.APIHost+":"+cfg.APIPortInternal)
 	return kc, nil
 }
 
@@ -311,8 +310,8 @@ func Create(cfg *config.Config) error {
 	if containerExists(cfg.ServerName, false) {
 		return fmt.Errorf("cluster '%s' already exists; run delete (or start) first", cfg.Cluster)
 	}
-	if other := otherRunningServer(cfg); other != "" {
-		return fmt.Errorf("cluster container '%s' is running; stop it first (clusters share host ports)", other)
+	if err := ensurePorts(cfg); err != nil {
+		return err
 	}
 	if cfg.ConfigFile == "" {
 		logger.Warn("no project config (k3c.yaml) found — creating '" + cfg.Cluster + "' with generic defaults; run from the project directory or pass --config if that is not intended")
@@ -342,6 +341,9 @@ func Create(cfg *config.Config) error {
 		return err
 	}
 	if err := applyIgnoreCPUWebhook(cfg); err != nil {
+		return err
+	}
+	if err := setActive(cfg); err != nil {
 		return err
 	}
 	logger.Info("cluster is up (context: " + cfg.KubeContext + ")")
@@ -392,9 +394,7 @@ func Start(cfg *config.Config) error {
 	if err := preflight(); err != nil {
 		return err
 	}
-	if other := otherRunningServer(cfg); other != "" {
-		return fmt.Errorf("cluster container '%s' is running; stop it first (clusters share host ports)", other)
-	}
+	_ = loadPorts(cfg)
 	if err := SpawnDaemons(cfg); err != nil {
 		return err
 	}
@@ -409,6 +409,9 @@ func Start(cfg *config.Config) error {
 		return err
 	}
 	if err := applyIgnoreCPUWebhook(cfg); err != nil {
+		return err
+	}
+	if err := setActive(cfg); err != nil {
 		return err
 	}
 	logger.Info("cluster '" + cfg.Cluster + "' resumed (context: " + cfg.KubeContext + ")")
@@ -445,7 +448,12 @@ func List(cfg *config.Config) error {
 		if registry == "" {
 			registry = "-"
 		}
-		fmt.Printf("%-16s %-10s %-10s %s\n", cluster, parts["-server"], registry, cfg.ContextPrefix()+cluster)
+		// resolve per cluster: picks up its persisted project config
+		context := cfg.ContextPrefix() + cluster
+		if clusterCfg, err := config.Resolve(cluster, ""); err == nil {
+			context = clusterCfg.KubeContext
+		}
+		fmt.Printf("%-16s %-10s %-10s %s\n", cluster, parts["-server"], registry, context)
 	}
 	return nil
 }

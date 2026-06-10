@@ -66,8 +66,12 @@ a second and every pod keeps running — no restart cascade, no crash-loop
 backoffs. A paused cluster frees CPU but keeps its memory allocated, and
 does not survive a host reboot (use `stop`/`start` or snapshots for that).
 
-Multiple clusters are supported; only one can *run* at a time (they share
-the published host ports). `stop`/`start` preserves cluster state.
+Clusters run on private per-cluster host ports, so **multiple clusters can
+run side by side** (RAM permitting — macOS swaps cold pages). The public
+ingress (:443) and registry ports are owned by the k3c daemon and routed to
+the *active* cluster — the one most recently created, started, or resumed.
+Combined with `pause`/`resume`, switching between full clusters takes well
+under a second. `stop`/`start` preserves cluster state.
 
 ### Snapshots
 

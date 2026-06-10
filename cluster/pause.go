@@ -88,10 +88,14 @@ func Resume(cfg *config.Config) error {
 		}
 	}
 	_ = os.Remove(pausedMarker(cfg))
+	_ = loadPorts(cfg)
 	if err := waitReady(cfg); err != nil {
 		return err
 	}
-	logger.Info("cluster '" + cfg.Cluster + "' resumed")
+	if err := setActive(cfg); err != nil {
+		return err
+	}
+	logger.Info("cluster '" + cfg.Cluster + "' resumed (public ingress/registry now route here)")
 	return nil
 }
 

@@ -57,6 +57,22 @@ func splice(a, b net.Conn) {
 	<-done
 }
 
+// handleRegistryConn forwards the public registry port to the active
+// cluster's registry.
+func handleRegistryConn(conn net.Conn, cfg *config.Config) {
+	defer conn.Close()
+	if !allowedSource(conn.RemoteAddr()) {
+		return
+	}
+	active := readActive(cfg)
+	upstream, err := net.DialTimeout("tcp",
+		net.JoinHostPort("127.0.0.1", active.RegistryPort), connectTimeout)
+	if err != nil {
+		return
+	}
+	splice(conn, upstream)
+}
+
 // --- CONNECT proxy ---
 
 func handleProxyConn(conn net.Conn) {
@@ -163,8 +179,9 @@ func handleSNIConn(conn net.Conn, cfg *config.Config) {
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
-	target := net.JoinHostPort("127.0.0.1", cfg.IngressPort)
-	if name := parseSNI(hello); name != "" && !matchesDomain(name, cfg.IngressDomains) {
+	active := readActive(cfg)
+	target := net.JoinHostPort("127.0.0.1", active.IngressPort)
+	if name := parseSNI(hello); name != "" && !matchesDomain(name, active.IngressDomains) {
 		target = net.JoinHostPort(name, "443")
 	}
 	upstream, err := net.DialTimeout("tcp", target, connectTimeout)
@@ -206,6 +223,9 @@ func RunDaemons(cfg *config.Config) error {
 	if len(ignoredResources(cfg)) > 0 {
 		go func() { errCh <- serveWebhook(cfg) }()
 	}
+	go func() {
+		errCh <- serve("0.0.0.0:"+cfg.RegistryPort, func(c net.Conn) { handleRegistryConn(c, cfg) })
+	}()
 	return <-errCh
 }
 
