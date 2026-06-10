@@ -65,6 +65,16 @@ var clusterResumeCmd = &cobra.Command{
 	},
 }
 
+var clusterActivateCmd = &cobra.Command{
+	Use:     "activate [NAME]",
+	Aliases: []string{"use"},
+	Short:   "Make a cluster current: resume/start it, switch routing and kube context",
+	Args:    cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.Activate(loadConfigDefault(args)))
+	},
+}
+
 var clusterListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
@@ -77,6 +87,6 @@ var clusterListCmd = &cobra.Command{
 
 func init() {
 	clusterCmd.AddCommand(clusterCreateCmd, clusterDeleteCmd, clusterStartCmd, clusterStopCmd,
-		clusterPauseCmd, clusterResumeCmd, clusterListCmd)
+		clusterPauseCmd, clusterResumeCmd, clusterActivateCmd, clusterListCmd)
 	rootCmd.AddCommand(clusterCmd)
 }

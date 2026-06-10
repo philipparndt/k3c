@@ -64,8 +64,12 @@ k3c cluster start  [NAME]     k3c config view [NAME]
 k3c cluster stop   [NAME]     k3c status [NAME]
 k3c cluster pause  [NAME]     k3c version
 k3c cluster resume [NAME]     k3c image import IMAGE
-k3c cluster list
+k3c cluster activate [NAME]   k3c cluster list
 ```
+
+`activate` (alias `use`) makes a cluster current: resumes or starts it if
+needed, points the public ingress/registry routing at it, and switches the
+kube context. `cluster list` marks the current cluster.
 
 `pause`/`resume` freeze the cluster VM in memory: resuming takes well under
 a second and every pod keeps running — no restart cascade, no crash-loop

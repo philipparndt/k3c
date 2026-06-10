@@ -458,11 +458,20 @@ func OnlyClusterName() string {
 	return ""
 }
 
+// Activate makes a cluster the current one: resumes or starts it as
+// needed, points the public ingress/registry routing at it, and switches
+// the kube context. Other running clusters are left untouched.
+func Activate(cfg *config.Config) error {
+	resumeIfPaused(cfg)
+	return Start(cfg)
+}
+
 // List prints all k3c clusters (containers named <cluster>-server) with
 // their server/registry state.
 func List(cfg *config.Config) error {
 	state := clusterStates()
-	fmt.Printf("%-16s %-10s %-10s %-8s %s\n", "NAME", "SERVER", "REGISTRY", "RAM", "CONTEXT")
+	active := readActive(cfg).Cluster
+	fmt.Printf("%-7s %-16s %-10s %-10s %-8s %s\n", "CURRENT", "NAME", "SERVER", "REGISTRY", "RAM", "CONTEXT")
 	for cluster, parts := range state {
 		if parts["-server"] == "" {
 			continue
@@ -484,7 +493,11 @@ func List(cfg *config.Config) error {
 		if clusterCfg, err := config.Resolve(cluster, ""); err == nil {
 			context = clusterCfg.KubeContext
 		}
-		fmt.Printf("%-16s %-10s %-10s %-8s %s\n", cluster, server, registry, clusterRAM(cluster), context)
+		current := ""
+		if cluster == active {
+			current = "*"
+		}
+		fmt.Printf("%-7s %-16s %-10s %-10s %-8s %s\n", current, cluster, server, registry, clusterRAM(cluster), context)
 	}
 	return nil
 }
