@@ -323,6 +323,9 @@ func Create(cfg *config.Config) error {
 	if err := prepareNodeConfig(cfg); err != nil {
 		return err
 	}
+	if err := persistProjectConfig(cfg); err != nil {
+		return err
+	}
 	if err := startServer(cfg); err != nil {
 		return err
 	}
@@ -340,6 +343,20 @@ func Create(cfg *config.Config) error {
 	}
 	logger.Info("cluster is up (context: " + cfg.KubeContext + ")")
 	return nil
+}
+
+// persistProjectConfig copies the project config into the cluster state
+// dir, so start/stop/kubeconfig resolve it from any working directory.
+func persistProjectConfig(cfg *config.Config) error {
+	persisted := filepath.Join(cfg.RunDir(), "k3c.yaml")
+	if cfg.ConfigFile == "" || cfg.ConfigFile == persisted {
+		return nil
+	}
+	data, err := os.ReadFile(cfg.ConfigFile)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(persisted, data, 0o644)
 }
 
 // Delete removes a cluster, its state, and its kubeconfig entries.

@@ -202,6 +202,14 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		}
 	}
 
+	baseDir := os.Getenv("K3C_BASE_DIR")
+	if baseDir == "" {
+		baseDir = UserConfigDir()
+	}
+	if baseDir == "" {
+		return nil, fmt.Errorf("cannot determine state directory; set K3C_BASE_DIR")
+	}
+
 	explicit := projectPath != ""
 	if projectPath == "" {
 		projectPath = envOr("K3C_CONFIG", "k3c.yaml")
@@ -215,6 +223,14 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		}
 	} else if explicit || !os.IsNotExist(err) {
 		return nil, err
+	} else if cluster != "" {
+		// no project config here, but the cluster may have one persisted
+		// from create — lets start/stop/kubeconfig work from any directory
+		persisted := filepath.Join(baseDir, "clusters", cluster, "k3c.yaml")
+		if project, err := loadFile(persisted); err == nil {
+			merge(&fc, project)
+			configFile = persisted
+		}
 	}
 
 	if cluster == "" {
@@ -239,14 +255,6 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 			v = fallback
 		}
 		return strconv.Itoa(v)
-	}
-
-	baseDir := os.Getenv("K3C_BASE_DIR")
-	if baseDir == "" {
-		baseDir = UserConfigDir()
-	}
-	if baseDir == "" {
-		return nil, fmt.Errorf("cannot determine state directory; set K3C_BASE_DIR")
 	}
 
 	// the kernel defaults (128/8192) are far too low for a node full of
