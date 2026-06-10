@@ -28,7 +28,7 @@ var snapshotSaveCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		clusterArgs, name := snapshotArgs(args)
-		fail(cluster.SnapshotSave(loadConfig(clusterArgs), name))
+		fail(cluster.SnapshotSave(loadConfigDefault(clusterArgs), name))
 	},
 }
 
@@ -39,11 +39,11 @@ var snapshotRestoreCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		// with a single argument it is the snapshot name
 		if len(args) == 1 {
-			fail(cluster.SnapshotRestore(loadConfig(nil), args[0]))
+			fail(cluster.SnapshotRestore(loadConfigDefault(nil), args[0]))
 			return
 		}
 		clusterArgs, name := snapshotArgs(args)
-		fail(cluster.SnapshotRestore(loadConfig(clusterArgs), name))
+		fail(cluster.SnapshotRestore(loadConfigDefault(clusterArgs), name))
 	},
 }
 
@@ -53,7 +53,7 @@ var snapshotListCmd = &cobra.Command{
 	Short:   "List snapshots",
 	Args:    cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.SnapshotList(loadConfig(args)))
+		fail(cluster.SnapshotList(loadConfigDefault(args)))
 	},
 }
 
@@ -64,11 +64,11 @@ var snapshotDeleteCmd = &cobra.Command{
 	Args:    cobra.RangeArgs(1, 2),
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) == 1 {
-			fail(cluster.SnapshotDelete(loadConfig(nil), args[0]))
+			fail(cluster.SnapshotDelete(loadConfigDefault(nil), args[0]))
 			return
 		}
 		clusterArgs, name := snapshotArgs(args)
-		fail(cluster.SnapshotDelete(loadConfig(clusterArgs), name))
+		fail(cluster.SnapshotDelete(loadConfigDefault(clusterArgs), name))
 	},
 }
 
