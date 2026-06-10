@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -461,7 +462,7 @@ func OnlyClusterName() string {
 // their server/registry state.
 func List(cfg *config.Config) error {
 	state := clusterStates()
-	fmt.Printf("%-16s %-10s %-10s %s\n", "NAME", "SERVER", "REGISTRY", "CONTEXT")
+	fmt.Printf("%-16s %-10s %-10s %-8s %s\n", "NAME", "SERVER", "REGISTRY", "RAM", "CONTEXT")
 	for cluster, parts := range state {
 		if parts["-server"] == "" {
 			continue
@@ -483,9 +484,32 @@ func List(cfg *config.Config) error {
 		if clusterCfg, err := config.Resolve(cluster, ""); err == nil {
 			context = clusterCfg.KubeContext
 		}
-		fmt.Printf("%-16s %-10s %-10s %s\n", cluster, server, registry, context)
+		fmt.Printf("%-16s %-10s %-10s %-8s %s\n", cluster, server, registry, clusterRAM(cluster), context)
 	}
 	return nil
+}
+
+// clusterRAM returns the OS-level physical memory footprint of the
+// cluster's VM process (the Virtualization.framework process owns the
+// guest memory; the supervisor's RSS is meaningless).
+func clusterRAM(cluster string) string {
+	pid := vzProcessPID(cluster + "-server")
+	if pid == 0 {
+		return "-"
+	}
+	out, err := runOut("footprint", strconv.Itoa(pid))
+	if err != nil {
+		return "-"
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "phys_footprint:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				return fields[1] + fields[2]
+			}
+		}
+	}
+	return "-"
 }
 
 // Status prints daemon, container, and node state for a cluster.

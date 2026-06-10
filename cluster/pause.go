@@ -23,17 +23,43 @@ func pausedMarker(cfg *config.Config) string {
 	return filepath.Join(cfg.RunDir(), "paused")
 }
 
-// vmProcessPID finds the hypervisor process backing a container.
-func vmProcessPID(name string) (int, error) {
+// vmProcessPIDs finds the processes backing a container: the runtime
+// supervisor (which also forwards the published ports) and the
+// Virtualization.framework process hosting the guest CPUs and memory.
+// Both must be frozen — freezing only the supervisor leaves the guest
+// running (and burning CPU) with its network cut off.
+func vmProcessPIDs(name string) ([]int, error) {
 	out, err := runOut("pgrep", "-f", "container-runtime-linux .*--uuid "+name+"$")
 	if err != nil || out == "" {
-		return 0, fmt.Errorf("no VM process found for container %s", name)
+		return nil, fmt.Errorf("no VM process found for container %s", name)
+	}
+	helper, err := strconv.Atoi(strings.Fields(out)[0])
+	if err != nil {
+		return nil, err
+	}
+	pids := []int{helper}
+	if vz := vzProcessPID(name); vz != 0 {
+		pids = append(pids, vz)
+	}
+	return pids, nil
+}
+
+// vzProcessPID finds the Virtualization.framework process of a container
+// via its open root filesystem image (0 if not found).
+func vzProcessPID(name string) int {
+	path, err := containerRootfsPath(name)
+	if err != nil {
+		return 0
+	}
+	out, err := runOut("lsof", "-t", path)
+	if err != nil || out == "" {
+		return 0
 	}
 	pid, err := strconv.Atoi(strings.Fields(out)[0])
 	if err != nil {
-		return 0, err
+		return 0
 	}
-	return pid, nil
+	return pid
 }
 
 // Pause freezes a running cluster in memory.
@@ -44,13 +70,12 @@ func Pause(cfg *config.Config) error {
 	if !containerExists(cfg.ServerName, true) {
 		return fmt.Errorf("cluster '%s' is not running", cfg.Cluster)
 	}
-	serverPid, err := vmProcessPID(cfg.ServerName)
+	pids, err := vmProcessPIDs(cfg.ServerName)
 	if err != nil {
 		return err
 	}
-	pids := []int{serverPid}
-	if registryPid, err := vmProcessPID(cfg.RegistryName); err == nil {
-		pids = append(pids, registryPid)
+	if registryPids, err := vmProcessPIDs(cfg.RegistryName); err == nil {
+		pids = append(pids, registryPids...)
 	}
 	for _, pid := range pids {
 		if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
