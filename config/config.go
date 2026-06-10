@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -35,6 +36,9 @@ type FileConfig struct {
 		IgnoreCPURequests    *bool    `yaml:"ignoreCpuRequests"`
 		IgnoreMemoryRequests *bool    `yaml:"ignoreMemoryRequests"`
 		ExtraK3sArgs         []string `yaml:"extraK3sArgs"`
+		// node kernel parameters, merged over the built-in defaults
+		// (raised inotify limits)
+		Sysctls map[string]string `yaml:"sysctls"`
 	} `yaml:"cluster"`
 	Ports struct {
 		Ingress int `yaml:"ingress"` // host port the cluster's :443 is published on
@@ -74,6 +78,8 @@ type Config struct {
 
 	IgnoreCPURequests    bool
 	IgnoreMemoryRequests bool
+
+	Sysctls map[string]string
 
 	ExtraK3sArgs []string
 
@@ -151,6 +157,12 @@ func merge(dst *FileConfig, src FileConfig) {
 		dst.Cluster.IgnoreMemoryRequests = src.Cluster.IgnoreMemoryRequests
 	}
 	l(&dst.Cluster.ExtraK3sArgs, src.Cluster.ExtraK3sArgs)
+	for k, v := range src.Cluster.Sysctls {
+		if dst.Cluster.Sysctls == nil {
+			dst.Cluster.Sysctls = map[string]string{}
+		}
+		dst.Cluster.Sysctls[k] = v
+	}
 	i(&dst.Ports.Ingress, src.Ports.Ingress)
 	i(&dst.Ports.Proxy, src.Ports.Proxy)
 	if src.LocalRegistry.Enabled != nil {
@@ -237,6 +249,16 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		return nil, fmt.Errorf("cannot determine state directory; set K3C_BASE_DIR")
 	}
 
+	// the kernel defaults (128/8192) are far too low for a node full of
+	// file-watching workloads; kind/k3d raise them the same way
+	sysctls := map[string]string{
+		"fs.inotify.max_user_instances": "1024",
+		"fs.inotify.max_user_watches":   "1048576",
+	}
+	for k, v := range fc.Cluster.Sysctls {
+		sysctls[k] = v
+	}
+
 	contextPrefix := def(fc.Cluster.ContextPrefix, "k3c-")
 	return &Config{
 		Cluster:              cluster,
@@ -250,6 +272,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		CPUs:                 strconv.Itoa(cpus),
 		Memory:               def(fc.Cluster.Memory, "8G"),
 		ExtraK3sArgs:         fc.Cluster.ExtraK3sArgs,
+		Sysctls:              sysctls,
 		IgnoreCPURequests:    fc.Cluster.IgnoreCPURequests != nil && *fc.Cluster.IgnoreCPURequests,
 		IgnoreMemoryRequests: fc.Cluster.IgnoreMemoryRequests != nil && *fc.Cluster.IgnoreMemoryRequests,
 		VmnetGateway:         "192.168.64.1",
@@ -304,10 +327,21 @@ func (c *Config) K3sCommand() string {
 	return `for b in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
 	ln -sf xtables-legacy-multi /bin/aux/$b
 done
-# the kernel defaults (128/8192) are far too low for a node full of
-# file-watching workloads (kind/k3d raise them the same way)
-sysctl -w fs.inotify.max_user_instances=1024 fs.inotify.max_user_watches=1048576
-exec k3s server ` + strings.Join(args, " ") + "\n"
+` + c.sysctlCommands() + `exec k3s server ` + strings.Join(args, " ") + "\n"
+}
+
+// sysctlCommands renders the node kernel parameter setup.
+func (c *Config) sysctlCommands() string {
+	keys := make([]string, 0, len(c.Sysctls))
+	for k := range c.Sysctls {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&b, "sysctl -w %s=%s\n", k, c.Sysctls[k])
+	}
+	return b.String()
 }
 
 // CorednsCustom renders the CoreDNS override that resolves the egress

@@ -130,6 +130,8 @@ cluster:
   cpus: 8                      # default: all host cores
   memory: 16G
   extraK3sArgs: []
+  sysctls:                     # node kernel parameters, merged over the
+    vm.max_map_count: "262144" # defaults (raised inotify limits)
 
 ports:
   ingress: 8444                # cluster :443 publish (fronted by SNI gateway)
