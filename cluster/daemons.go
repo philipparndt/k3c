@@ -40,7 +40,16 @@ func allowedSource(addr net.Addr) bool {
 	if err != nil {
 		return false
 	}
-	return strings.HasPrefix(host, "192.168.64.") || strings.HasPrefix(host, "127.")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	// dual-stack listeners hand IPv4 peers over as IPv4-mapped IPv6
+	// addresses (::ffff:192.168.64.x) — normalize before matching
+	if v4 := ip.To4(); v4 != nil {
+		host = v4.String()
+	}
+	return strings.HasPrefix(host, "192.168.64.") || ip.IsLoopback()
 }
 
 func splice(a, b net.Conn) {
