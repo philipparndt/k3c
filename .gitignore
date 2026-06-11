@@ -10,3 +10,6 @@ runtime/payload/*.tar.gz
 runtime/payload/*.tar
 runtime/payload/init.tar
 runtime/payload/container-version.txt
+
+# fork checkouts made by the release workflow
+.forks/
