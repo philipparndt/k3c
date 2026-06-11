@@ -412,6 +412,10 @@ func persistProjectConfig(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	if old, err := os.ReadFile(persisted); err == nil && string(old) == string(data) {
+		return nil
+	}
+	logger.Info("updating the cluster's persisted project config from " + cfg.ConfigFile)
 	return os.WriteFile(persisted, data, 0o644)
 }
 
@@ -443,6 +447,11 @@ func Stop(cfg *config.Config) error {
 // Start resumes a stopped cluster.
 func Start(cfg *config.Config) error {
 	if err := preflight(); err != nil {
+		return err
+	}
+	// refresh the persisted project config so edits to the project's
+	// k3c.yaml take effect on a restart, also from other directories
+	if err := persistProjectConfig(cfg); err != nil {
 		return err
 	}
 	_ = loadPorts(cfg)
