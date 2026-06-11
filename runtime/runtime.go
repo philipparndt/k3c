@@ -69,23 +69,33 @@ type Resolved struct {
 	Env []string
 }
 
+// The cached resolution is keyed on the configured binary it was computed
+// with: commands may invoke the container CLI before the config is loaded
+// (e.g. to find the default cluster), and a containerBinary configured
+// after that must still take effect.
 var (
-	resolveOnce sync.Once
+	resolveMu   sync.Mutex
+	resolvedFor *string
 	resolved    Resolved
 	resolveErr  error
 )
 
 // Resolve determines the container CLI and environment to use, performing
-// bundled-runtime extraction at most once. The result is cached for the
-// lifetime of the process.
+// bundled-runtime extraction at most once. The result is cached until the
+// configured binary changes.
 func Resolve() (Resolved, error) {
-	resolveOnce.Do(func() {
-		resolved, resolveErr = resolve()
-	})
+	c := configured()
+	resolveMu.Lock()
+	defer resolveMu.Unlock()
+	if resolvedFor != nil && *resolvedFor == c {
+		return resolved, resolveErr
+	}
+	resolved, resolveErr = resolve(c)
+	resolvedFor = &c
 	return resolved, resolveErr
 }
 
-func resolve() (Resolved, error) {
+func resolve(configured string) (Resolved, error) {
 	// 1. explicit override path
 	if p := os.Getenv("K3C_CONTAINER_BINARY"); p != "" {
 		logger.Debug("container runtime: using K3C_CONTAINER_BINARY=" + p)
@@ -99,9 +109,9 @@ func resolve() (Resolved, error) {
 	}
 
 	// 3. user-configured binary
-	if c := configured(); c != "" {
-		logger.Debug("container runtime: using configured containerBinary=" + c)
-		return Resolved{Binary: c}, nil
+	if configured != "" {
+		logger.Debug("container runtime: using configured containerBinary=" + configured)
+		return Resolved{Binary: configured}, nil
 	}
 
 	// 4. embedded bundled runtime
