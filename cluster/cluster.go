@@ -347,11 +347,26 @@ func setupCoreDNS(cfg *config.Config) error {
 	if out, err := kubectl(cfg, "-n", "kube-system", "rollout", "restart", "deployment", "coredns"); err != nil {
 		return fmt.Errorf("coredns restart failed: %s", out)
 	}
-	if out, err := kubectl(cfg, "-n", "kube-system", "rollout", "status", "deployment", "coredns", "--timeout=300s"); err != nil {
-		return fmt.Errorf("coredns rollout: %s", out)
+	deadline := time.Now().Add(5 * time.Minute)
+	for {
+		out, err := kubectl(cfg, "-n", "kube-system", "rollout", "status", "deployment", "coredns", "--timeout=15s")
+		if err == nil {
+			return nil
+		}
+		// waiting any longer is pointless when the server is gone
+		if !containerExists(cfg.ServerName, true) {
+			return errServerExited
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("coredns rollout: %s", out)
+		}
 	}
-	return nil
 }
+
+// errServerExited reports that the server container stopped while the
+// cluster was being configured (e.g. a stop/start lifecycle race right
+// after a restore); the caller restarts it once.
+var errServerExited = fmt.Errorf("the server container exited unexpectedly")
 
 // Create creates and starts a new cluster.
 func Create(cfg *config.Config) error {
@@ -465,6 +480,32 @@ func Start(cfg *config.Config) error {
 		}
 	}
 	_, _ = runOut("kubectl", "config", "use-context", cfg.KubeContext)
+	for attempt := 0; ; attempt++ {
+		err := postStart(cfg)
+		if err == nil {
+			break
+		}
+		// A stop/start in quick succession (snapshot restore) can race the
+		// runtime's lifecycle cleanup, which then stops the freshly started
+		// server. Detect the death and start it again, once.
+		if attempt == 0 && !containerExists(cfg.ServerName, true) {
+			logger.Warn("server exited unexpectedly during startup; starting it again")
+			if out, err := runContainer("start", cfg.ServerName); err != nil {
+				return fmt.Errorf("restart failed: %s", out)
+			}
+			continue
+		}
+		return err
+	}
+	if err := setActive(cfg); err != nil {
+		return err
+	}
+	logger.Info("cluster '" + cfg.Cluster + "' resumed (context: " + cfg.KubeContext + ")")
+	return nil
+}
+
+// postStart brings a freshly started cluster into its configured state.
+func postStart(cfg *config.Config) error {
 	// virtiofs shares may come back dead from a restored machine state
 	repairVirtiofs(cfg)
 	if err := waitReady(cfg); err != nil {
@@ -474,14 +515,7 @@ func Start(cfg *config.Config) error {
 	if err := setupCoreDNS(cfg); err != nil {
 		return err
 	}
-	if err := applyIgnoreCPUWebhook(cfg); err != nil {
-		return err
-	}
-	if err := setActive(cfg); err != nil {
-		return err
-	}
-	logger.Info("cluster '" + cfg.Cluster + "' resumed (context: " + cfg.KubeContext + ")")
-	return nil
+	return applyIgnoreCPUWebhook(cfg)
 }
 
 // clusterStates maps cluster names to their server/registry container
