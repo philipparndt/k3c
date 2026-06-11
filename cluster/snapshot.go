@@ -145,12 +145,20 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 
 	resumeIfPaused(cfg)
 	wasRunning := containerExists(cfg.ServerName, true)
-	warm := wasRunning && !cold
-	if warm && !capabilities().suspend {
+	// A suspended cluster already has its machine state on disk: snapshot
+	// it warm as-is, without touching the cluster.
+	suspended := false
+	if !wasRunning {
+		if _, err := containerStateFilePath(cfg.ServerName, vmstateFile); err == nil {
+			suspended = true
+		}
+	}
+	warm := !cold && (wasRunning || suspended)
+	if warm && wasRunning && !capabilities().suspend {
 		logger.Info("container CLI lacks suspend support; taking a cold snapshot")
 		warm = false
 	}
-	if warm {
+	if warm && wasRunning {
 		logger.Info("suspending cluster for a warm snapshot")
 		if out, err := runContainer("suspend", cfg.ServerName); err != nil {
 			logger.Warn("suspend failed, falling back to a cold snapshot: " + out)

@@ -86,13 +86,15 @@ under a second. `stop`/`start` preserves cluster state.
 ### Snapshots
 
 ```
-k3c cluster snapshot save [CLUSTER] [NAME]     # default name: timestamp
-k3c cluster snapshot save [CLUSTER] [NAME] --cold
-k3c cluster snapshot restore [CLUSTER] NAME
-k3c cluster snapshot restore [CLUSTER] NAME --cold
-k3c cluster snapshot list [CLUSTER]
-k3c cluster snapshot delete [CLUSTER] NAME
+k3c snapshot save [CLUSTER] [NAME]     # default name: timestamp
+k3c snapshot save [CLUSTER] [NAME] --cold
+k3c snapshot restore [CLUSTER] NAME
+k3c snapshot restore [CLUSTER] NAME --cold
+k3c snapshot list [CLUSTER]
+k3c snapshot delete [CLUSTER] NAME
 ```
+
+(`k3c cluster snapshot ...` works as well.)
 
 Snapshots APFS-clone the cluster's VM root filesystem (copy-on-write):
 saving and restoring is **instant** and a snapshot costs almost no disk
