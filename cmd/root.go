@@ -58,10 +58,18 @@ func loadConfig(args []string) *config.Config {
 }
 
 // loadConfigDefault resolves the cluster config like loadConfig, but when
-// no name is given and exactly one cluster exists, that cluster is used.
+// no name is given the active cluster (or the only existing one) is used.
 func loadConfigDefault(args []string) *config.Config {
 	if len(args) == 0 {
-		if name := cluster.OnlyClusterName(); name != "" {
+		// Finding the default cluster invokes the container CLI before the
+		// cluster config is loaded: configure the binary from the global
+		// config first so the right runtime is used.
+		if cfg, err := config.Resolve("", configFile); err == nil {
+			cluster.SetContainerBinary(cfg.ContainerBinary)
+		}
+		if name := cluster.ActiveClusterName(); name != "" {
+			args = []string{name}
+		} else if name := cluster.OnlyClusterName(); name != "" {
 			args = []string{name}
 		}
 	}

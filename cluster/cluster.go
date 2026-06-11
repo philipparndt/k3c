@@ -41,6 +41,7 @@ func runContainer(args ...string) (string, error) {
 type containerCapabilities struct {
 	pause   bool
 	suspend bool
+	memory  bool
 }
 
 var (
@@ -53,6 +54,7 @@ func capabilities() containerCapabilities {
 		out, _ := runContainer("--help")
 		caps.pause = strings.Contains(out, "\n  pause") && strings.Contains(out, "\n  resume")
 		caps.suspend = strings.Contains(out, "\n  suspend")
+		caps.memory = strings.Contains(out, "\n  memory")
 	})
 	return caps
 }
@@ -410,6 +412,10 @@ func persistProjectConfig(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	if old, err := os.ReadFile(persisted); err == nil && string(old) == string(data) {
+		return nil
+	}
+	logger.Info("updating the cluster's persisted project config from " + cfg.ConfigFile)
 	return os.WriteFile(persisted, data, 0o644)
 }
 
@@ -443,6 +449,11 @@ func Start(cfg *config.Config) error {
 	if err := preflight(); err != nil {
 		return err
 	}
+	// refresh the persisted project config so edits to the project's
+	// k3c.yaml take effect on a restart, also from other directories
+	if err := persistProjectConfig(cfg); err != nil {
+		return err
+	}
 	_ = loadPorts(cfg)
 	if err := SpawnDaemons(cfg); err != nil {
 		return err
@@ -454,7 +465,13 @@ func Start(cfg *config.Config) error {
 		}
 	}
 	_, _ = runOut("kubectl", "config", "use-context", cfg.KubeContext)
+	// virtiofs shares may come back dead from a restored machine state
+	repairVirtiofs(cfg)
 	if err := waitReady(cfg); err != nil {
+		return err
+	}
+	// re-apply so egress config changes take effect on a restart
+	if err := setupCoreDNS(cfg); err != nil {
 		return err
 	}
 	if err := applyIgnoreCPUWebhook(cfg); err != nil {

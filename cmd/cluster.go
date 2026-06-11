@@ -74,6 +74,17 @@ var clusterSuspendCmd = &cobra.Command{
 	},
 }
 
+var reclaimRelease bool
+
+var clusterReclaimCmd = &cobra.Command{
+	Use:   "reclaim [NAME]",
+	Short: "Return memory the cluster no longer uses to the host (balloon stays sized to usage)",
+	Args:  cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.Reclaim(loadConfigDefault(args), reclaimRelease))
+	},
+}
+
 var clusterActivateCmd = &cobra.Command{
 	Use:     "activate [NAME]",
 	Aliases: []string{"use"},
@@ -95,7 +106,9 @@ var clusterListCmd = &cobra.Command{
 }
 
 func init() {
+	clusterReclaimCmd.Flags().BoolVar(&reclaimRelease, "release", false,
+		"deflate the balloon, giving the cluster its full configured memory back")
 	clusterCmd.AddCommand(clusterCreateCmd, clusterDeleteCmd, clusterStartCmd, clusterStopCmd,
-		clusterPauseCmd, clusterResumeCmd, clusterSuspendCmd, clusterActivateCmd, clusterListCmd)
+		clusterPauseCmd, clusterResumeCmd, clusterSuspendCmd, clusterReclaimCmd, clusterActivateCmd, clusterListCmd)
 	rootCmd.AddCommand(clusterCmd)
 }
