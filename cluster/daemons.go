@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,6 +17,7 @@ import (
 	"github.com/philipparndt/go-logger"
 
 	"k3c/config"
+	"k3c/version"
 )
 
 // Host-side daemons. Apple container VMs have no outbound connectivity
@@ -223,7 +225,19 @@ func serve(addr string, handler func(net.Conn)) error {
 
 // RunDaemons runs both listeners in the foreground (the hidden `daemons`
 // subcommand, spawned detached by create/start).
+// daemonsVersionFile records which k3c build the running daemons belong
+// to, so a newer binary respawns them instead of leaving stale daemons.
+func daemonsVersionFile(cfg *config.Config) string {
+	return filepath.Join(cfg.BaseDir, "daemons.version")
+}
+
+func daemonsVersion() string {
+	v := version.Get()
+	return v.Version + " " + v.GitCommit + " " + v.BuildDate
+}
+
 func RunDaemons(cfg *config.Config) error {
+	_ = os.WriteFile(daemonsVersionFile(cfg), []byte(daemonsVersion()+"\n"), 0o644)
 	startAutoReclaim(cfg)
 	errCh := make(chan error, 3)
 	go func() { errCh <- serve("0.0.0.0:"+cfg.ProxyPort, handleProxyConn) }()
@@ -269,10 +283,15 @@ func pidAlive(pidFile string) bool {
 // already running. Both pidfiles point at the same process.
 func SpawnDaemons(cfg *config.Config) error {
 	if pidAlive(cfg.ProxyPidFile()) {
-		if len(ignoredResources(cfg)) > 0 && !portOpen(webhookPort) {
+		recorded, _ := os.ReadFile(daemonsVersionFile(cfg))
+		switch {
+		case strings.TrimSpace(string(recorded)) != daemonsVersion():
+			logger.Info("restarting host daemons (k3c version changed)")
+			StopDaemons(cfg)
+		case len(ignoredResources(cfg)) > 0 && !portOpen(webhookPort):
 			logger.Info("restarting host daemons (webhook newly enabled)")
 			StopDaemons(cfg)
-		} else {
+		default:
 			logger.Info("host daemons already running")
 			return nil
 		}
