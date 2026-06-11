@@ -316,13 +316,11 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 		}
 	}
 
-	switch {
-	case warm:
+	if warm {
 		logger.Info("snapshot '" + name + "' restored (warm), resuming cluster")
-	case cold:
+	} else {
+		// no machine state applied: either none in the snapshot, or --cold
 		logger.Info("snapshot '" + name + "' restored (cold), booting cluster")
-	default:
-		logger.Info("snapshot '" + name + "' restored, starting cluster")
 	}
 	return Start(cfg)
 }
