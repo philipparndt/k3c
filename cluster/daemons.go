@@ -206,6 +206,35 @@ func handleSNIConn(conn net.Conn, cfg *config.Config) {
 	splice(conn, upstream)
 }
 
+// handleEgressPortConn serves an additional egress gateway port: the TLS
+// ClientHello's SNI names the real host, which is dialed on the same port
+// the client connected to. Connections without an SNI cannot be routed.
+func handleEgressPortConn(conn net.Conn, port string) {
+	defer conn.Close()
+	if !allowedSource(conn.RemoteAddr()) {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(connectTimeout))
+	hello, err := readClientHello(conn)
+	if err != nil {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	name := parseSNI(hello)
+	if name == "" {
+		return
+	}
+	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(name, port), connectTimeout)
+	if err != nil {
+		return
+	}
+	if _, err := upstream.Write(hello); err != nil {
+		upstream.Close()
+		return
+	}
+	splice(conn, upstream)
+}
+
 // --- daemon lifecycle ---
 
 func serve(addr string, handler func(net.Conn)) error {
@@ -244,6 +273,15 @@ func RunDaemons(cfg *config.Config) error {
 	go func() {
 		errCh <- serve("0.0.0.0:443", func(c net.Conn) { handleSNIConn(c, cfg) })
 	}()
+	for _, p := range cfg.EgressPorts {
+		if p == 443 {
+			continue
+		}
+		port := strconv.Itoa(p)
+		go func() {
+			errCh <- serve("0.0.0.0:"+port, func(c net.Conn) { handleEgressPortConn(c, port) })
+		}()
+	}
 	if len(ignoredResources(cfg)) > 0 {
 		go func() { errCh <- serveWebhook(cfg) }()
 	}
@@ -251,6 +289,17 @@ func RunDaemons(cfg *config.Config) error {
 		errCh <- serve("0.0.0.0:"+cfg.RegistryPort, func(c net.Conn) { handleRegistryConn(c, cfg) })
 	}()
 	return <-errCh
+}
+
+// egressPortMissing reports whether a configured egress gateway port is
+// not served by the running daemons.
+func egressPortMissing(cfg *config.Config) bool {
+	for _, p := range cfg.EgressPorts {
+		if p != 443 && !portOpen(strconv.Itoa(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 // portOpen reports whether a local TCP port accepts connections.
@@ -290,6 +339,9 @@ func SpawnDaemons(cfg *config.Config) error {
 			StopDaemons(cfg)
 		case len(ignoredResources(cfg)) > 0 && !portOpen(webhookPort):
 			logger.Info("restarting host daemons (webhook newly enabled)")
+			StopDaemons(cfg)
+		case egressPortMissing(cfg):
+			logger.Info("restarting host daemons (egress ports changed)")
 			StopDaemons(cfg)
 		default:
 			logger.Info("host daemons already running")

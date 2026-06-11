@@ -64,6 +64,11 @@ type FileConfig struct {
 		Domains []string `yaml:"domains"`
 		// Domains routed to the local cluster ingress instead.
 		IngressDomains []string `yaml:"ingressDomains"`
+		// Additional TCP ports served by the SNI egress gateway (443 is
+		// always served). TLS connections to egress domains on these
+		// ports are routed by their SNI to the real host (e.g. almplus
+		// on 13001).
+		Ports []int `yaml:"ports"`
 	} `yaml:"egress"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
 	Registries string `yaml:"registries"`
@@ -108,6 +113,7 @@ type Config struct {
 
 	CACertGlobs    []string
 	EgressDomains  []string
+	EgressPorts    []int // extra SNI gateway ports (443 always served)
 	IngressDomains []string
 	Registries     string
 
@@ -194,6 +200,9 @@ func merge(dst *FileConfig, src FileConfig) {
 	s(&dst.Cluster.CPUPriority, src.Cluster.CPUPriority)
 	l(&dst.CACerts, src.CACerts)
 	l(&dst.Egress.Domains, src.Egress.Domains)
+	if len(src.Egress.Ports) > 0 {
+		dst.Egress.Ports = src.Egress.Ports
+	}
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
 	s(&dst.Registries, src.Registries)
 }
@@ -324,6 +333,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		RegistryPort:         port(fc.LocalRegistry.HostPort, 5001),
 		CACertGlobs:          fc.CACerts,
 		EgressDomains:        fc.Egress.Domains,
+		EgressPorts:          fc.Egress.Ports,
 		IngressDomains:       fc.Egress.IngressDomains,
 		Registries:           fc.Registries,
 		ContainerBinary:      def(fc.ContainerBinary, "container"),
