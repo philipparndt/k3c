@@ -465,6 +465,8 @@ func Start(cfg *config.Config) error {
 		}
 	}
 	_, _ = runOut("kubectl", "config", "use-context", cfg.KubeContext)
+	// virtiofs shares may come back dead from a restored machine state
+	repairVirtiofs(cfg)
 	if err := waitReady(cfg); err != nil {
 		return err
 	}

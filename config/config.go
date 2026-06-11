@@ -39,6 +39,10 @@ type FileConfig struct {
 		// node kernel parameters, merged over the built-in defaults
 		// (raised inotify limits)
 		Sysctls map[string]string `yaml:"sysctls"`
+		// periodically return memory the cluster no longer uses to the
+		// host (balloon-capable container builds): a duration like "10m",
+		// or "off" (default: 10m)
+		AutoReclaim string `yaml:"autoReclaim"`
 	} `yaml:"cluster"`
 	Ports struct {
 		Ingress int `yaml:"ingress"` // host port the cluster's :443 is published on
@@ -105,6 +109,7 @@ type Config struct {
 	Registries     string
 
 	ContainerBinary string // the Apple container CLI to use
+	AutoReclaim     string // auto-reclaim interval ("off" disables)
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
@@ -181,6 +186,7 @@ func merge(dst *FileConfig, src FileConfig) {
 	}
 	i(&dst.LocalRegistry.HostPort, src.LocalRegistry.HostPort)
 	s(&dst.ContainerBinary, src.ContainerBinary)
+	s(&dst.Cluster.AutoReclaim, src.Cluster.AutoReclaim)
 	l(&dst.CACerts, src.CACerts)
 	l(&dst.Egress.Domains, src.Egress.Domains)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
@@ -311,6 +317,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		IngressDomains:       fc.Egress.IngressDomains,
 		Registries:           fc.Registries,
 		ContainerBinary:      def(fc.ContainerBinary, "container"),
+		AutoReclaim:          def(fc.Cluster.AutoReclaim, "10m"),
 		BaseDir:              baseDir,
 		ConfigFile:           configFile,
 	}, nil

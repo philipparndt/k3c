@@ -224,6 +224,7 @@ func serve(addr string, handler func(net.Conn)) error {
 // RunDaemons runs both listeners in the foreground (the hidden `daemons`
 // subcommand, spawned detached by create/start).
 func RunDaemons(cfg *config.Config) error {
+	startAutoReclaim(cfg)
 	errCh := make(chan error, 3)
 	go func() { errCh <- serve("0.0.0.0:"+cfg.ProxyPort, handleProxyConn) }()
 	go func() {
