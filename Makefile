@@ -95,7 +95,11 @@ build-bundled: bundle ## bundle the runtime then build k3c with it embedded
 clean: ## remove the built binary and bundled payload
 	rm -f $(BINARY) $(PAYLOAD) $(PAYLOAD_VERSION)
 
-install: build ## install system-wide to $(PREFIX)/bin (sudo if needed)
+# the install targets deliberately do NOT rebuild: they install the binary
+# as previously built (make build OR make build-bundled), so installing a
+# bundled build does not silently degrade to an unbundled one
+install: ## install system-wide to $(PREFIX)/bin (sudo if needed)
+	@test -f $(BINARY) || { echo "no ./$(BINARY) — run 'make build' or 'make build-bundled' first"; exit 1; }
 	@if [ -w $(PREFIX)/bin ]; then \
 		install -m 0755 $(BINARY) $(PREFIX)/bin/$(BINARY); \
 	else \
@@ -104,7 +108,8 @@ install: build ## install system-wide to $(PREFIX)/bin (sudo if needed)
 	fi
 	@echo "installed: $(PREFIX)/bin/$(BINARY)"
 
-install-user: build ## install to GOPATH/bin (no sudo; ensure it is on PATH)
+install-user: ## install to GOPATH/bin (no sudo; ensure it is on PATH)
+	@test -f $(BINARY) || { echo "no ./$(BINARY) — run 'make build' or 'make build-bundled' first"; exit 1; }
 	install -m 0755 $(BINARY) $(GOBIN)/$(BINARY)
 	@echo "installed: $(GOBIN)/$(BINARY)"
 
