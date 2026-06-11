@@ -11,9 +11,17 @@ import (
 	"k3c/config"
 )
 
-// reclaimHeadroomMB is left on top of the guest's used memory when sizing
-// the balloon target, so the cluster has room to operate while squeezed.
-const reclaimHeadroomMB = 2048
+// reclaimHeadroom returns the memory left on top of the guest's used
+// memory when sizing the balloon target: a quarter of the used memory, at
+// least 2GB. Kubernetes and JVM-heavy workloads need real breathing room -
+// the balloon has no deflate-on-OOM escape hatch, and a too-tight target
+// starves the guest into an unresponsive cluster.
+func reclaimHeadroomMB(usedMB int) int {
+	if h := usedMB / 4; h > 2048 {
+		return h
+	}
+	return 2048
+}
 
 // Reclaim returns memory the cluster no longer uses to the host. The VM's
 // footprint only ever grows (every page the guest touches stays resident),
@@ -63,7 +71,7 @@ func Reclaim(cfg *config.Config, release bool) error {
 	if err != nil {
 		return err
 	}
-	target := usedMB + reclaimHeadroomMB
+	target := usedMB + reclaimHeadroomMB(usedMB)
 	logger.Info(fmt.Sprintf("reclaiming (guest uses %dMB, balloon target %dMB)", usedMB, target))
 	if out, err := runContainer("memory", "target", cfg.ServerName,
 		fmt.Sprintf("%dm", target)); err != nil {
