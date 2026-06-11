@@ -38,7 +38,7 @@ const registryRootfs = "registry-rootfs.ext4"
 // vmstateFile marks (and is required for) a warm restore
 const vmstateFile = "vmstate.czs"
 
-var suspendStateFiles = []string{vmstateFile, "vmstate-attachments.json", "machine-identifier.bin"}
+var suspendStateFiles = []string{vmstateFile, "vmstate-attachments.json", "vmstate-features.json", "machine-identifier.bin"}
 
 // containerStateFile returns the path of a file in a container's state
 // directory.
@@ -290,7 +290,7 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 	// Stale suspended state on the container belongs to its previous disk
 	// image and must never be applied to the restored one. The machine
 	// identifier is stable container identity, not state, and stays.
-	for _, fileName := range []string{vmstateFile, "vmstate-attachments.json"} {
+	for _, fileName := range []string{vmstateFile, "vmstate-attachments.json", "vmstate-features.json"} {
 		if path, err := containerStateFile(cfg.ServerName, fileName); err == nil {
 			_ = os.Remove(path)
 		}

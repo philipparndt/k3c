@@ -41,6 +41,7 @@ func runContainer(args ...string) (string, error) {
 type containerCapabilities struct {
 	pause   bool
 	suspend bool
+	memory  bool
 }
 
 var (
@@ -53,6 +54,7 @@ func capabilities() containerCapabilities {
 		out, _ := runContainer("--help")
 		caps.pause = strings.Contains(out, "\n  pause") && strings.Contains(out, "\n  resume")
 		caps.suspend = strings.Contains(out, "\n  suspend")
+		caps.memory = strings.Contains(out, "\n  memory")
 	})
 	return caps
 }
@@ -455,6 +457,10 @@ func Start(cfg *config.Config) error {
 	}
 	_, _ = runOut("kubectl", "config", "use-context", cfg.KubeContext)
 	if err := waitReady(cfg); err != nil {
+		return err
+	}
+	// re-apply so egress config changes take effect on a restart
+	if err := setupCoreDNS(cfg); err != nil {
 		return err
 	}
 	if err := applyIgnoreCPUWebhook(cfg); err != nil {
