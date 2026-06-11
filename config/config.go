@@ -189,6 +189,15 @@ func merge(dst *FileConfig, src FileConfig) {
 
 // UserConfigDir returns ~/.config/k3c (honoring XDG_CONFIG_HOME). It holds
 // the user config file and all k3c state.
+// StateDir is the k3c state directory (K3C_BASE_DIR or the user config
+// directory).
+func StateDir() string {
+	if dir := os.Getenv("K3C_BASE_DIR"); dir != "" {
+		return dir
+	}
+	return UserConfigDir()
+}
+
 func UserConfigDir() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
@@ -214,10 +223,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		}
 	}
 
-	baseDir := os.Getenv("K3C_BASE_DIR")
-	if baseDir == "" {
-		baseDir = UserConfigDir()
-	}
+	baseDir := StateDir()
 	if baseDir == "" {
 		return nil, fmt.Errorf("cannot determine state directory; set K3C_BASE_DIR")
 	}

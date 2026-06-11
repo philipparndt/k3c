@@ -108,6 +108,28 @@ func activeFile(cfg *config.Config) string {
 	return filepath.Join(cfg.BaseDir, "active.yaml")
 }
 
+// ActiveClusterName returns the active cluster (the routing target most
+// recently created, started, or resumed), or "" when none is recorded or
+// it no longer exists.
+func ActiveClusterName() string {
+	dir := config.StateDir()
+	if dir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "active.yaml"))
+	if err != nil {
+		return ""
+	}
+	var state activeState
+	if err := yaml.Unmarshal(data, &state); err != nil || state.Cluster == "" {
+		return ""
+	}
+	if !containerExists(state.Cluster+"-server", false) {
+		return ""
+	}
+	return state.Cluster
+}
+
 // setActive routes the daemon's public ports to this cluster.
 func setActive(cfg *config.Config) error {
 	state := activeState{
