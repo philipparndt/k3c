@@ -65,6 +65,15 @@ var clusterResumeCmd = &cobra.Command{
 	},
 }
 
+var clusterSuspendCmd = &cobra.Command{
+	Use:   "suspend [NAME]",
+	Short: "Suspend a cluster to disk, releasing CPU and memory (start restores it)",
+	Args:  cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.Suspend(loadConfigDefault(args)))
+	},
+}
+
 var clusterActivateCmd = &cobra.Command{
 	Use:     "activate [NAME]",
 	Aliases: []string{"use"},
@@ -87,6 +96,6 @@ var clusterListCmd = &cobra.Command{
 
 func init() {
 	clusterCmd.AddCommand(clusterCreateCmd, clusterDeleteCmd, clusterStartCmd, clusterStopCmd,
-		clusterPauseCmd, clusterResumeCmd, clusterActivateCmd, clusterListCmd)
+		clusterPauseCmd, clusterResumeCmd, clusterSuspendCmd, clusterActivateCmd, clusterListCmd)
 	rootCmd.AddCommand(clusterCmd)
 }

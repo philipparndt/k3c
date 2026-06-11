@@ -25,6 +25,24 @@ import (
 const serverRootfs = "server-rootfs.ext4"
 const registryRootfs = "registry-rootfs.ext4"
 
+// files written next to the rootfs by suspend-capable container builds
+var suspendStateFiles = []string{"vmstate.czs", "vmstate-attachments.json", "machine-identifier.bin"}
+
+// containerStateFilePath returns the path of a file in a container's state
+// directory, erroring when the file does not exist.
+func containerStateFilePath(container, name string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(home, "Library", "Application Support",
+		"com.apple.container", "containers", container, name)
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // containerRootfsPath returns the VM root filesystem backing a container.
 func containerRootfsPath(name string) (string, error) {
 	home, err := os.UserHomeDir()
@@ -105,23 +123,23 @@ func SnapshotSave(cfg *config.Config, name string) error {
 	wasRunning := containerExists(cfg.ServerName, true)
 	if wasRunning {
 		logger.Info("stopping cluster for a consistent snapshot")
-		_, _ = runOut("container", "stop", cfg.ServerName)
-		_, _ = runOut("container", "stop", cfg.RegistryName)
+		_, _ = runContainer("stop", cfg.ServerName)
+		_, _ = runContainer("stop", cfg.RegistryName)
 	}
 
 	if err := writeSnapshot(cfg, dir); err != nil {
 		_ = os.RemoveAll(dir)
 		if wasRunning {
-			_, _ = runOut("container", "start", cfg.RegistryName)
-			_, _ = runOut("container", "start", cfg.ServerName)
+			_, _ = runContainer("start", cfg.RegistryName)
+			_, _ = runContainer("start", cfg.ServerName)
 		}
 		return err
 	}
 
 	if wasRunning {
 		logger.Info("restarting cluster")
-		_, _ = runOut("container", "start", cfg.RegistryName)
-		if out, err := runOut("container", "start", cfg.ServerName); err != nil {
+		_, _ = runContainer("start", cfg.RegistryName)
+		if out, err := runContainer("start", cfg.ServerName); err != nil {
 			return fmt.Errorf("snapshot saved, but restart failed: %s", out)
 		}
 	}
@@ -150,6 +168,14 @@ func writeSnapshot(cfg *config.Config, dir string) error {
 	if err := copyDir(cfg.K3sEtcDir(), filepath.Join(dir, "k3s-etc")); err != nil {
 		return err
 	}
+	// suspended-state companions (suspend-capable container builds)
+	for _, name := range suspendStateFiles {
+		if src, err := containerStateFilePath(cfg.ServerName, name); err == nil {
+			if err := cloneFile(src, filepath.Join(dir, "server-"+name)); err != nil {
+				return err
+			}
+		}
+	}
 	meta := fmt.Sprintf("cluster: %s\ncreated: %s\n", cfg.Cluster, time.Now().Format(time.RFC3339))
 	return os.WriteFile(filepath.Join(dir, "meta.yaml"), []byte(meta), 0o644)
 }
@@ -171,8 +197,8 @@ func SnapshotRestore(cfg *config.Config, name string) error {
 	resumeIfPaused(cfg)
 	if containerExists(cfg.ServerName, true) {
 		logger.Info("stopping cluster")
-		_, _ = runOut("container", "stop", cfg.ServerName)
-		_, _ = runOut("container", "stop", cfg.RegistryName)
+		_, _ = runContainer("stop", cfg.ServerName)
+		_, _ = runContainer("stop", cfg.RegistryName)
 	}
 
 	dst, err := containerRootfsPath(cfg.ServerName)
@@ -193,6 +219,21 @@ func SnapshotRestore(cfg *config.Config, name string) error {
 	}
 	if err := copyDir(filepath.Join(dir, "k3s-etc"), cfg.K3sEtcDir()); err != nil {
 		return err
+	}
+	for _, fileName := range suspendStateFiles {
+		snapshotFile := filepath.Join(dir, "server-"+fileName)
+		if _, err := os.Stat(snapshotFile); err != nil {
+			continue
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(home, "Library", "Application Support",
+			"com.apple.container", "containers", cfg.ServerName, fileName)
+		if err := cloneFile(snapshotFile, dst); err != nil {
+			return err
+		}
 	}
 
 	logger.Info("snapshot '" + name + "' restored, starting cluster")

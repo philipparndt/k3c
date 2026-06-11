@@ -69,6 +69,9 @@ func Pause(cfg *config.Config) error {
 	if !containerExists(cfg.ServerName, true) {
 		return fmt.Errorf("cluster '%s' is not running", cfg.Cluster)
 	}
+	if capabilities().pause {
+		return pauseNative(cfg)
+	}
 	pids, err := vmProcessPIDs(cfg.ServerName)
 	if err != nil {
 		return err
@@ -110,11 +113,49 @@ func processStopped(pid int) bool {
 	return err == nil && strings.HasPrefix(strings.TrimSpace(out), "T")
 }
 
+// pauseNative pauses via the container CLI (forks supporting pause).
+func pauseNative(cfg *config.Config) error {
+	if out, err := runContainer("pause", cfg.ServerName); err != nil {
+		if strings.Contains(out, "not running") {
+			logger.Info("cluster '" + cfg.Cluster + "' is already paused")
+			return nil
+		}
+		return fmt.Errorf("pause failed: %s", out)
+	}
+	_, _ = runContainer("pause", cfg.RegistryName)
+	if err := os.MkdirAll(cfg.RunDir(), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(pausedMarker(cfg), []byte("native"), 0o644); err != nil {
+		return err
+	}
+	logger.Info("cluster '" + cfg.Cluster + "' paused (in memory); resume with: k3c cluster resume " + cfg.Cluster)
+	logger.Info("note: a paused cluster does not survive a host reboot")
+	return nil
+}
+
 // Resume unfreezes a paused cluster.
 func Resume(cfg *config.Config) error {
 	data, err := os.ReadFile(pausedMarker(cfg))
 	if err != nil {
 		return fmt.Errorf("cluster '%s' is not paused", cfg.Cluster)
+	}
+	if strings.TrimSpace(string(data)) == "native" {
+		if out, err := runContainer("resume", cfg.ServerName); err != nil {
+			return fmt.Errorf("resume failed: %s", out)
+		}
+		_, _ = runContainer("resume", cfg.RegistryName)
+		_ = os.Remove(pausedMarker(cfg))
+		_ = loadPorts(cfg)
+		if err := waitReady(cfg); err != nil {
+			return err
+		}
+		if err := setActive(cfg); err != nil {
+			return err
+		}
+		_, _ = runOut("kubectl", "config", "use-context", cfg.KubeContext)
+		logger.Info("cluster '" + cfg.Cluster + "' resumed (kube context and public routing switched)")
+		return nil
 	}
 	for _, field := range strings.Fields(string(data)) {
 		pid, err := strconv.Atoi(field)
@@ -143,6 +184,12 @@ func Resume(cfg *config.Config) error {
 func resumeIfPaused(cfg *config.Config) {
 	if data, err := os.ReadFile(pausedMarker(cfg)); err == nil {
 		logger.Info("cluster is paused, resuming first")
+		if strings.TrimSpace(string(data)) == "native" {
+			_, _ = runContainer("resume", cfg.ServerName)
+			_, _ = runContainer("resume", cfg.RegistryName)
+			_ = os.Remove(pausedMarker(cfg))
+			return
+		}
 		for _, field := range strings.Fields(string(data)) {
 			if pid, err := strconv.Atoi(field); err == nil {
 				_ = syscall.Kill(pid, syscall.SIGCONT)
@@ -150,6 +197,27 @@ func resumeIfPaused(cfg *config.Config) {
 		}
 		_ = os.Remove(pausedMarker(cfg))
 	}
+}
+
+// Suspend saves the cluster's virtual machines to disk and releases their
+// CPU and memory. `k3c cluster start` restores it, also after a reboot.
+// Requires a container CLI with suspend support.
+func Suspend(cfg *config.Config) error {
+	if !capabilities().suspend {
+		return fmt.Errorf("the configured container CLI does not support suspend; use 'k3c cluster stop' (or set containerBinary to a build with suspend support)")
+	}
+	resumeIfPaused(cfg)
+	if !containerExists(cfg.ServerName, true) {
+		return fmt.Errorf("cluster '%s' is not running", cfg.Cluster)
+	}
+	logger.Info("suspending cluster '" + cfg.Cluster + "' to disk")
+	if out, err := runContainer("suspend", cfg.ServerName); err != nil {
+		return fmt.Errorf("suspend failed: %s", out)
+	}
+	_, _ = runContainer("suspend", cfg.RegistryName)
+	logger.Info("cluster '" + cfg.Cluster + "' suspended (CPU and memory released, survives reboots)")
+	logger.Info("restore with: k3c cluster start " + cfg.Cluster)
+	return nil
 }
 
 // isPaused reports whether the cluster is currently frozen.

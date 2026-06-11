@@ -182,10 +182,41 @@ registries: |                  # verbatim k3s registries.yaml
         ca_file: /etc/rancher/k3s/ca-bundle.pem
 ```
 
+## Bundled container runtime
+
+Release builds of k3c can embed Apple's `container` runtime directly in the
+binary, so k3c is self-contained and needs no separate `container` install.
+On first use the bundled tree is extracted once to
+`~/.cache/k3c/runtime/<version>/` and driven via `CONTAINER_INSTALL_ROOT`;
+the guest init image is loaded automatically if missing.
+
+A plain `go build` does **not** embed anything and drives a host-installed
+`container`. To produce a bundled binary:
+
+```sh
+make bundle STAGING_DIR=/path/to/container/staging   # stage the runtime tree
+make build-bundled                                   # go build -tags bundled
+```
+
+The runtime selection precedence (highest first):
+
+| Source | Selected when |
+| --- | --- |
+| `K3C_CONTAINER_BINARY=/path/to/container` | always (explicit override) |
+| `K3C_CONTAINER_FROM_PATH=1` (or `true`) | use `container` from `PATH` |
+| `containerBinary:` in config | set to a non-default path |
+| bundled runtime | embedded (release build) |
+| `container` from `PATH` | fallback (dev builds) |
+
+Use `K3C_CONTAINER_FROM_PATH=1` to ignore the bundled runtime and use a
+`container` from `PATH`, or `K3C_CONTAINER_BINARY` to point at a specific one
+(e.g. a local fork with pause/resume/suspend).
+
 ## Requirements
 
 - macOS 26+ on Apple Silicon
-- [Apple `container`](https://github.com/apple/container) **>= 1.0.0**
+- [Apple `container`](https://github.com/apple/container) **>= 1.0.0** —
+  not required when using a bundled build
 - `kubectl`
 
 ## License

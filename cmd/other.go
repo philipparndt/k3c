@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"k3c/cluster"
+	"k3c/runtime"
 	"k3c/version"
 )
 
@@ -38,6 +39,9 @@ var versionCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println(version.Get().String())
+		if v := runtime.BundledContainerVersion(); v != "" {
+			fmt.Println("bundled container: " + v)
+		}
 	},
 }
 

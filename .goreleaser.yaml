@@ -3,16 +3,23 @@ version: 2
 before:
   hooks:
     - go mod tidy
+    # Release builds embed the container runtime; fail fast when the
+    # payload was not assembled (make bundle) before goreleaser runs.
+    - test -f runtime/payload/container-runtime.tar.gz
 
 builds:
   - env:
       - CGO_ENABLED=0
-    # Apple `container` only exists on macOS
+    # Apple `container` requires macOS on Apple Silicon, and the bundled
+    # runtime payload contains arm64 binaries only.
     goos:
       - darwin
     goarch:
       - arm64
-      - amd64
+    # Embed the container runtime payload assembled by `make bundle`
+    # (see .github/workflows/goreleaser.yaml).
+    flags:
+      - -tags=bundled
     ldflags:
       - -s -w -X k3c/version.Version={{.Version}} -X k3c/version.GitCommit={{.Commit}} -X k3c/version.BuildDate={{.Date}}
 

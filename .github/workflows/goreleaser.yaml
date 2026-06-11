@@ -5,22 +5,85 @@ on:
     tags:
       - "*"
 
+env:
+  # Forks of apple/container with pause/resume + suspend-to-disk support.
+  # The container repo's Package.swift references ../containerization, so
+  # both are checked out as sibling directories.
+  CONTAINER_REPO: philipparndt/container
+  CONTAINER_REF: feat/suspend-to-disk
+  CONTAINERIZATION_REPO: philipparndt/containerization
+  CONTAINERIZATION_REF: feat/suspend-to-disk
+
 jobs:
   goreleaser:
     permissions:
       contents: write
       packages: write
       pull-requests: write
-    runs-on: ubuntu-latest
+    # macOS arm64: the container app is Swift/Virtualization.framework and
+    # only runs on Apple Silicon.
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Checkout container fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CONTAINER_REPO }}
+          ref: ${{ env.CONTAINER_REF }}
+          path: .forks/container
+
+      - name: Checkout containerization fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CONTAINERIZATION_REPO }}
+          ref: ${{ env.CONTAINERIZATION_REF }}
+          path: .forks/containerization
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version: "1.26"
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Cache Swift cross-compile toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.swiftly
+            ~/Library/org.swift.swiftpm/swift-sdks
+          key: swiftly-${{ runner.os }}-${{ hashFiles('.forks/containerization/vminitd/Makefile') }}
+
+      - name: Install Linux cross-compile toolchain (swiftly + static musl SDK)
+        run: make -C .forks/containerization/vminitd cross-prep
+
+      - name: Build container app (release)
+        run: make -C .forks/container container BUILD_CONFIGURATION=release
+
+      - name: Build init image (vminitd + vmexec, Linux cross-compile)
+        run: |
+          make -C .forks/containerization init BUILD_CONFIGURATION=release
+          .forks/containerization/bin/cctl images save -o /tmp/init.tar vminit:latest
+
+      - name: Assemble bundle staging tree
+        run: |
+          STAGE=/tmp/k3c-stage
+          mkdir -p "$STAGE/bin"
+          cp .forks/container/bin/container "$STAGE/bin/"
+          cp .forks/container/bin/container-apiserver "$STAGE/bin/"
+          cp -R .forks/container/libexec "$STAGE/libexec"
+          du -sh "$STAGE"
+
+      - name: Bundle container runtime into payload
+        run: make bundle STAGING_DIR=/tmp/k3c-stage INIT_TAR=/tmp/init.tar
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

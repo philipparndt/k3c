@@ -60,6 +60,9 @@ type FileConfig struct {
 	} `yaml:"egress"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
 	Registries string `yaml:"registries"`
+	// Path to the Apple `container` CLI (default: container from PATH).
+	// Point this at a fork to use features like pause/resume/suspend.
+	ContainerBinary string `yaml:"containerBinary"`
 }
 
 // Config is the effective, resolved configuration.
@@ -100,6 +103,8 @@ type Config struct {
 	EgressDomains  []string
 	IngressDomains []string
 	Registries     string
+
+	ContainerBinary string // the Apple container CLI to use
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
@@ -175,6 +180,7 @@ func merge(dst *FileConfig, src FileConfig) {
 		dst.LocalRegistry.Enabled = src.LocalRegistry.Enabled
 	}
 	i(&dst.LocalRegistry.HostPort, src.LocalRegistry.HostPort)
+	s(&dst.ContainerBinary, src.ContainerBinary)
 	l(&dst.CACerts, src.CACerts)
 	l(&dst.Egress.Domains, src.Egress.Domains)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
@@ -298,6 +304,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		EgressDomains:        fc.Egress.Domains,
 		IngressDomains:       fc.Egress.IngressDomains,
 		Registries:           fc.Registries,
+		ContainerBinary:      def(fc.ContainerBinary, "container"),
 		BaseDir:              baseDir,
 		ConfigFile:           configFile,
 	}, nil
