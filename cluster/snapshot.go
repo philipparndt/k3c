@@ -14,10 +14,19 @@ import (
 	"k3c/config"
 )
 
-// Snapshots capture a stopped cluster's complete state by APFS-cloning the
-// VM root filesystems (copy-on-write: instant, near-zero disk cost) plus
-// the bind-mounted /etc/rancher/k3s directory. Restore clones them back
-// and restarts the cluster.
+// Snapshots capture a cluster's complete state by APFS-cloning the VM root
+// filesystems (copy-on-write: instant, near-zero disk cost) plus the
+// bind-mounted /etc/rancher/k3s directory. Restore clones them back and
+// restarts the cluster.
+//
+// Two flavors exist. A warm snapshot (the default on suspend-capable
+// container builds) suspends the running VM, so the snapshot additionally
+// holds the saved machine state and restores to a RUNNING cluster with all
+// workload state intact. A cold snapshot (--cold, or when suspend is
+// unavailable) stops the cluster for a clean-shutdown disk image that
+// boots fresh on restore. A warm snapshot is a superset: it can also be
+// restored cold (--cold on restore), which boots from its disk like after
+// a power cut.
 //
 // A snapshot can only be restored into an existing cluster container (the
 // container's identity and published ports are not part of the snapshot).
@@ -25,18 +34,30 @@ import (
 const serverRootfs = "server-rootfs.ext4"
 const registryRootfs = "registry-rootfs.ext4"
 
-// files written next to the rootfs by suspend-capable container builds
-var suspendStateFiles = []string{"vmstate.czs", "vmstate-attachments.json", "machine-identifier.bin"}
+// files written next to the rootfs by suspend-capable container builds;
+// vmstateFile marks (and is required for) a warm restore
+const vmstateFile = "vmstate.czs"
 
-// containerStateFilePath returns the path of a file in a container's state
-// directory, erroring when the file does not exist.
-func containerStateFilePath(container, name string) (string, error) {
+var suspendStateFiles = []string{vmstateFile, "vmstate-attachments.json", "machine-identifier.bin"}
+
+// containerStateFile returns the path of a file in a container's state
+// directory.
+func containerStateFile(container, name string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(home, "Library", "Application Support",
-		"com.apple.container", "containers", container, name)
+	return filepath.Join(home, "Library", "Application Support",
+		"com.apple.container", "containers", container, name), nil
+}
+
+// containerStateFilePath returns the path of a file in a container's state
+// directory, erroring when the file does not exist.
+func containerStateFilePath(container, name string) (string, error) {
+	path, err := containerStateFile(container, name)
+	if err != nil {
+		return "", err
+	}
 	if _, err := os.Stat(path); err != nil {
 		return "", err
 	}
@@ -102,9 +123,12 @@ func validSnapshotName(name string) error {
 	return nil
 }
 
-// SnapshotSave snapshots a cluster. A running cluster is stopped for the
-// (sub-second) clone and started again afterwards.
-func SnapshotSave(cfg *config.Config, name string) error {
+// SnapshotSave snapshots a cluster. By default a running cluster on a
+// suspend-capable container build is suspended for the (sub-second) clone
+// and resumed afterwards — a warm snapshot that restores to a running
+// cluster. With cold (or without suspend support) the cluster is stopped
+// for a clean-shutdown snapshot and started again.
+func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 	if name == "" {
 		name = time.Now().Format("20060102-150405")
 	}
@@ -121,13 +145,27 @@ func SnapshotSave(cfg *config.Config, name string) error {
 
 	resumeIfPaused(cfg)
 	wasRunning := containerExists(cfg.ServerName, true)
+	warm := wasRunning && !cold
+	if warm && !capabilities().suspend {
+		logger.Info("container CLI lacks suspend support; taking a cold snapshot")
+		warm = false
+	}
+	if warm {
+		logger.Info("suspending cluster for a warm snapshot")
+		if out, err := runContainer("suspend", cfg.ServerName); err != nil {
+			logger.Warn("suspend failed, falling back to a cold snapshot: " + out)
+			warm = false
+		}
+	}
 	if wasRunning {
-		logger.Info("stopping cluster for a consistent snapshot")
-		_, _ = runContainer("stop", cfg.ServerName)
+		if !warm {
+			logger.Info("stopping cluster for a consistent snapshot")
+			_, _ = runContainer("stop", cfg.ServerName)
+		}
 		_, _ = runContainer("stop", cfg.RegistryName)
 	}
 
-	if err := writeSnapshot(cfg, dir); err != nil {
+	if err := writeSnapshot(cfg, dir, warm); err != nil {
 		_ = os.RemoveAll(dir)
 		if wasRunning {
 			_, _ = runContainer("start", cfg.RegistryName)
@@ -137,17 +175,25 @@ func SnapshotSave(cfg *config.Config, name string) error {
 	}
 
 	if wasRunning {
-		logger.Info("restarting cluster")
+		if warm {
+			logger.Info("resuming cluster")
+		} else {
+			logger.Info("restarting cluster")
+		}
 		_, _ = runContainer("start", cfg.RegistryName)
 		if out, err := runContainer("start", cfg.ServerName); err != nil {
 			return fmt.Errorf("snapshot saved, but restart failed: %s", out)
 		}
 	}
-	logger.Info("snapshot '" + name + "' saved for cluster '" + cfg.Cluster + "'")
+	mode := "cold"
+	if warm {
+		mode = "warm"
+	}
+	logger.Info("snapshot '" + name + "' (" + mode + ") saved for cluster '" + cfg.Cluster + "'")
 	return nil
 }
 
-func writeSnapshot(cfg *config.Config, dir string) error {
+func writeSnapshot(cfg *config.Config, dir string, warm bool) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -168,21 +214,33 @@ func writeSnapshot(cfg *config.Config, dir string) error {
 	if err := copyDir(cfg.K3sEtcDir(), filepath.Join(dir, "k3s-etc")); err != nil {
 		return err
 	}
-	// suspended-state companions (suspend-capable container builds)
-	for _, name := range suspendStateFiles {
-		if src, err := containerStateFilePath(cfg.ServerName, name); err == nil {
-			if err := cloneFile(src, filepath.Join(dir, "server-"+name)); err != nil {
-				return err
+	if warm {
+		// the suspended machine state, making the snapshot warm
+		if _, err := containerStateFilePath(cfg.ServerName, vmstateFile); err != nil {
+			return fmt.Errorf("no saved machine state after suspend: %w", err)
+		}
+		for _, name := range suspendStateFiles {
+			if src, err := containerStateFilePath(cfg.ServerName, name); err == nil {
+				if err := cloneFile(src, filepath.Join(dir, "server-"+name)); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	meta := fmt.Sprintf("cluster: %s\ncreated: %s\n", cfg.Cluster, time.Now().Format(time.RFC3339))
+	mode := "cold"
+	if warm {
+		mode = "warm"
+	}
+	meta := fmt.Sprintf("cluster: %s\ncreated: %s\nmode: %s\n",
+		cfg.Cluster, time.Now().Format(time.RFC3339), mode)
 	return os.WriteFile(filepath.Join(dir, "meta.yaml"), []byte(meta), 0o644)
 }
 
 // SnapshotRestore restores a snapshot into the existing cluster container
-// and starts the cluster.
-func SnapshotRestore(cfg *config.Config, name string) error {
+// and starts the cluster. A warm snapshot resumes the running cluster it
+// captured; with cold its saved machine state is ignored and the cluster
+// boots fresh from the snapshot's disk.
+func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 	if err := validSnapshotName(name); err != nil {
 		return err
 	}
@@ -220,23 +278,44 @@ func SnapshotRestore(cfg *config.Config, name string) error {
 	if err := copyDir(filepath.Join(dir, "k3s-etc"), cfg.K3sEtcDir()); err != nil {
 		return err
 	}
-	for _, fileName := range suspendStateFiles {
-		snapshotFile := filepath.Join(dir, "server-"+fileName)
-		if _, err := os.Stat(snapshotFile); err != nil {
-			continue
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		dst := filepath.Join(home, "Library", "Application Support",
-			"com.apple.container", "containers", cfg.ServerName, fileName)
-		if err := cloneFile(snapshotFile, dst); err != nil {
-			return err
+
+	// Stale suspended state on the container belongs to its previous disk
+	// image and must never be applied to the restored one. The machine
+	// identifier is stable container identity, not state, and stays.
+	for _, fileName := range []string{vmstateFile, "vmstate-attachments.json"} {
+		if path, err := containerStateFile(cfg.ServerName, fileName); err == nil {
+			_ = os.Remove(path)
 		}
 	}
 
-	logger.Info("snapshot '" + name + "' restored, starting cluster")
+	warm := false
+	if !cold {
+		for _, fileName := range suspendStateFiles {
+			snapshotFile := filepath.Join(dir, "server-"+fileName)
+			if _, err := os.Stat(snapshotFile); err != nil {
+				continue
+			}
+			dst, err := containerStateFile(cfg.ServerName, fileName)
+			if err != nil {
+				return err
+			}
+			if err := cloneFile(snapshotFile, dst); err != nil {
+				return err
+			}
+			if fileName == vmstateFile {
+				warm = true
+			}
+		}
+	}
+
+	switch {
+	case warm:
+		logger.Info("snapshot '" + name + "' restored (warm), resuming cluster")
+	case cold:
+		logger.Info("snapshot '" + name + "' restored (cold), booting cluster")
+	default:
+		logger.Info("snapshot '" + name + "' restored, starting cluster")
+	}
 	return Start(cfg)
 }
 
@@ -251,20 +330,24 @@ func SnapshotList(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%-24s %s\n", "NAME", "CREATED")
+	fmt.Printf("%-24s %-6s %s\n", "NAME", "MODE", "CREATED")
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		created := "?"
+		mode := "cold"
 		if meta, err := os.ReadFile(filepath.Join(base, e.Name(), "meta.yaml")); err == nil {
 			for _, line := range strings.Split(string(meta), "\n") {
 				if v, ok := strings.CutPrefix(line, "created: "); ok {
 					created = v
 				}
+				if v, ok := strings.CutPrefix(line, "mode: "); ok {
+					mode = v
+				}
 			}
 		}
-		fmt.Printf("%-24s %s\n", e.Name(), created)
+		fmt.Printf("%-24s %-6s %s\n", e.Name(), mode, created)
 	}
 	return nil
 }

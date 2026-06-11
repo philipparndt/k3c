@@ -22,15 +22,19 @@ func snapshotArgs(args []string) (clusterArgs []string, snapshot string) {
 	return clusterArgs, snapshot
 }
 
+var snapshotSaveCold bool
+
 var snapshotSaveCmd = &cobra.Command{
 	Use:   "save [CLUSTER] [NAME]",
-	Short: "Save a snapshot (default name: timestamp)",
+	Short: "Save a snapshot (default name: timestamp); warm by default, restoring to a running cluster",
 	Args:  cobra.MaximumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		clusterArgs, name := snapshotArgs(args)
-		fail(cluster.SnapshotSave(loadConfigDefault(clusterArgs), name))
+		fail(cluster.SnapshotSave(loadConfigDefault(clusterArgs), name, snapshotSaveCold))
 	},
 }
+
+var snapshotRestoreCold bool
 
 var snapshotRestoreCmd = &cobra.Command{
 	Use:   "restore [CLUSTER] NAME",
@@ -39,11 +43,11 @@ var snapshotRestoreCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		// with a single argument it is the snapshot name
 		if len(args) == 1 {
-			fail(cluster.SnapshotRestore(loadConfigDefault(nil), args[0]))
+			fail(cluster.SnapshotRestore(loadConfigDefault(nil), args[0], snapshotRestoreCold))
 			return
 		}
 		clusterArgs, name := snapshotArgs(args)
-		fail(cluster.SnapshotRestore(loadConfigDefault(clusterArgs), name))
+		fail(cluster.SnapshotRestore(loadConfigDefault(clusterArgs), name, snapshotRestoreCold))
 	},
 }
 
@@ -73,6 +77,10 @@ var snapshotDeleteCmd = &cobra.Command{
 }
 
 func init() {
+	snapshotSaveCmd.Flags().BoolVar(&snapshotSaveCold, "cold", false,
+		"stop the cluster for a clean-shutdown snapshot instead of suspending it")
+	snapshotRestoreCmd.Flags().BoolVar(&snapshotRestoreCold, "cold", false,
+		"boot fresh from the snapshot's disk, ignoring its saved machine state")
 	snapshotCmd.AddCommand(snapshotSaveCmd, snapshotRestoreCmd, snapshotListCmd, snapshotDeleteCmd)
 	clusterCmd.AddCommand(snapshotCmd)
 }

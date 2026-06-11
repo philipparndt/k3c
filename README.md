@@ -87,7 +87,9 @@ under a second. `stop`/`start` preserves cluster state.
 
 ```
 k3c cluster snapshot save [CLUSTER] [NAME]     # default name: timestamp
+k3c cluster snapshot save [CLUSTER] [NAME] --cold
 k3c cluster snapshot restore [CLUSTER] NAME
+k3c cluster snapshot restore [CLUSTER] NAME --cold
 k3c cluster snapshot list [CLUSTER]
 k3c cluster snapshot delete [CLUSTER] NAME
 ```
@@ -97,9 +99,17 @@ saving and restoring is **instant** and a snapshot costs almost no disk
 space. Snapshot a fully provisioned cluster once, then reset to it in
 seconds instead of reinstalling — also after destructive experiments.
 
-A running cluster is stopped for the (sub-second) clone and restarted, so
-expect a few seconds of API downtime per save. Restore requires the cluster
-container to exist (the snapshot captures state, not the container).
+On a suspend-capable `container` build, saving defaults to **warm**: the
+running VM is suspended for the clone and resumed, and the snapshot also
+captures the machine state — restoring brings back a *running* cluster with
+all workload state, no boot. `--cold` on save stops the cluster instead for
+a clean-shutdown disk image that boots fresh on restore. A warm snapshot is
+a superset: restore it with `--cold` to ignore the saved machine state and
+boot from its disk (crash-consistent, like after a power cut). Without
+suspend support every snapshot is cold.
+
+Restore requires the cluster container to exist (the snapshot captures
+state, not the container).
 
 ### Local images
 
