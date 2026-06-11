@@ -6,14 +6,51 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/philipparndt/go-logger"
 
 	"k3c/config"
 )
+
+var containerBin atomic.Pointer[string]
+
+// SetContainerBinary selects the Apple `container` CLI to use.
+func SetContainerBinary(path string) {
+	containerBin.Store(&path)
+}
+
+func containerBinary() string {
+	if p := containerBin.Load(); p != nil {
+		return *p
+	}
+	return "container"
+}
+
+// capabilities of the container CLI, probed once from its help output.
+type containerCapabilities struct {
+	pause   bool
+	suspend bool
+}
+
+var (
+	capsOnce sync.Once
+	caps     containerCapabilities
+)
+
+func capabilities() containerCapabilities {
+	capsOnce.Do(func() {
+		out, _ := runOut(containerBinary(), "--help")
+		caps.pause = strings.Contains(out, "\n  pause") && strings.Contains(out, "\n  resume")
+		caps.suspend = strings.Contains(out, "\n  suspend")
+	})
+	return caps
+}
 
 // runOut executes a command and returns its combined output.
 func runOut(name string, args ...string) (string, error) {
@@ -27,15 +64,15 @@ func preflight() error {
 			return fmt.Errorf("%s is not installed", tool)
 		}
 	}
-	out, err := runOut("container", "--version")
+	out, err := runOut(containerBinary(), "--version")
 	if err != nil {
 		return fmt.Errorf("container CLI not working: %s", out)
 	}
 	if strings.Contains(out, "version 0.") {
 		return fmt.Errorf("container CLI >= 1.0.0 required")
 	}
-	if _, err := runOut("container", "system", "status"); err != nil {
-		if out, err := runOut("container", "system", "start"); err != nil {
+	if _, err := runOut(containerBinary(), "system", "status"); err != nil {
+		if out, err := runOut(containerBinary(), "system", "start"); err != nil {
 			return fmt.Errorf("could not start container system: %s", out)
 		}
 	}
@@ -49,14 +86,14 @@ func containerExists(name string, runningOnly bool) bool {
 	if !runningOnly {
 		args = []string{"ls", "-a", "--format", "json"}
 	}
-	out, _ := runOut("container", args...)
+	out, _ := runOut(containerBinary(), args...)
 	return strings.Contains(out, `"`+name+`"`)
 }
 
 // otherRunningServer returns the name of a foreign <cluster>-server
 // container that is currently running, if any.
 func otherRunningServer(cfg *config.Config) string {
-	out, _ := runOut("container", "ls")
+	out, _ := runOut(containerBinary(), "ls")
 	for _, line := range strings.Split(out, "\n")[1:] {
 		fields := strings.Fields(line)
 		if len(fields) > 0 && strings.HasSuffix(fields[0], "-server") && fields[0] != cfg.ServerName {
@@ -74,9 +111,9 @@ func startRegistry(cfg *config.Config) error {
 		logger.Info("local registry already running")
 		return nil
 	}
-	_, _ = runOut("container", "rm", "-f", cfg.RegistryName)
+	_, _ = runOut(containerBinary(), "rm", "-f", cfg.RegistryName)
 	logger.Info("starting local registry on port " + cfg.RegistryPort)
-	out, err := runOut("container", "run", "-d",
+	out, err := runOut(containerBinary(), "run", "-d",
 		"--name", cfg.RegistryName,
 		"-p", "127.0.0.1:"+cfg.RegistryPortInternal+":5000",
 		"docker.io/registry:2")
@@ -132,7 +169,7 @@ func prepareNodeConfig(cfg *config.Config) error {
 func startServer(cfg *config.Config) error {
 	logger.Info(fmt.Sprintf("starting k3s server (%s cpus, %s memory)", cfg.CPUs, cfg.Memory))
 	proxyURL := fmt.Sprintf("http://%s:%s", cfg.VmnetGateway, cfg.ProxyPort)
-	out, err := runOut("container", "run", "-d",
+	out, err := runOut(containerBinary(), "run", "-d",
 		"--name", cfg.ServerName,
 		// k3s remounts /sys, mounts cgroups, etc. — needs full capabilities
 		"--cap-add", "ALL",
@@ -369,8 +406,8 @@ func persistProjectConfig(cfg *config.Config) error {
 func Delete(cfg *config.Config) error {
 	resumeIfPaused(cfg)
 	logger.Info("removing containers")
-	_, _ = runOut("container", "rm", "-f", cfg.ServerName)
-	_, _ = runOut("container", "rm", "-f", cfg.RegistryName)
+	_, _ = runOut(containerBinary(), "rm", "-f", cfg.ServerName)
+	_, _ = runOut(containerBinary(), "rm", "-f", cfg.RegistryName)
 	StopDaemons(cfg)
 	for _, kind := range []string{"delete-context", "delete-cluster", "delete-user"} {
 		_, _ = runOut("kubectl", "config", kind, cfg.KubeContext)
@@ -384,8 +421,8 @@ func Delete(cfg *config.Config) error {
 func Stop(cfg *config.Config) error {
 	resumeIfPaused(cfg)
 	logger.Info("stopping cluster '" + cfg.Cluster + "' (state is preserved)")
-	_, _ = runOut("container", "stop", cfg.ServerName)
-	_, _ = runOut("container", "stop", cfg.RegistryName)
+	_, _ = runOut(containerBinary(), "stop", cfg.ServerName)
+	_, _ = runOut(containerBinary(), "stop", cfg.RegistryName)
 	logger.Info("stopped; resume with: k3c cluster start " + cfg.Cluster)
 	return nil
 }
@@ -399,9 +436,9 @@ func Start(cfg *config.Config) error {
 	if err := SpawnDaemons(cfg); err != nil {
 		return err
 	}
-	_, _ = runOut("container", "start", cfg.RegistryName)
+	_, _ = runOut(containerBinary(), "start", cfg.RegistryName)
 	if !containerExists(cfg.ServerName, true) {
-		if out, err := runOut("container", "start", cfg.ServerName); err != nil {
+		if out, err := runOut(containerBinary(), "start", cfg.ServerName); err != nil {
 			return fmt.Errorf("start failed: %s", out)
 		}
 	}
@@ -422,7 +459,7 @@ func Start(cfg *config.Config) error {
 // clusterStates maps cluster names to their server/registry container
 // states.
 func clusterStates() map[string]map[string]string {
-	out, _ := runOut("container", "ls", "-a")
+	out, _ := runOut(containerBinary(), "ls", "-a")
 	state := map[string]map[string]string{}
 	for _, line := range strings.Split(out, "\n")[1:] {
 		fields := strings.Fields(line)
@@ -471,8 +508,14 @@ func Activate(cfg *config.Config) error {
 func List(cfg *config.Config) error {
 	state := clusterStates()
 	active := readActive(cfg).Cluster
+	names := make([]string, 0, len(state))
+	for cluster := range state {
+		names = append(names, cluster)
+	}
+	sort.Strings(names)
 	fmt.Printf("%-7s %-16s %-10s %-10s %-8s %s\n", "CURRENT", "NAME", "SERVER", "REGISTRY", "RAM", "CONTEXT")
-	for cluster, parts := range state {
+	for _, cluster := range names {
+		parts := state[cluster]
 		if parts["-server"] == "" {
 			continue
 		}
@@ -539,7 +582,7 @@ func Status(cfg *config.Config) error {
 		fmt.Println("--- cluster is PAUSED (in memory; k3c cluster resume) ---")
 	}
 	fmt.Println("--- containers ---")
-	out, _ := runOut("container", "ls", "-a")
+	out, _ := runOut(containerBinary(), "ls", "-a")
 	for i, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
 		if i == 0 || (len(fields) > 0 && (fields[0] == cfg.ServerName || fields[0] == cfg.RegistryName)) {

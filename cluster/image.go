@@ -24,7 +24,7 @@ func ImageImport(cfg *config.Config, image string) error {
 	}
 	logger.Info("exporting " + image + " from the host image store")
 	tar := filepath.Join(cfg.ImagesDir(), fmt.Sprintf("k3c-import-%d.tar", time.Now().UnixNano()))
-	if out, err := runOut("container", "image", "save", image, "--output", tar); err != nil {
+	if out, err := runOut(containerBinary(), "image", "save", image, "--output", tar); err != nil {
 		return fmt.Errorf("image save failed: %s", out)
 	}
 	defer os.Remove(tar)

@@ -53,6 +53,7 @@ func loadConfig(args []string) *config.Config {
 	if err != nil {
 		logger.Panic("Failed to load config", err)
 	}
+	cluster.SetContainerBinary(cfg.ContainerBinary)
 	return cfg
 }
 
