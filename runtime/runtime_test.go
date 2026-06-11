@@ -31,7 +31,7 @@ func TestSetConfiguredBinaryTreatsDefaultAsUnset(t *testing.T) {
 	}
 }
 
-// TestResolvePrecedence exercises the uncached resolve() directly so each
+// TestResolvePrecedence exercises resolve() directly so each
 // case starts clean (Resolve() caches via sync.Once for the real process).
 func TestResolvePrecedence(t *testing.T) {
 	t.Cleanup(func() { SetConfiguredBinary("") })
@@ -40,7 +40,7 @@ func TestResolvePrecedence(t *testing.T) {
 		SetConfiguredBinary("/configured/container")
 		t.Setenv("K3C_CONTAINER_BINARY", "/explicit/container")
 		t.Setenv("K3C_CONTAINER_FROM_PATH", "1")
-		r, err := resolve()
+		r, err := resolve(configured())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -56,7 +56,7 @@ func TestResolvePrecedence(t *testing.T) {
 		SetConfiguredBinary("/configured/container")
 		t.Setenv("K3C_CONTAINER_BINARY", "")
 		t.Setenv("K3C_CONTAINER_FROM_PATH", "true")
-		r, err := resolve()
+		r, err := resolve(configured())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,7 +69,7 @@ func TestResolvePrecedence(t *testing.T) {
 		SetConfiguredBinary("/configured/container")
 		t.Setenv("K3C_CONTAINER_BINARY", "")
 		t.Setenv("K3C_CONTAINER_FROM_PATH", "")
-		r, err := resolve()
+		r, err := resolve(configured())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +82,7 @@ func TestResolvePrecedence(t *testing.T) {
 		SetConfiguredBinary("")
 		t.Setenv("K3C_CONTAINER_BINARY", "")
 		t.Setenv("K3C_CONTAINER_FROM_PATH", "")
-		r, err := resolve()
+		r, err := resolve(configured())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,4 +98,28 @@ func TestResolvePrecedence(t *testing.T) {
 			t.Errorf("Env = %v, want none for PATH fallback", r.Env)
 		}
 	})
+}
+
+// TestResolveAfterLateConfiguration reproduces commands that invoke the
+// container CLI before the config is loaded (e.g. finding the default
+// cluster name): a containerBinary configured afterwards must still win
+// over the earlier, cached resolution.
+func TestResolveAfterLateConfiguration(t *testing.T) {
+	t.Setenv("K3C_CONTAINER_BINARY", "")
+	t.Setenv("K3C_CONTAINER_FROM_PATH", "")
+	SetConfiguredBinary("")
+	t.Cleanup(func() { SetConfiguredBinary("") })
+
+	if _, err := Resolve(); err != nil {
+		t.Fatal(err)
+	}
+
+	SetConfiguredBinary("/configured/container")
+	r, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Binary != "/configured/container" {
+		t.Errorf("Binary = %q, want /configured/container after late configuration", r.Binary)
+	}
 }
