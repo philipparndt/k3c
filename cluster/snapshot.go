@@ -281,6 +281,10 @@ func writeSnapshot(cfg *config.Config, dir string, warm bool, serverIP string) e
 	if serverIP != "" {
 		meta += "ip: " + serverIP + "\n"
 	}
+	// the CIDRs are baked into the datastore (service IPs, pod IPs, the
+	// cluster-dns address); a restore into a cluster with different CIDRs
+	// must be refused
+	meta += "clusterCidr: " + cfg.ClusterCIDR + "\nserviceCidr: " + cfg.ServiceCIDR + "\n"
 	return os.WriteFile(filepath.Join(dir, "meta.yaml"), []byte(meta), 0o644)
 }
 
@@ -298,6 +302,16 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 	}
 	if !containerExists(cfg.ServerName, false) {
 		return fmt.Errorf("cluster '%s' does not exist; create it first (the snapshot restores its state, not the container)", cfg.Cluster)
+	}
+	// The CIDRs are baked into the snapshot's datastore: restoring into a
+	// cluster created with different ones yields a subtly broken cluster
+	// (e.g. kubelet hands pods a cluster-dns address in the new service
+	// CIDR while the restored kube-dns service has the old one).
+	for key, current := range map[string]string{"clusterCidr": cfg.ClusterCIDR, "serviceCidr": cfg.ServiceCIDR} {
+		if v := snapshotMetaValue(dir, key); v != "" && v != current {
+			return fmt.Errorf("snapshot '%s' was taken with %s %s, but this cluster uses %s; recreate the cluster with the snapshot's CIDRs to restore it",
+				name, key, v, current)
+		}
 	}
 
 	resumeIfPaused(cfg)
