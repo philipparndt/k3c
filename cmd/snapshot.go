@@ -31,10 +31,16 @@ func newSnapshotCmd() *cobra.Command {
 	}
 
 	saveCmd := &cobra.Command{
-		Use:   "save [CLUSTER] [NAME]",
-		Short: "Save a snapshot (default name: timestamp); warm by default, restoring to a running cluster",
-		Args:  cobra.MaximumNArgs(2),
+		Use:     "save [CLUSTER] [NAME]",
+		Aliases: []string{"create"},
+		Short:   "Save a snapshot (default name: timestamp); warm by default, restoring to a running cluster",
+		Args:    cobra.MaximumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
+			// with a single argument it is the snapshot name
+			if len(args) == 1 {
+				fail(cluster.SnapshotSave(loadConfigDefault(nil), args[0], snapshotSaveCold))
+				return
+			}
 			clusterArgs, name := snapshotArgs(args)
 			fail(cluster.SnapshotSave(loadConfigDefault(clusterArgs), name, snapshotSaveCold))
 		},
