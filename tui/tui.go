@@ -337,6 +337,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input = &nameInput{input: in, cluster: name}
 		return m, textinput.Blink
 
+	case "e":
+		if m.focus != paneSnapshots {
+			return m, nil
+		}
+		if snap := m.selectedSnapshot(); snap != "" {
+			out := name + "-" + snap + ".k3csnap"
+			return m.startOp("export of "+snap+" to "+out,
+				"snapshot", "export", name, snap, "-o", out)
+		}
+		return m, nil
+
 	case "d", "x":
 		if m.focus == paneClusters {
 			deleteOnly := m.opCmd("delete of cluster "+name, "cluster", "delete", name)
@@ -578,7 +589,7 @@ func (m model) helpView() string {
 	} else {
 		keys = []string{
 			"↑↓ move", "⇥ clusters", "↵ restore",
-			"c create", "d delete", "o output", "q quit",
+			"c create", "d delete", "e export", "o output", "q quit",
 		}
 	}
 	return dimSt.Render(" " + strings.Join(keys, " · "))
