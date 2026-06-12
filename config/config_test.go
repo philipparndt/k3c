@@ -68,3 +68,31 @@ func TestProjectConfigForeignCluster(t *testing.T) {
 		t.Errorf("default resolution did not use the project cluster: %s", def.Cluster)
 	}
 }
+
+func TestCorednsCustomCatchAll(t *testing.T) {
+	cfg := &Config{
+		EgressDomains: []string{"*"},
+		VmnetGateway:  "192.168.64.1",
+		ServerName:    "demo-server",
+	}
+	manifest := cfg.CorednsCustom()
+	for _, want := range []string{
+		"template IN ANY cluster.local in-addr.arpa ip6.arpa demo-server",
+		"fallthrough",
+		"template IN A .",
+		`answer "{{ .Name }} 60 IN A 192.168.64.1"`,
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("catch-all manifest is missing %q:\n%s", want, manifest)
+		}
+	}
+
+	cfg.EgressDomains = []string{"vector.com", "vector.int"}
+	manifest = cfg.CorednsCustom()
+	if !strings.Contains(manifest, "template IN A vector.com vector.int {") {
+		t.Errorf("domain-list manifest changed:\n%s", manifest)
+	}
+	if strings.Contains(manifest, "fallthrough") {
+		t.Errorf("domain-list manifest must not contain the catch-all guard:\n%s", manifest)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -401,9 +402,34 @@ func (c *Config) sysctlCommands() string {
 
 // CorednsCustom renders the CoreDNS override that resolves the egress
 // domains to the host gateway (empty if no domains are configured).
+//
+// A "*" entry resolves EVERY external name to the gateway. The template
+// plugin runs before the kubernetes and hosts plugins, so the catch-all
+// would shadow in-cluster DNS; never-matching templates for the cluster
+// zones and the node name fall those queries through to the next plugin.
 func (c *Config) CorednsCustom() string {
 	if len(c.EgressDomains) == 0 {
 		return ""
+	}
+	if slices.Contains(c.EgressDomains, "*") {
+		return fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  egress.override: |
+    template IN ANY cluster.local in-addr.arpa ip6.arpa %[2]s {
+        match "^k3c[.]hole[.]$"
+        fallthrough
+    }
+    template IN A . {
+        answer "{{ .Name }} 60 IN A %[1]s"
+    }
+    template IN AAAA . {
+        rcode NOERROR
+    }
+`, c.VmnetGateway, c.ServerName)
 	}
 	zones := strings.Join(c.EgressDomains, " ")
 	return fmt.Sprintf(`apiVersion: v1

@@ -179,6 +179,7 @@ caCerts:                       # added to the node's registry CA bundle
 
 egress:
   domains: [example.com]       # pod HTTPS egress via the SNI gateway
+                               # ["*"] allows every external domain at once
   ingressDomains: [example.test] # ...except these: routed to the ingress
 
 registries: |                  # verbatim k3s registries.yaml
