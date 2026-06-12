@@ -342,12 +342,15 @@ func firstLine(s string) string {
 	return s
 }
 
-// debugPodManifest is the in-cluster debug pod: netshoot ships curl, dig,
-// nc, tcpdump, and friends for testing DNS, egress, and service routing
-// from a pod's perspective.
+// The in-cluster debug pod: netshoot ships curl, dig, nc, tcpdump, and
+// friends for testing DNS, egress, and service routing from a pod's
+// perspective. There is no official image with a comparable toolset;
+// the image is overridable for environments that require a blessed one.
 const debugPodName = "k3c-debug"
+const defaultDebugImage = "docker.io/nicolaka/netshoot:latest"
 
-var debugPodManifest = `apiVersion: v1
+func debugPodManifest(image string) string {
+	return `apiVersion: v1
 kind: Pod
 metadata:
   name: ` + debugPodName + `
@@ -356,18 +359,41 @@ metadata:
 spec:
   containers:
     - name: debug
-      image: docker.io/nicolaka/netshoot:latest
+      image: "` + image + `"
       command: ["sleep", "infinity"]
   terminationGracePeriodSeconds: 1
 `
+}
+
+// DoctorShellRemove deletes the debug pod.
+func DoctorShellRemove(cfg *config.Config) error {
+	out, err := kubectl(cfg, "delete", "pod", debugPodName, "--ignore-not-found", "--wait=false")
+	if err != nil {
+		return fmt.Errorf("removing debug pod: %s", out)
+	}
+	fmt.Println("debug pod removed")
+	return nil
+}
 
 // DoctorShell starts (or reuses) a debug pod in the cluster and opens an
-// interactive shell in it. The pod is kept running afterwards.
-func DoctorShell(cfg *config.Config) error {
+// interactive shell in it. With remove the pod is deleted when the shell
+// exits, otherwise it keeps running for the next invocation.
+func DoctorShell(cfg *config.Config, image string, remove bool) error {
+	if image == "" {
+		image = defaultDebugImage
+	}
+	// an existing pod with another image cannot be reused
+	if current, err := kubectl(cfg, "get", "pod", debugPodName, "--request-timeout=8s",
+		"-o", "jsonpath={.spec.containers[0].image}"); err == nil && current != image {
+		fmt.Println("replacing debug pod (image " + current + " -> " + image + ")")
+		if out, err := kubectl(cfg, "delete", "pod", debugPodName, "--wait=true"); err != nil {
+			return fmt.Errorf("removing old debug pod: %s", out)
+		}
+	}
 	if _, err := kubectl(cfg, "get", "pod", debugPodName, "--request-timeout=8s"); err != nil {
-		fmt.Println("creating debug pod " + debugPodName + " (nicolaka/netshoot: curl, dig, nc, tcpdump, ...)")
+		fmt.Println("creating debug pod " + debugPodName + " (" + image + ")")
 		apply := kubectlCommand(cfg, "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(debugPodManifest)
+		apply.Stdin = strings.NewReader(debugPodManifest(image))
 		if out, err := apply.CombinedOutput(); err != nil {
 			return fmt.Errorf("creating debug pod: %s", strings.TrimSpace(string(out)))
 		}
@@ -376,10 +402,20 @@ func DoctorShell(cfg *config.Config) error {
 		"pod/"+debugPodName, "--timeout=120s"); err != nil {
 		return fmt.Errorf("debug pod did not become ready: %s", out)
 	}
-	fmt.Println("connecting (the pod keeps running; remove with: kubectl delete pod " + debugPodName + ")")
+	if remove {
+		fmt.Println("connecting (the pod is removed when the shell exits)")
+	} else {
+		fmt.Println("connecting (the pod keeps running; remove with: k3c doctor --rm)")
+	}
 	shell := kubectlCommand(cfg, "exec", "-it", debugPodName, "--", "bash")
 	shell.Stdin = os.Stdin
 	shell.Stdout = os.Stdout
 	shell.Stderr = os.Stderr
-	return shell.Run()
+	err := shell.Run()
+	if remove {
+		if rmErr := DoctorShellRemove(cfg); err == nil {
+			err = rmErr
+		}
+	}
+	return err
 }
