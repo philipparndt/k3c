@@ -71,12 +71,11 @@ func ensureSystem() error {
 	}
 
 	// A `system start` that died half-way (e.g. on the kernel install
-	// prompt of older k3c builds) leaves the apiserver responding while its
-	// plugins were never registered: `system status` looks fine but every
-	// image operation fails with "Plugin ... not found". Detect exactly
+	// prompt of older k3c builds) can leave the apiserver responding while
+	// its plugins were never registered: `system status` looks fine but
+	// every image operation fails with a plugin-not-found error. Detect
 	// that state and restart the system services.
-	if out, err := Output("images", "ls"); err != nil &&
-		strings.Contains(out, "Plugin") && strings.Contains(out, "not found") {
+	if out, err := Output("image", "ls"); err != nil && pluginMissing(out) {
 		logger.Info("container system is missing its plugins (an aborted first start); restarting it")
 		_, _ = Output("system", "stop")
 		if out, err := Output("system", "start", "--enable-kernel-install"); err != nil {
@@ -111,10 +110,17 @@ func ensureInitImage() error {
 		return nil
 	}
 	logger.Info("loading bundled init image (" + initImageRef + ")")
-	if out, err := Output("images", "load", "-i", tar); err != nil {
+	if out, err := Output("image", "load", "-i", tar); err != nil {
 		return fmt.Errorf("loading init image: %s", out)
 	}
 	return nil
+}
+
+// pluginMissing reports whether output is the container CLI's
+// plugin-not-found error (either the CLI dispatch or the service variant).
+func pluginMissing(out string) bool {
+	lower := strings.ToLower(out)
+	return strings.Contains(lower, "plugin") && strings.Contains(lower, "not found")
 }
 
 // installRoot returns the CONTAINER_INSTALL_ROOT from the resolved env, or
@@ -129,7 +135,7 @@ func installRoot() string {
 }
 
 func initImagePresent() bool {
-	out, err := Output("images", "ls")
+	out, err := Output("image", "ls")
 	if err != nil {
 		return false
 	}
