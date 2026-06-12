@@ -275,13 +275,17 @@ func daemonsVersionFile(cfg *config.Config) string {
 	return filepath.Join(cfg.BaseDir, "daemons.version")
 }
 
-func daemonsVersion() string {
+// daemonsVersion identifies the running daemons: the k3c build plus the
+// spawn-time listener config (ports and forwards), so changing either
+// respawns them.
+func daemonsVersion(cfg *config.Config) string {
 	v := version.Get()
-	return v.Version + " " + v.GitCommit + " " + v.BuildDate
+	return fmt.Sprintf("%s %s %s ports=%v forwards=%v",
+		v.Version, v.GitCommit, v.BuildDate, cfg.EgressPorts, cfg.EgressForwards)
 }
 
 func RunDaemons(cfg *config.Config) error {
-	_ = os.WriteFile(daemonsVersionFile(cfg), []byte(daemonsVersion()+"\n"), 0o644)
+	_ = os.WriteFile(daemonsVersionFile(cfg), []byte(daemonsVersion(cfg)+"\n"), 0o644)
 	startAutoReclaim(cfg)
 	errCh := make(chan error, 3)
 	go func() { errCh <- serve("0.0.0.0:"+cfg.ProxyPort, handleProxyConn) }()
@@ -360,8 +364,8 @@ func SpawnDaemons(cfg *config.Config) error {
 	if pidAlive(cfg.ProxyPidFile()) {
 		recorded, _ := os.ReadFile(daemonsVersionFile(cfg))
 		switch {
-		case strings.TrimSpace(string(recorded)) != daemonsVersion():
-			logger.Info("restarting host daemons (k3c version changed)")
+		case strings.TrimSpace(string(recorded)) != daemonsVersion(cfg):
+			logger.Info("restarting host daemons (k3c version or listener config changed)")
 			StopDaemons(cfg)
 		case len(ignoredResources(cfg)) > 0 && !portOpen(webhookPort):
 			logger.Info("restarting host daemons (webhook newly enabled)")
