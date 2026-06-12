@@ -1,9 +1,11 @@
 package cluster
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"k3c/config"
@@ -75,6 +77,27 @@ func Clusters(cfg *config.Config) []ClusterInfo {
 		})
 	}
 	return infos
+}
+
+// Traffic returns a running cluster VM's cumulative external traffic
+// (eth0 receive/transmit bytes).
+func Traffic(cfg *config.Config, cluster string) (rx, tx int64, err error) {
+	out, err := runContainer("exec", cluster+"-server", "cat",
+		"/sys/class/net/eth0/statistics/rx_bytes",
+		"/sys/class/net/eth0/statistics/tx_bytes")
+	if err != nil {
+		return 0, 0, fmt.Errorf("reading traffic counters: %s", out)
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("unexpected counter output: %q", out)
+	}
+	rx, err = strconv.ParseInt(fields[0], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	tx, err = strconv.ParseInt(fields[1], 10, 64)
+	return rx, tx, err
 }
 
 // Snapshots returns the saved snapshots of a cluster, sorted by name.

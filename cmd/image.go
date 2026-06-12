@@ -55,6 +55,15 @@ var pullCacheClearCmd = &cobra.Command{
 	},
 }
 
+var pullCacheStatsCmd = &cobra.Command{
+	Use:   "stats",
+	Short: "Show cache hit/miss counters of the running daemons",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.PullCacheStatsPrint(loadConfigDefault(nil)))
+	},
+}
+
 var pullCachePruneDays int
 
 var pullCachePruneCmd = &cobra.Command{
@@ -69,7 +78,7 @@ var pullCachePruneCmd = &cobra.Command{
 func init() {
 	pullCachePruneCmd.Flags().IntVar(&pullCachePruneDays, "days", 14,
 		"retention: keep images pulled within this many days")
-	pullCacheCmd.AddCommand(pullCacheListCmd, pullCacheInfoCmd, pullCacheClearCmd, pullCachePruneCmd)
+	pullCacheCmd.AddCommand(pullCacheListCmd, pullCacheInfoCmd, pullCacheStatsCmd, pullCacheClearCmd, pullCachePruneCmd)
 	imageCmd.AddCommand(imageImportCmd, pullCacheCmd)
 	rootCmd.AddCommand(imageCmd)
 }

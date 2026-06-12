@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/philipparndt/go-logger"
@@ -39,12 +40,28 @@ type pullCache struct {
 	cfg       *config.Config
 	upstreams map[string][]string // registry host -> upstream endpoints
 	client    *http.Client
+	started   time.Time
+
+	// performance counters (atomic)
+	hits, misses        int64
+	hitBytes, missBytes int64
+	staleServed         int64
 
 	tokenMu sync.Mutex
 	tokens  map[string]tokenEntry
 
 	lockMu sync.Mutex
 	locks  map[string]*sync.Mutex
+}
+
+// PullStats is the pull cache's performance snapshot, served on /stats.
+type PullStats struct {
+	Hits        int64     `json:"hits"`
+	Misses      int64     `json:"misses"`
+	HitBytes    int64     `json:"hitBytes"`
+	MissBytes   int64     `json:"missBytes"`
+	StaleServed int64     `json:"staleServed"`
+	Since       time.Time `json:"since"`
 }
 
 type tokenEntry struct {
@@ -57,8 +74,36 @@ func newPullCache(cfg *config.Config) *pullCache {
 		cfg:       cfg,
 		upstreams: config.RegistryUpstreams(cfg.Registries),
 		client:    &http.Client{Timeout: 30 * time.Minute},
+		started:   time.Now(),
 		tokens:    map[string]tokenEntry{},
 		locks:     map[string]*sync.Mutex{},
+	}
+}
+
+// countServe records a request served from cache (hit) or via an upstream
+// download (miss), with the content size.
+func (p *pullCache) countServe(hit bool, path string) {
+	size := int64(0)
+	if info, err := os.Stat(path); err == nil {
+		size = info.Size()
+	}
+	if hit {
+		atomic.AddInt64(&p.hits, 1)
+		atomic.AddInt64(&p.hitBytes, size)
+	} else {
+		atomic.AddInt64(&p.misses, 1)
+		atomic.AddInt64(&p.missBytes, size)
+	}
+}
+
+func (p *pullCache) stats() PullStats {
+	return PullStats{
+		Hits:        atomic.LoadInt64(&p.hits),
+		Misses:      atomic.LoadInt64(&p.misses),
+		HitBytes:    atomic.LoadInt64(&p.hitBytes),
+		MissBytes:   atomic.LoadInt64(&p.missBytes),
+		StaleServed: atomic.LoadInt64(&p.staleServed),
+		Since:       p.started,
 	}
 }
 
@@ -102,6 +147,11 @@ var pullPathRe = regexp.MustCompile(`^/v2/(.+)/(manifests|blobs)/([^/]+)$`)
 func (p *pullCache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/v2/" || r.URL.Path == "/v2" {
 		w.WriteHeader(http.StatusOK) // the cache itself needs no auth
+		return
+	}
+	if r.URL.Path == "/stats" {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(p.stats())
 		return
 	}
 	m := pullPathRe.FindStringSubmatch(r.URL.Path)
@@ -150,7 +200,9 @@ func (p *pullCache) serveBlob(w http.ResponseWriter, r *http.Request, ns, name, 
 		http.Error(w, "unsupported digest", http.StatusBadRequest)
 		return
 	}
+	hit := true
 	if _, err := os.Stat(p.blobPath(digest)); err != nil {
+		hit = false
 		lock := p.digestLock(digest)
 		lock.Lock()
 		_, err = os.Stat(p.blobPath(digest))
@@ -164,13 +216,18 @@ func (p *pullCache) serveBlob(w http.ResponseWriter, r *http.Request, ns, name, 
 			return
 		}
 	}
+	if r.Method == http.MethodGet {
+		p.countServe(hit, p.blobPath(digest))
+	}
 	w.Header().Set("Docker-Content-Digest", digest)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeFile(w, r, p.blobPath(digest))
 }
 
 func (p *pullCache) serveManifestByDigest(w http.ResponseWriter, r *http.Request, ns, name, digest string) {
+	hit := true
 	if _, err := os.Stat(p.blobPath(digest)); err != nil {
+		hit = false
 		lock := p.digestLock(digest)
 		lock.Lock()
 		_, err = os.Stat(p.blobPath(digest))
@@ -184,6 +241,9 @@ func (p *pullCache) serveManifestByDigest(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	if r.Method == http.MethodGet {
+		p.countServe(hit, p.blobPath(digest))
+	}
 	p.writeManifest(w, r, digest)
 }
 
@@ -193,6 +253,7 @@ func (p *pullCache) serveManifestByTag(w http.ResponseWriter, r *http.Request, n
 		// upstream unreachable: serve the last known digest if we have one
 		if cached, readErr := os.ReadFile(p.tagPath(ns, name, tag)); readErr == nil {
 			logger.Warn("pull cache: upstream for " + ns + "/" + name + ":" + tag + " unreachable, serving cached manifest")
+			atomic.AddInt64(&p.staleServed, 1)
 			p.writeManifest(w, r, strings.TrimSpace(string(cached)))
 			return
 		}
@@ -483,6 +544,59 @@ func markCachedTree(cfg *config.Config, digest string, marked map[string]bool, d
 	}
 	for _, child := range manifest.Manifests {
 		markCachedTree(cfg, child.Digest, marked, depth+1)
+	}
+}
+
+// PullCacheStats fetches the running daemons' cache performance counters.
+func PullCacheStats(cfg *config.Config) (*PullStats, error) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + cfg.PullCachePort + "/stats")
+	if err != nil {
+		return nil, fmt.Errorf("pull cache not reachable (daemons running?): %w", err)
+	}
+	defer resp.Body.Close()
+	var stats PullStats
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, err
+	}
+	return &stats, nil
+}
+
+// PullCacheStatsPrint prints the cache performance counters.
+func PullCacheStatsPrint(cfg *config.Config) error {
+	stats, err := PullCacheStats(cfg)
+	if err != nil {
+		return err
+	}
+	total := stats.Hits + stats.Misses
+	hitPct, bytePct := 0.0, 0.0
+	if total > 0 {
+		hitPct = float64(stats.Hits) * 100 / float64(total)
+	}
+	if stats.HitBytes+stats.MissBytes > 0 {
+		bytePct = float64(stats.HitBytes) * 100 / float64(stats.HitBytes+stats.MissBytes)
+	}
+	fmt.Printf("pull cache stats since %s:\n", stats.Since.Format("2006-01-02 15:04"))
+	fmt.Printf("  served from cache: %5d requests, %s\n", stats.Hits, humanBytes(stats.HitBytes))
+	fmt.Printf("  fetched upstream:  %5d requests, %s\n", stats.Misses, humanBytes(stats.MissBytes))
+	fmt.Printf("  hit rate:          %.0f%% of requests, %.0f%% of bytes\n", hitPct, bytePct)
+	if stats.StaleServed > 0 {
+		fmt.Printf("  stale tags served while offline: %d\n", stats.StaleServed)
+	}
+	return nil
+}
+
+// humanBytes renders a byte count with a sensible unit.
+func humanBytes(b int64) string {
+	switch {
+	case b >= 1e9:
+		return fmt.Sprintf("%.1f GB", float64(b)/1e9)
+	case b >= 1e6:
+		return fmt.Sprintf("%.1f MB", float64(b)/1e6)
+	case b >= 1e3:
+		return fmt.Sprintf("%.1f kB", float64(b)/1e3)
+	default:
+		return fmt.Sprintf("%d B", b)
 	}
 }
 

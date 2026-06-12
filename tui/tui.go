@@ -60,6 +60,10 @@ type model struct {
 	sCur         int
 	focus        pane
 
+	lastTraffic map[string]trafficSample
+	netLine     string // traffic rates of the selected cluster
+	cacheLine   string // pull cache performance
+
 	width  int
 	height int
 
@@ -81,7 +85,7 @@ type model struct {
 func New(cfg *config.Config) tea.Model {
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	sp.Style = lipgloss.NewStyle().Foreground(accent)
-	return model{cfg: cfg, spin: sp}
+	return model{cfg: cfg, spin: sp, lastTraffic: map[string]trafficSample{}}
 }
 
 // Run starts the TUI.
@@ -98,6 +102,16 @@ type dataMsg struct {
 	// the cluster the snapshots were listed for: a reply that raced a
 	// newer selection must not overwrite its snapshots
 	forCluster string
+	traffic    *trafficSample
+	cacheStats *cluster.PullStats
+}
+
+// trafficSample is a point-in-time reading of a cluster VM's cumulative
+// external traffic counters.
+type trafficSample struct {
+	cluster string
+	rx, tx  int64
+	at      time.Time
 }
 
 // opEventMsg streams a running operation: progress lines while it runs,
@@ -136,7 +150,20 @@ func (m model) refresh() tea.Cmd {
 		if current == "" && len(clusters) > 0 {
 			current = clusters[0].Name
 		}
-		return dataMsg{clusters: clusters, snapshots: cluster.Snapshots(cfg, current), forCluster: current}
+		msg := dataMsg{clusters: clusters, snapshots: cluster.Snapshots(cfg, current), forCluster: current}
+		for _, c := range clusters {
+			if c.Name == current && c.Server == "running" {
+				if rx, tx, err := cluster.Traffic(cfg, current); err == nil {
+					msg.traffic = &trafficSample{cluster: current, rx: rx, tx: tx, at: time.Now()}
+				}
+			}
+		}
+		if cfg.PullCacheEnabled {
+			if stats, err := cluster.PullCacheStats(cfg); err == nil {
+				msg.cacheStats = stats
+			}
+		}
+		return msg
 	}
 }
 
@@ -243,6 +270,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.sCur >= len(m.snapshots) {
 				m.sCur = max(0, len(m.snapshots)-1)
 			}
+		}
+		m.netLine = ""
+		if msg.traffic != nil {
+			s := *msg.traffic
+			if prev, ok := m.lastTraffic[s.cluster]; ok {
+				elapsed := s.at.Sub(prev.at).Seconds()
+				// counters reset on a cluster restart: skip that sample
+				if elapsed > 0 && s.rx >= prev.rx && s.tx >= prev.tx {
+					m.netLine = fmt.Sprintf("net  ↓ %s/s  ↑ %s/s   (total ↓ %s  ↑ %s)",
+						humanBytes(int64(float64(s.rx-prev.rx)/elapsed)),
+						humanBytes(int64(float64(s.tx-prev.tx)/elapsed)),
+						humanBytes(s.rx), humanBytes(s.tx))
+				}
+			}
+			m.lastTraffic[s.cluster] = s
+		}
+		m.cacheLine = ""
+		if st := msg.cacheStats; st != nil && st.Hits+st.Misses > 0 {
+			m.cacheLine = fmt.Sprintf("pull cache  %.0f%% hits   from cache %s · upstream %s",
+				float64(st.Hits)*100/float64(st.Hits+st.Misses),
+				humanBytes(st.HitBytes), humanBytes(st.MissBytes))
 		}
 		return m, nil
 
@@ -608,6 +656,12 @@ func (m model) clustersView(width int) string {
 		}
 		b.WriteString(line + "\n")
 	}
+	if m.netLine != "" {
+		b.WriteString("\n" + dimSt.Render(" "+m.netLine) + "\n")
+	}
+	if m.cacheLine != "" {
+		b.WriteString(dimSt.Render(" "+m.cacheLine) + "\n")
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -712,6 +766,19 @@ func tail(s string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func humanBytes(b int64) string {
+	switch {
+	case b >= 1e9:
+		return fmt.Sprintf("%.1f GB", float64(b)/1e9)
+	case b >= 1e6:
+		return fmt.Sprintf("%.1f MB", float64(b)/1e6)
+	case b >= 1e3:
+		return fmt.Sprintf("%.1f kB", float64(b)/1e3)
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 func max(a, b int) int {
