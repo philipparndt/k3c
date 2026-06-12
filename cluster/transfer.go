@@ -131,8 +131,38 @@ func writeTarFile(tw *tar.Writer, name, path string) error {
 	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: info.Size()}); err != nil {
 		return err
 	}
-	_, err = io.Copy(tw, f)
+	_, err = io.Copy(tw, io.TeeReader(f, newProgress("packing "+name, info.Size())))
 	return err
+}
+
+// progress logs a line every 10% of total bytes passing through.
+type progress struct {
+	label   string
+	total   int64
+	done    int64
+	nextPct int64
+}
+
+func newProgress(label string, total int64) *progress {
+	return &progress{label: label, total: total, nextPct: 10}
+}
+
+func (p *progress) Write(b []byte) (int, error) {
+	p.add(int64(len(b)))
+	return len(b), nil
+}
+
+func (p *progress) add(n int64) {
+	p.done += n
+	if p.total <= 0 {
+		return
+	}
+	if pct := p.done * 100 / p.total; pct >= p.nextPct {
+		logger.Info(fmt.Sprintf("%s: %d%%", p.label, pct))
+		for p.nextPct <= pct {
+			p.nextPct += 10
+		}
+	}
 }
 
 // SnapshotImport unpacks an exported snapshot archive for the cluster.
@@ -183,7 +213,7 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 				}
 			}
 		case "meta.yaml", serverRootfs, registryRootfs:
-			logger.Info("unpacking " + hdr.Name)
+			logger.Info(fmt.Sprintf("unpacking %s (%.1f GB)", hdr.Name, float64(hdr.Size)/1e9))
 			if err := writeSparseFile(filepath.Join(tmp, hdr.Name), tr, hdr.Size); err != nil {
 				return err
 			}
@@ -237,6 +267,7 @@ func writeSparseFile(path string, r io.Reader, size int64) error {
 	defer f.Close()
 	buf := make([]byte, 1<<20)
 	zero := make([]byte, 1<<20)
+	prog := newProgress("unpacking "+filepath.Base(path), size)
 	var offset int64
 	for offset < size {
 		n, err := io.ReadFull(r, buf)
@@ -258,6 +289,7 @@ func writeSparseFile(path string, r io.Reader, size int64) error {
 			}
 		}
 		offset += int64(n)
+		prog.add(int64(n))
 	}
 	if err := f.Truncate(size); err != nil {
 		return err

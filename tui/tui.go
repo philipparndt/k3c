@@ -7,9 +7,11 @@
 package tui
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -62,6 +64,8 @@ type model struct {
 
 	spin    spinner.Model
 	busy    string // running operation, "" when idle
+	opLine  string // latest output line of the running operation
+	opCh    chan opEventMsg
 	status  string // last result line
 	failed  bool   // last result was an error
 	output  string // full output of the last operation
@@ -92,8 +96,11 @@ type dataMsg struct {
 	snapshots []cluster.SnapshotInfo
 }
 
-type opDoneMsg struct {
-	desc   string
+// opEventMsg streams a running operation: progress lines while it runs,
+// then one final done event with the full output.
+type opEventMsg struct {
+	line   string
+	done   bool
 	output string
 	err    error
 }
@@ -133,15 +140,62 @@ func tick() tea.Cmd {
 	return tea.Tick(5*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// runOp executes k3c itself with args and reports the result.
-func runOp(desc string, args ...string) tea.Cmd {
-	return func() tea.Msg {
+var (
+	ansiRe      = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	logPrefixRe = regexp.MustCompile(`^\[\s*\d+\]\s*`)
+)
+
+// cleanLine strips colors and the logger's uptime prefix for display.
+func cleanLine(s string) string {
+	return logPrefixRe.ReplaceAllString(ansiRe.ReplaceAllString(s, ""), "")
+}
+
+// startOpStream executes k3c itself with args, streaming output lines.
+func startOpStream(args []string) chan opEventMsg {
+	ch := make(chan opEventMsg, 16)
+	go func() {
+		defer close(ch)
 		exe, err := os.Executable()
 		if err != nil {
-			return opDoneMsg{desc: desc, err: err}
+			ch <- opEventMsg{done: true, err: err}
+			return
 		}
-		out, err := exec.Command(exe, args...).CombinedOutput()
-		return opDoneMsg{desc: desc, output: strings.TrimSpace(string(out)), err: err}
+		cmd := exec.Command(exe, args...)
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			ch <- opEventMsg{done: true, err: err}
+			return
+		}
+		cmd.Stdout = pw
+		cmd.Stderr = pw
+		if err := cmd.Start(); err != nil {
+			pw.Close()
+			pr.Close()
+			ch <- opEventMsg{done: true, err: err}
+			return
+		}
+		pw.Close()
+		var output strings.Builder
+		sc := bufio.NewScanner(pr)
+		sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+		for sc.Scan() {
+			line := cleanLine(sc.Text())
+			output.WriteString(line + "\n")
+			ch <- opEventMsg{line: line}
+		}
+		pr.Close()
+		ch <- opEventMsg{done: true, output: strings.TrimSpace(output.String()), err: cmd.Wait()}
+	}()
+	return ch
+}
+
+// waitOp delivers the next event of the running operation.
+func waitOp(ch chan opEventMsg) tea.Cmd {
+	return func() tea.Msg {
+		if ev, ok := <-ch; ok {
+			return ev
+		}
+		return nil
 	}
 }
 
@@ -176,17 +230,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = msg.desc
 		m.status = ""
 		m.showOut = false
-		return m, tea.Batch(msg.run, m.spin.Tick)
+		m.opLine = ""
+		m.opCh = startOpStream(msg.args)
+		return m, tea.Batch(waitOp(m.opCh), m.spin.Tick)
 
-	case opDoneMsg:
+	case opEventMsg:
+		if !msg.done {
+			m.opLine = msg.line
+			return m, waitOp(m.opCh)
+		}
+		desc := m.busy
 		m.busy = ""
+		m.opLine = ""
+		m.opCh = nil
 		m.output = msg.output
 		if msg.err != nil {
 			m.failed = true
-			m.status = msg.desc + " failed: " + lastLine(msg.output, msg.err)
+			m.status = desc + " failed: " + lastLine(msg.output, msg.err)
 		} else {
 			m.failed = false
-			m.status = msg.desc + " ✓"
+			m.status = desc + " ✓"
 		}
 		return m, m.refresh()
 
@@ -397,22 +460,18 @@ func (m model) move(delta int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// opCmd wraps runOp so the busy state is set by the caller that fires it.
+// opCmd defers an operation start, so confirmations can carry it.
 func (m *model) opCmd(desc string, args ...string) tea.Cmd {
-	run := runOp(desc, args...)
-	return func() tea.Msg { return opStartMsg{desc: desc, run: run} }
+	return func() tea.Msg { return opStartMsg{desc: desc, args: args} }
 }
 
 type opStartMsg struct {
 	desc string
-	run  tea.Cmd
+	args []string
 }
 
 func (m model) startOp(desc string, args ...string) (tea.Model, tea.Cmd) {
-	m.busy = desc
-	m.status = ""
-	m.showOut = false
-	return m, tea.Batch(runOp(desc, args...), m.spin.Tick)
+	return m, m.opCmd(desc, args...)
 }
 
 // --- view ---
@@ -568,7 +627,11 @@ func (m model) statusView() string {
 			mode, m.input.cluster, m.input.input.View(),
 			dimSt.Render("(enter save · tab warm/cold · esc cancel · spaces become dashes)"))
 	case m.busy != "":
-		return " " + m.spin.View() + " " + m.busy + dimSt.Render(" …")
+		line := ""
+		if m.opLine != "" {
+			line = dimSt.Render(" · " + m.opLine)
+		}
+		return " " + m.spin.View() + " " + m.busy + dimSt.Render(" …") + line
 	case m.status != "" && m.failed:
 		return statusBad.Render(" ✗ " + m.status + " (o shows output)")
 	case m.status != "":
