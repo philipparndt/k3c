@@ -310,6 +310,7 @@ func RunDaemons(cfg *config.Config) error {
 	}
 	if cfg.PullCacheEnabled {
 		go func() { errCh <- servePullCache(cfg) }()
+		startPullCachePrune(cfg)
 	}
 	if len(ignoredResources(cfg)) > 0 {
 		go func() { errCh <- serveWebhook(cfg) }()

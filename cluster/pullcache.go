@@ -62,6 +62,24 @@ func newPullCache(cfg *config.Config) *pullCache {
 	}
 }
 
+// startPullCachePrune prunes the cache in the background: shortly after
+// the daemons start and then daily, with the configured retention.
+func startPullCachePrune(cfg *config.Config) {
+	if cfg.PullCacheRetention <= 0 {
+		return
+	}
+	retention := time.Duration(cfg.PullCacheRetention) * 24 * time.Hour
+	go func() {
+		time.Sleep(5 * time.Minute)
+		for {
+			if err := PullCachePrune(cfg, retention); err != nil {
+				logger.Warn("pull cache prune: " + err.Error())
+			}
+			time.Sleep(24 * time.Hour)
+		}
+	}()
+}
+
 // servePullCache runs the registry pull-through cache listener.
 func servePullCache(cfg *config.Config) error {
 	p := newPullCache(cfg)

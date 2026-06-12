@@ -86,6 +86,9 @@ type FileConfig struct {
 	PullCache struct {
 		Enabled *bool `yaml:"enabled"`
 		Port    int   `yaml:"port"` // default 5011
+		// images not pulled within this many days are pruned daily by the
+		// host daemons (default 14, -1 disables the automatic prune)
+		RetentionDays int `yaml:"retentionDays"`
 	} `yaml:"pullCache"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
 	Registries string `yaml:"registries"`
@@ -139,11 +142,25 @@ type Config struct {
 	AutoReclaim     string // auto-reclaim interval ("off" disables)
 	CPUPriority     string // "low" (default) or "normal"
 
-	PullCacheEnabled bool
-	PullCachePort    string
+	PullCacheEnabled   bool
+	PullCachePort      string
+	PullCacheRetention int // days; 0 disables the automatic prune
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
+}
+
+// pullCacheRetention resolves the configured retention days: default 14,
+// negative values disable the automatic prune (0 in the resolved config).
+func pullCacheRetention(days int) int {
+	switch {
+	case days < 0:
+		return 0
+	case days == 0:
+		return 14
+	default:
+		return days
+	}
 }
 
 func envOr(key, fallback string) string {
@@ -229,6 +246,7 @@ func merge(dst *FileConfig, src FileConfig) {
 		dst.PullCache.Enabled = src.PullCache.Enabled
 	}
 	i(&dst.PullCache.Port, src.PullCache.Port)
+	i(&dst.PullCache.RetentionDays, src.PullCache.RetentionDays)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
 	s(&dst.Registries, src.Registries)
 }
@@ -388,6 +406,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		IngressDomains:       fc.Egress.IngressDomains,
 		PullCacheEnabled:     fc.PullCache.Enabled != nil && *fc.PullCache.Enabled,
 		PullCachePort:        port(fc.PullCache.Port, 5011),
+		PullCacheRetention:   pullCacheRetention(fc.PullCache.RetentionDays),
 		Registries:           fc.Registries,
 		ContainerBinary:      def(fc.ContainerBinary, "container"),
 		AutoReclaim:          def(fc.Cluster.AutoReclaim, "10m"),
