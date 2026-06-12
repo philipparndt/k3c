@@ -3,7 +3,9 @@ name: goreleaser
 on:
   push:
     tags:
-      - "*"
+      # version tags only: the runtime payload is published under runtime-*
+      # tags by this very workflow, which must not retrigger it
+      - "v*"
 
 env:
   # Forks of apple/container with pause/resume + suspend-to-disk support.
@@ -43,17 +45,46 @@ jobs:
           ref: ${{ env.CONTAINERIZATION_REF }}
           path: .forks/containerization
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.26"
+      # The Swift builds dominate the release time (~30 minutes) but only
+      # depend on the fork sources, not on k3c. The finished payload
+      # (staging tree + init image) is therefore built once per fork state
+      # and stored permanently as an asset on a runtime-* prerelease; later
+      # k3c releases just download it. The key covers both fork commits and
+      # the workflow hash (a stand-in for the toolchain versions baked into
+      # the build).
+      - name: Compute runtime payload key
+        id: rt
+        run: |
+          key="runtime-$(uname -m)"
+          key="$key-$(git -C .forks/container rev-parse --short=12 HEAD)"
+          key="$key-$(git -C .forks/containerization rev-parse --short=12 HEAD)"
+          key="$key-$(shasum -a 256 .github/workflows/goreleaser.yaml | cut -c1-8)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "runtime payload key: $key"
+
+      - name: Restore runtime payload from release asset
+        id: payload
+        run: |
+          if gh release download "${{ steps.rt.outputs.key }}" -R "$GITHUB_REPOSITORY" \
+              -p runtime-payload.tar.gz -O /tmp/runtime-payload.tar.gz; then
+            mkdir -p /tmp/k3c-runtime
+            tar -xzf /tmp/runtime-payload.tar.gz -C /tmp/k3c-runtime
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "no payload release ${{ steps.rt.outputs.key }}; building from source"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Select Xcode
+        if: steps.payload.outputs.build == 'true'
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
 
       - name: Cache Swift cross-compile toolchain
+        if: steps.payload.outputs.build == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -62,27 +93,48 @@ jobs:
           key: swiftly-${{ runner.os }}-${{ hashFiles('.forks/containerization/vminitd/Makefile') }}
 
       - name: Install Linux cross-compile toolchain (swiftly + static musl SDK)
+        if: steps.payload.outputs.build == 'true'
         run: make -C .forks/containerization/vminitd cross-prep
 
       - name: Build container app (release)
+        if: steps.payload.outputs.build == 'true'
         run: make -C .forks/container container BUILD_CONFIGURATION=release
 
       - name: Build init image (vminitd + vmexec, Linux cross-compile)
+        if: steps.payload.outputs.build == 'true'
         run: |
           make -C .forks/containerization init BUILD_CONFIGURATION=release
-          .forks/containerization/bin/cctl images save -o /tmp/init.tar vminit:latest
+          .forks/containerization/bin/cctl images save -o /tmp/k3c-init.tar vminit:latest
 
-      - name: Assemble bundle staging tree
+      - name: Assemble runtime payload
+        if: steps.payload.outputs.build == 'true'
         run: |
-          STAGE=/tmp/k3c-stage
+          STAGE=/tmp/k3c-runtime/stage
           mkdir -p "$STAGE/bin"
           cp .forks/container/bin/container "$STAGE/bin/"
           cp .forks/container/bin/container-apiserver "$STAGE/bin/"
           cp -R .forks/container/libexec "$STAGE/libexec"
-          du -sh "$STAGE"
+          mv /tmp/k3c-init.tar /tmp/k3c-runtime/init.tar
+          du -sh /tmp/k3c-runtime
+
+      - name: Publish runtime payload as permanent release asset
+        if: steps.payload.outputs.build == 'true'
+        run: |
+          tar -czf /tmp/runtime-payload.tar.gz -C /tmp/k3c-runtime .
+          gh release create "${{ steps.rt.outputs.key }}" /tmp/runtime-payload.tar.gz \
+            -R "$GITHUB_REPOSITORY" --prerelease \
+            --title "container runtime payload (${{ steps.rt.outputs.key }})" \
+            --notes "Prebuilt container runtime (bin, libexec, init.tar) from ${{ env.CONTAINER_REPO }}@${{ env.CONTAINER_REF }} and ${{ env.CONTAINERIZATION_REPO }}@${{ env.CONTAINERIZATION_REF }}. Created automatically by the goreleaser workflow; safe to delete once no longer referenced."
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
 
       - name: Bundle container runtime into payload
-        run: make bundle STAGING_DIR=/tmp/k3c-stage INIT_TAR=/tmp/init.tar
+        run: make bundle STAGING_DIR=/tmp/k3c-runtime/stage INIT_TAR=/tmp/k3c-runtime/init.tar
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
