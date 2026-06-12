@@ -90,6 +90,15 @@ type FileConfig struct {
 		// host daemons (default 14, -1 disables the automatic prune)
 		RetentionDays int `yaml:"retentionDays"`
 	} `yaml:"pullCache"`
+	// Docker sidecar: a docker:dind VM managed by k3c, providing a real
+	// Docker Engine API (DOCKER_HOST) for Testcontainers, docker CLI, and
+	// friends. Pulls go through the k3c proxy and pull cache.
+	Docker struct {
+		Enabled *bool  `yaml:"enabled"`
+		CPUs    int    `yaml:"cpus"`   // default 4
+		Memory  string `yaml:"memory"` // default 8G
+		Port    int    `yaml:"port"`   // engine API port, default 2375
+	} `yaml:"docker"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
 	Registries string `yaml:"registries"`
 	// Path to the Apple `container` CLI (default: container from PATH).
@@ -145,6 +154,11 @@ type Config struct {
 	PullCacheEnabled   bool
 	PullCachePort      string
 	PullCacheRetention int // days; 0 disables the automatic prune
+
+	DockerEnabled bool
+	DockerCPUs    string
+	DockerMemory  string
+	DockerPort    string
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
@@ -247,6 +261,12 @@ func merge(dst *FileConfig, src FileConfig) {
 	}
 	i(&dst.PullCache.Port, src.PullCache.Port)
 	i(&dst.PullCache.RetentionDays, src.PullCache.RetentionDays)
+	if src.Docker.Enabled != nil {
+		dst.Docker.Enabled = src.Docker.Enabled
+	}
+	i(&dst.Docker.CPUs, src.Docker.CPUs)
+	s(&dst.Docker.Memory, src.Docker.Memory)
+	i(&dst.Docker.Port, src.Docker.Port)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
 	s(&dst.Registries, src.Registries)
 }
@@ -407,6 +427,10 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		PullCacheEnabled:     fc.PullCache.Enabled != nil && *fc.PullCache.Enabled,
 		PullCachePort:        port(fc.PullCache.Port, 5011),
 		PullCacheRetention:   pullCacheRetention(fc.PullCache.RetentionDays),
+		DockerEnabled:        fc.Docker.Enabled != nil && *fc.Docker.Enabled,
+		DockerCPUs:           port(fc.Docker.CPUs, 4),
+		DockerMemory:         def(fc.Docker.Memory, "8G"),
+		DockerPort:           port(fc.Docker.Port, 2375),
 		Registries:           fc.Registries,
 		ContainerBinary:      def(fc.ContainerBinary, "container"),
 		AutoReclaim:          def(fc.Cluster.AutoReclaim, "10m"),

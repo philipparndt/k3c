@@ -155,28 +155,38 @@ func prepareNodeConfig(cfg *config.Config) error {
 			return err
 		}
 	}
+	bundle, err := caBundle(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(etc, "ca-bundle.pem"), bundle, 0o644)
+}
+
+// caBundle builds the trust bundle for guests: the host's system roots
+// plus the configured corporate CAs.
+func caBundle(cfg *config.Config) ([]byte, error) {
 	bundle, err := os.ReadFile("/etc/ssl/cert.pem")
 	if err != nil {
-		return fmt.Errorf("reading system CA bundle: %w", err)
+		return nil, fmt.Errorf("reading system CA bundle: %w", err)
 	}
 	for _, glob := range cfg.CACertGlobs {
 		matches, err := filepath.Glob(glob)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if len(matches) == 0 {
-			return fmt.Errorf("no CA certificates match %s", glob)
+			return nil, fmt.Errorf("no CA certificates match %s", glob)
 		}
 		for _, crt := range matches {
 			data, err := os.ReadFile(crt)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			bundle = append(bundle, '\n')
 			bundle = append(bundle, data...)
 		}
 	}
-	return os.WriteFile(filepath.Join(etc, "ca-bundle.pem"), bundle, 0o644)
+	return bundle, nil
 }
 
 func startServer(cfg *config.Config) error {

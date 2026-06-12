@@ -156,8 +156,15 @@ func (p *pullCache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	m := pullPathRe.FindStringSubmatch(r.URL.Path)
 	ns := r.URL.Query().Get("ns")
-	if m == nil || ns == "" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
-		http.Error(w, "unsupported request", http.StatusBadRequest)
+	if ns == "" {
+		// plain registry-mirror clients (e.g. dockerd) send no namespace;
+		// they only mirror docker.io
+		ns = "docker.io"
+	}
+	if m == nil || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		// 404 (not 400): clients fall back gracefully on unimplemented
+		// registry endpoints, e.g. dockerd querying the referrers API
+		http.Error(w, "not supported by the pull cache", http.StatusNotFound)
 		return
 	}
 	name, kind, ref := m[1], m[2], m[3]
