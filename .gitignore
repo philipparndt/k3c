@@ -13,3 +13,4 @@ runtime/payload/container-version.txt
 
 # fork checkouts made by the release workflow
 .forks/
+*.k3csnap
