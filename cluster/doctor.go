@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,6 +29,7 @@ func Doctor(cfg *config.Config) error {
 	d.checkKubectl()
 	d.checkRuntime()
 	d.checkHostDNS(cfg)
+	d.checkCIDRCollisions(cfg)
 
 	d.section("daemons")
 	d.checkDaemons(cfg)
@@ -146,6 +148,70 @@ func (d *doctor) checkHostDNS(cfg *config.Config) {
 		}
 	}
 	d.pass(fmt.Sprintf("host DNS resolves the registry mirrors (%s)", strings.Join(hosts, ", ")))
+}
+
+// checkCIDRCollisions warns when another interface (typically the
+// corporate VPN) claims routes overlapping the cluster's pod or service
+// CIDR: host traffic to those addresses silently disappears into the
+// tunnel, and addresses behind the VPN in that range are shadowed for
+// pods.
+func (d *doctor) checkCIDRCollisions(cfg *config.Config) {
+	out, err := exec.Command("netstat", "-rn", "-f", "inet").Output()
+	if err != nil {
+		return
+	}
+	cidrs := map[string]*net.IPNet{}
+	for name, c := range map[string]string{"cluster": cfg.ClusterCIDR, "service": cfg.ServiceCIDR} {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			cidrs[name] = n
+		}
+	}
+	var collisions []string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.Contains(fields[len(fields)-1], "utun") {
+			continue
+		}
+		rn := parseRouteDest(fields[0])
+		if rn == nil {
+			continue
+		}
+		for name, n := range cidrs {
+			if n.Contains(rn.IP) || rn.Contains(n.IP) {
+				collisions = append(collisions, name+" CIDR "+n.String()+" vs VPN route "+fields[0])
+			}
+		}
+	}
+	if len(collisions) > 0 {
+		if len(collisions) > 3 {
+			collisions = collisions[:3]
+		}
+		d.warn("cluster CIDRs overlap VPN routes: "+strings.Join(collisions, "; "),
+			"pick free ranges in k3c.yaml (clusterCidr/serviceCidr) and recreate the cluster")
+		return
+	}
+	d.pass("cluster CIDRs do not collide with VPN routes")
+}
+
+// parseRouteDest parses a netstat destination like "10.53/16" or
+// "10.1.67.130" into a network, or nil for anything else.
+func parseRouteDest(dest string) *net.IPNet {
+	prefix, bits, hasBits := strings.Cut(dest, "/")
+	octets := strings.Split(prefix, ".")
+	if len(octets) > 4 || len(octets) == 1 {
+		return nil
+	}
+	for len(octets) < 4 {
+		octets = append(octets, "0")
+	}
+	if !hasBits {
+		bits = "32"
+	}
+	_, n, err := net.ParseCIDR(strings.Join(octets, ".") + "/" + bits)
+	if err != nil {
+		return nil
+	}
+	return n
 }
 
 func (d *doctor) checkDaemons(cfg *config.Config) {
