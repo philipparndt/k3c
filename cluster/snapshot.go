@@ -328,33 +328,14 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 
 // SnapshotList prints the snapshots of a cluster.
 func SnapshotList(cfg *config.Config) error {
-	base := filepath.Join(cfg.BaseDir, "snapshots", cfg.Cluster)
-	entries, err := os.ReadDir(base)
-	if os.IsNotExist(err) {
+	snapshots := Snapshots(cfg, cfg.Cluster)
+	if len(snapshots) == 0 {
 		fmt.Printf("no snapshots for cluster '%s'\n", cfg.Cluster)
 		return nil
 	}
-	if err != nil {
-		return err
-	}
 	fmt.Printf("%-24s %-6s %s\n", "NAME", "MODE", "CREATED")
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		created := "?"
-		mode := "cold"
-		if meta, err := os.ReadFile(filepath.Join(base, e.Name(), "meta.yaml")); err == nil {
-			for _, line := range strings.Split(string(meta), "\n") {
-				if v, ok := strings.CutPrefix(line, "created: "); ok {
-					created = v
-				}
-				if v, ok := strings.CutPrefix(line, "mode: "); ok {
-					mode = v
-				}
-			}
-		}
-		fmt.Printf("%-24s %-6s %s\n", e.Name(), mode, created)
+	for _, s := range snapshots {
+		fmt.Printf("%-24s %-6s %s\n", s.Name, s.Mode, s.Created)
 	}
 	return nil
 }

@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -570,41 +569,13 @@ func Activate(cfg *config.Config) error {
 // List prints all k3c clusters (containers named <cluster>-server) with
 // their server/registry state.
 func List(cfg *config.Config) error {
-	state := clusterStates()
-	active := readActive(cfg).Cluster
-	names := make([]string, 0, len(state))
-	for cluster := range state {
-		names = append(names, cluster)
-	}
-	sort.Strings(names)
 	fmt.Printf("%-7s %-16s %-10s %-10s %-8s %s\n", "CURRENT", "NAME", "SERVER", "REGISTRY", "RAM", "CONTEXT")
-	for _, cluster := range names {
-		parts := state[cluster]
-		if parts["-server"] == "" {
-			continue
-		}
-		server := parts["-server"]
-		registry := parts["-registry"]
-		if registry == "" {
-			registry = "-"
-		}
-		// a paused cluster's containers still report "running"
-		if _, err := os.Stat(filepath.Join(cfg.BaseDir, "clusters", cluster, "paused")); err == nil {
-			server = "paused"
-			if registry != "-" {
-				registry = "paused"
-			}
-		}
-		// resolve per cluster: picks up its persisted project config
-		context := cfg.ContextPrefix() + cluster
-		if clusterCfg, err := config.Resolve(cluster, ""); err == nil {
-			context = clusterCfg.KubeContext
-		}
+	for _, c := range Clusters(cfg) {
 		current := ""
-		if cluster == active {
+		if c.Active {
 			current = "*"
 		}
-		fmt.Printf("%-7s %-16s %-10s %-10s %-8s %s\n", current, cluster, server, registry, clusterRAM(cluster), context)
+		fmt.Printf("%-7s %-16s %-10s %-10s %-8s %s\n", current, c.Name, c.Server, c.Registry, c.RAM, c.Context)
 	}
 	return nil
 }
