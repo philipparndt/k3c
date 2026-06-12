@@ -328,7 +328,13 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 		// no machine state applied: either none in the snapshot, or --cold
 		logger.Info("snapshot '" + name + "' restored (cold), booting cluster")
 	}
-	return Start(cfg)
+	if err := Start(cfg); err != nil {
+		return err
+	}
+	// the restore rolled resourceVersions backward; watches resumed from a
+	// now-future version hang silently instead of erroring
+	logger.Info("note: watch-based clients (k9s, kubectl -w) keep stale caches after a restore; restart them")
+	return nil
 }
 
 // SnapshotList prints the snapshots of a cluster.
