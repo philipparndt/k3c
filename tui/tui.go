@@ -29,11 +29,17 @@ const (
 	paneSnapshots
 )
 
-// confirm is a pending yes/no question and the command an answer of yes runs.
+// confirm is a pending yes/no question and the command an answer of yes
+// runs. A non-nil noCmd runs on decline instead of cancelling — used for
+// follow-up questions where "no" still performs the base action.
 type confirm struct {
 	prompt string
 	cmd    tea.Cmd
+	noCmd  tea.Cmd
 }
+
+// askMsg opens a (follow-up) confirmation.
+type askMsg struct{ c confirm }
 
 // nameInput is the open "new snapshot" prompt.
 type nameInput struct {
@@ -162,6 +168,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case askMsg:
+		m.confirm = &msg.c
+		return m, nil
+
 	case opStartMsg:
 		m.busy = msg.desc
 		m.status = ""
@@ -202,8 +212,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.confirm != nil {
 		c := *m.confirm
 		m.confirm = nil
-		if msg.String() == "y" || msg.String() == "Y" {
+		switch msg.String() {
+		case "y", "Y":
 			return m, c.cmd
+		case "n", "N":
+			if c.noCmd != nil {
+				return m, c.noCmd
+			}
 		}
 		m.status = "cancelled"
 		m.failed = false
@@ -321,10 +336,20 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "d", "x":
 		if m.focus == paneClusters {
-			m.confirm = &confirm{
-				prompt: fmt.Sprintf("DELETE cluster %q and all its state? Snapshots are kept.", name),
-				cmd:    m.opCmd("delete of cluster "+name, "cluster", "delete", name),
+			deleteOnly := m.opCmd("delete of cluster "+name, "cluster", "delete", name)
+			first := confirm{
+				prompt: fmt.Sprintf("DELETE cluster %q and all its state?", name),
+				cmd:    deleteOnly,
 			}
+			if n := len(m.snapshots); n > 0 {
+				followUp := confirm{
+					prompt: fmt.Sprintf("Also delete its %d snapshot(s)? (y deletes them, n keeps them, esc cancels everything)", n),
+					cmd:    m.opCmd("delete of cluster "+name+" with snapshots", "cluster", "delete", "--snapshots", name),
+					noCmd:  deleteOnly,
+				}
+				first.cmd = func() tea.Msg { return askMsg{c: followUp} }
+			}
+			m.confirm = &first
 			return m, nil
 		}
 		snap := m.selectedSnapshot()

@@ -20,12 +20,14 @@ var clusterCreateCmd = &cobra.Command{
 	},
 }
 
+var deleteSnapshots bool
+
 var clusterDeleteCmd = &cobra.Command{
 	Use:   "delete [NAME]",
 	Short: "Delete a cluster and its state",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.Delete(loadConfig(args)))
+		fail(cluster.Delete(loadConfig(args), deleteSnapshots))
 	},
 }
 
@@ -106,6 +108,8 @@ var clusterListCmd = &cobra.Command{
 }
 
 func init() {
+	clusterDeleteCmd.Flags().BoolVar(&deleteSnapshots, "snapshots", false,
+		"also delete the cluster's snapshots")
 	clusterReclaimCmd.Flags().BoolVar(&reclaimRelease, "release", false,
 		"deflate the balloon, giving the cluster its full configured memory back")
 	clusterCmd.AddCommand(clusterCreateCmd, clusterDeleteCmd, clusterStartCmd, clusterStopCmd,

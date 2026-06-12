@@ -435,7 +435,7 @@ func persistProjectConfig(cfg *config.Config) error {
 }
 
 // Delete removes a cluster, its state, and its kubeconfig entries.
-func Delete(cfg *config.Config) error {
+func Delete(cfg *config.Config, snapshots bool) error {
 	resumeIfPaused(cfg)
 	logger.Info("removing containers")
 	_, _ = runContainer("rm", "-f", cfg.ServerName)
@@ -445,6 +445,10 @@ func Delete(cfg *config.Config) error {
 		_, _ = runOut("kubectl", "config", kind, cfg.KubeContext)
 	}
 	_ = os.RemoveAll(cfg.RunDir())
+	if snapshots {
+		logger.Info("removing snapshots")
+		_ = os.RemoveAll(filepath.Join(cfg.BaseDir, "snapshots", cfg.Cluster))
+	}
 	logger.Info("deleted")
 	return nil
 }
