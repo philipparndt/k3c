@@ -145,6 +145,9 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 
 	resumeIfPaused(cfg)
 	wasRunning := containerExists(cfg.ServerName, true)
+	// captured before the suspend: a warm snapshot only resumes correctly
+	// into a container with this address
+	serverIP := containerIP(cfg.ServerName)
 	// A suspended cluster already has its machine state on disk: snapshot
 	// it warm as-is, without touching the cluster.
 	suspended := false
@@ -173,7 +176,7 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 		_, _ = runContainer("stop", cfg.RegistryName)
 	}
 
-	if err := writeSnapshot(cfg, dir, warm); err != nil {
+	if err := writeSnapshot(cfg, dir, warm, serverIP); err != nil {
 		_ = os.RemoveAll(dir)
 		if wasRunning {
 			_, _ = runContainer("start", cfg.RegistryName)
@@ -207,7 +210,35 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 	return nil
 }
 
-func writeSnapshot(cfg *config.Config, dir string, warm bool) error {
+// snapshotMetaValue reads one "key: value" line from a snapshot's
+// meta.yaml, or "".
+func snapshotMetaValue(dir, key string) string {
+	meta, err := os.ReadFile(filepath.Join(dir, "meta.yaml"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(meta), "\n") {
+		if v, ok := strings.CutPrefix(line, key+": "); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// containerIP returns a container's vmnet address (without the CIDR
+// suffix), or "" when unknown.
+func containerIP(name string) string {
+	out, _ := runContainer("ls", "-a")
+	for _, line := range strings.Split(out, "\n")[1:] {
+		fields := strings.Fields(line)
+		if len(fields) >= 6 && fields[0] == name && strings.Contains(fields[5], ".") {
+			return strings.Split(fields[5], "/")[0]
+		}
+	}
+	return ""
+}
+
+func writeSnapshot(cfg *config.Config, dir string, warm bool, serverIP string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -247,6 +278,9 @@ func writeSnapshot(cfg *config.Config, dir string, warm bool) error {
 	}
 	meta := fmt.Sprintf("cluster: %s\ncreated: %s\nmode: %s\n",
 		cfg.Cluster, time.Now().Format(time.RFC3339), mode)
+	if serverIP != "" {
+		meta += "ip: " + serverIP + "\n"
+	}
 	return os.WriteFile(filepath.Join(dir, "meta.yaml"), []byte(meta), 0o644)
 }
 
@@ -267,6 +301,17 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 	}
 
 	resumeIfPaused(cfg)
+	// A warm snapshot resumes a memory image with the snapshot-time IP
+	// configured in the guest. If the container's address changed (deleted
+	// and recreated cluster), the resumed guest would answer on the wrong
+	// IP — boot cold instead, which re-initializes the network.
+	if !cold {
+		snapIP := snapshotMetaValue(dir, "ip")
+		if currentIP := containerIP(cfg.ServerName); snapIP != "" && currentIP != "" && snapIP != currentIP {
+			logger.Warn("the cluster's IP changed since the snapshot (" + snapIP + " -> " + currentIP + "); restoring cold")
+			cold = true
+		}
+	}
 	if containerExists(cfg.ServerName, true) {
 		logger.Info("stopping cluster")
 		_, _ = runContainer("stop", cfg.ServerName)
@@ -332,11 +377,10 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 		return err
 	}
 	// the restored cluster may have different credentials than the one the
-	// kubeconfig was merged from (e.g. an imported snapshot): re-merge
-	if !warm {
-		if err := KubeconfigMerge(cfg); err != nil {
-			return err
-		}
+	// kubeconfig was merged from (a recreated cluster, an imported
+	// snapshot): always re-merge
+	if err := KubeconfigMerge(cfg); err != nil {
+		return err
 	}
 	// the restore rolled resourceVersions backward; watches resumed from a
 	// now-future version hang silently instead of erroring
