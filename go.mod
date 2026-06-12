@@ -3,7 +3,7 @@ module k3c
 go 1.26
 
 require (
-	github.com/philipparndt/go-logger v1.9.0
+	github.com/philipparndt/go-logger v1.10.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.46.0
 	gopkg.in/yaml.v3 v3.0.1

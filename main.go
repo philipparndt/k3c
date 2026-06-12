@@ -10,6 +10,6 @@ import (
 )
 
 func main() {
-	logger.Init("debug", logger.Logger())
+	logger.Init("debug", logger.CLICompact())
 	cmd.Execute()
 }
