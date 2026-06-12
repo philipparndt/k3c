@@ -241,7 +241,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			in := *m.input
 			m.input = nil
+			// snapshot names are directory names and CLI arguments; typing
+			// spaces is fine, saving them is not — normalize to dashes
 			name := strings.TrimSpace(in.input.Value())
+			name = strings.Join(strings.Fields(name), "-")
 			if name == "" {
 				name = in.input.Placeholder
 			}
@@ -552,7 +555,7 @@ func (m model) statusView() string {
 		}
 		return fmt.Sprintf(" new %s snapshot of %s: %s %s",
 			mode, m.input.cluster, m.input.input.View(),
-			dimSt.Render("(enter save · tab warm/cold · esc cancel)"))
+			dimSt.Render("(enter save · tab warm/cold · esc cancel · spaces become dashes)"))
 	case m.busy != "":
 		return " " + m.spin.View() + " " + m.busy + dimSt.Render(" …")
 	case m.status != "" && m.failed:
