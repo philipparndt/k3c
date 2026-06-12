@@ -60,9 +60,12 @@ func ensureSystem() error {
 	}
 
 	// Start the launchd-managed system services if not already running.
+	// Without a configured default kernel `system start` PROMPTS to install
+	// one; k3c often runs it from scripts, so always answer yes via
+	// --enable-kernel-install (the interactive default).
 	if _, err := Output("system", "status"); err != nil {
 		logger.Info("starting container system")
-		if out, err := Output("system", "start"); err != nil {
+		if out, err := Output("system", "start", "--enable-kernel-install"); err != nil {
 			return fmt.Errorf("could not start container system: %s", out)
 		}
 	}
