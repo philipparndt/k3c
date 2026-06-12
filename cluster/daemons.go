@@ -358,6 +358,52 @@ func pidAlive(pidFile string) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
+// DaemonsStatus prints the host daemons' process and listener state.
+func DaemonsStatus(cfg *config.Config) error {
+	pid := "-"
+	if data, err := os.ReadFile(cfg.ProxyPidFile()); err == nil {
+		pid = strings.TrimSpace(string(data))
+	}
+	state := "stopped"
+	if pidAlive(cfg.ProxyPidFile()) {
+		state = "running"
+	}
+	fmt.Printf("daemons: %s (pid %s)\n", state, pid)
+	if recorded, err := os.ReadFile(daemonsVersionFile(cfg)); err == nil {
+		fmt.Printf("spawned: %s\n", strings.TrimSpace(string(recorded)))
+	}
+	listener := func(name, port, detail string) {
+		st := "down"
+		if portOpen(port) {
+			st = "up"
+		}
+		fmt.Printf("%-12s :%-6s %-5s %s\n", name, port, st, detail)
+	}
+	listener("proxy", cfg.ProxyPort, "")
+	listener("sni-gateway", "443", "")
+	for _, p := range cfg.EgressPorts {
+		if p != 443 {
+			listener("egress", strconv.Itoa(p), "")
+		}
+	}
+	for _, f := range cfg.EgressForwards {
+		listener("forward", f.Port, "-> "+f.Target)
+	}
+	if len(ignoredResources(cfg)) > 0 {
+		listener("webhook", webhookPort, "")
+	}
+	if cfg.RegistryEnabled {
+		listener("registry", cfg.RegistryPort, "")
+	}
+	return nil
+}
+
+// RestartDaemons stops the host daemons and spawns them fresh.
+func RestartDaemons(cfg *config.Config) error {
+	StopDaemons(cfg)
+	return SpawnDaemons(cfg)
+}
+
 // SpawnDaemons starts this binary's `daemons` subcommand detached, unless
 // already running. Both pidfiles point at the same process.
 func SpawnDaemons(cfg *config.Config) error {

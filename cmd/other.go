@@ -45,18 +45,48 @@ var versionCmd = &cobra.Command{
 	},
 }
 
-// daemonsCmd runs the host-side proxy and SNI gateway in the foreground.
-// It is spawned detached by cluster create/start.
+// daemonsCmd manages the host-side daemons (proxy, SNI gateway, webhook).
+// Invoked bare it RUNS them in the foreground — the internal mode spawned
+// detached by cluster create/start; users manage via the subcommands.
 var daemonsCmd = &cobra.Command{
-	Use:    "daemons",
-	Hidden: true,
-	Args:   cobra.NoArgs,
+	Use:   "daemons",
+	Short: "Manage the host daemons (proxy, SNI gateway, egress, webhook)",
+	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		fail(cluster.RunDaemons(loadConfig(nil)))
 	},
 }
 
+var daemonsStatusCmd = &cobra.Command{
+	Use:     "status",
+	Aliases: []string{"list", "ls"},
+	Short:   "Show the daemons' process and listener state",
+	Args:    cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DaemonsStatus(loadConfigDefault(nil)))
+	},
+}
+
+var daemonsRestartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: "Stop the daemons and spawn them fresh (picks up config changes)",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.RestartDaemons(loadConfigDefault(nil)))
+	},
+}
+
+var daemonsStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the host daemons (cluster start spawns them again)",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		cluster.StopDaemons(loadConfigDefault(nil))
+	},
+}
+
 func init() {
 	configCmd.AddCommand(configViewCmd)
+	daemonsCmd.AddCommand(daemonsStatusCmd, daemonsRestartCmd, daemonsStopCmd)
 	rootCmd.AddCommand(statusCmd, configCmd, versionCmd, daemonsCmd)
 }
