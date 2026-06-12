@@ -178,6 +178,7 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 		if wasRunning {
 			_, _ = runContainer("start", cfg.RegistryName)
 			_, _ = runContainer("start", cfg.ServerName)
+			repairVirtiofs(cfg)
 		}
 		return err
 	}
@@ -193,6 +194,10 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 			return fmt.Errorf("snapshot saved, but restart failed: %s", out)
 		}
 		applyCPUPriority(cfg)
+		// a warm resume is a restore from saved machine state, which kills
+		// the stateful virtiofs sessions — without the repair every new
+		// image pull fails on the unreadable registry CA bundle
+		repairVirtiofs(cfg)
 	}
 	mode := "cold"
 	if warm {
