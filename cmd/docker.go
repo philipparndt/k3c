@@ -14,7 +14,9 @@ provides a real Docker Engine API for Testcontainers, the docker CLI,
 and other tools. Pulls go through the k3c proxy (and pull cache for
 docker.io); the image store lives on a volume surviving recreation.
 
-Point clients at it with: eval $(k3c docker env)`,
+'docker up' activates the "k3c" docker context, so the docker CLI and
+Testcontainers use the sidecar automatically; for shells/CI that prefer
+an env var, use: eval $(k3c docker env)`,
 }
 
 var dockerUpCmd = &cobra.Command{

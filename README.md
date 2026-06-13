@@ -179,9 +179,10 @@ pullCache:                     # host-side pull-through cache: transparent,
                                # as fallback endpoints (applies on create)
 
 docker:                        # docker:dind sidecar VM: real engine API for
-  enabled: true                # Testcontainers/docker CLI (k3c docker up,
-  # cpus: 4                    # then: eval $(k3c docker env))
-  # memory: 8G
+  enabled: true                # Testcontainers/docker CLI. `k3c docker up`
+  # cpus: 4                    # creates+activates the "k3c" docker context,
+  # memory: 8G                 # so docker just works; `down` restores default
+  # context: k3c               # context name ("off" to not manage one)
 
 caCerts:                       # added to the node's registry CA bundle
   - certs/*.crt                # relative to this file

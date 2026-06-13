@@ -98,6 +98,10 @@ type FileConfig struct {
 		CPUs    int    `yaml:"cpus"`   // default 4
 		Memory  string `yaml:"memory"` // default 8G
 		Port    int    `yaml:"port"`   // engine API port, default 2375
+		// docker CLI context created and activated on `docker up` (and
+		// restored to default on `docker down`); default "k3c", "off"
+		// disables context management
+		Context string `yaml:"context"`
 	} `yaml:"docker"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
 	Registries string `yaml:"registries"`
@@ -159,6 +163,7 @@ type Config struct {
 	DockerCPUs    string
 	DockerMemory  string
 	DockerPort    string
+	DockerContext string // docker CLI context name ("off" disables)
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
@@ -267,6 +272,7 @@ func merge(dst *FileConfig, src FileConfig) {
 	i(&dst.Docker.CPUs, src.Docker.CPUs)
 	s(&dst.Docker.Memory, src.Docker.Memory)
 	i(&dst.Docker.Port, src.Docker.Port)
+	s(&dst.Docker.Context, src.Docker.Context)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
 	s(&dst.Registries, src.Registries)
 }
@@ -431,6 +437,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		DockerCPUs:           port(fc.Docker.CPUs, 4),
 		DockerMemory:         def(fc.Docker.Memory, "8G"),
 		DockerPort:           port(fc.Docker.Port, 2375),
+		DockerContext:        def(fc.Docker.Context, "k3c"),
 		Registries:           fc.Registries,
 		ContainerBinary:      def(fc.ContainerBinary, "container"),
 		AutoReclaim:          def(fc.Cluster.AutoReclaim, "10m"),

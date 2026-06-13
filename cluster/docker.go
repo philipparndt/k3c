@@ -3,7 +3,9 @@ package cluster
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/philipparndt/go-logger"
@@ -29,7 +31,7 @@ func DockerUp(cfg *config.Config) error {
 	}
 	if containerExists(dockerName, true) {
 		logger.Info("docker sidecar already running")
-		return dockerPrintHost(cfg)
+		return dockerReady(cfg)
 	}
 	if containerExists(dockerName, false) {
 		logger.Info("starting docker sidecar")
@@ -98,27 +100,88 @@ func DockerUp(cfg *config.Config) error {
 	return dockerAwait(cfg)
 }
 
-// dockerAwait waits until the engine answers, then prints the endpoint.
+// dockerAwait waits until the engine answers, then finalizes the sidecar.
 func dockerAwait(cfg *config.Config) error {
 	logger.Info("waiting for the docker engine")
 	for i := 0; i < 60; i++ {
 		if out, err := runContainer("exec", dockerName, "docker", "version", "--format", "{{.Server.Version}}"); err == nil {
 			logger.Info("docker engine " + firstLine(out) + " ready")
-			return dockerPrintHost(cfg)
+			return dockerReady(cfg)
 		}
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("docker engine did not become ready; check: k3c container logs %s", dockerName)
 }
 
-func dockerPrintHost(cfg *config.Config) error {
+// dockerReady activates the docker context (so docker and Testcontainers
+// use the sidecar automatically) and reports how to reach it.
+func dockerReady(cfg *config.Config) error {
 	host, err := DockerHost(cfg)
 	if err != nil {
 		return err
 	}
+	if ensureDockerContext(cfg, host) {
+		logger.Info("docker context '" + cfg.DockerContext + "' active — docker and Testcontainers use the sidecar automatically")
+		return nil
+	}
+	// no context (docker CLI absent or disabled): fall back to env
 	fmt.Println("export DOCKER_HOST=" + host)
 	fmt.Println("# activate with: eval $(k3c docker env)")
 	return nil
+}
+
+// ensureDockerContext creates or updates the k3c docker context to point
+// at the sidecar and makes it the active context. Returns false when
+// context management is disabled or the docker CLI is unavailable, so the
+// caller can fall back to DOCKER_HOST. The sidecar IP changes across
+// recreates, so the host is refreshed on every up.
+func ensureDockerContext(cfg *config.Config, host string) bool {
+	name := cfg.DockerContext
+	if name == "" || name == "off" {
+		return false
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return false
+	}
+	if _, err := runOut("docker", "context", "inspect", name); err == nil {
+		if out, err := runOut("docker", "context", "update", name, "--docker", "host="+host); err != nil {
+			logger.Warn("updating docker context: " + out)
+			return false
+		}
+	} else {
+		if out, err := runOut("docker", "context", "create", name,
+			"--description", "k3c docker sidecar", "--docker", "host="+host); err != nil {
+			logger.Warn("creating docker context: " + out)
+			return false
+		}
+	}
+	if out, err := runOut("docker", "context", "use", name); err != nil {
+		logger.Warn("activating docker context: " + out)
+		return false
+	}
+	return true
+}
+
+// restoreDockerContext switches the docker CLI back to the default context
+// when our context is the active one, so stopping the sidecar does not
+// leave the CLI pointed at a dead engine.
+func restoreDockerContext(cfg *config.Config) {
+	name := cfg.DockerContext
+	if name == "" || name == "off" {
+		return
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return
+	}
+	current, err := runOut("docker", "context", "show")
+	if err != nil || strings.TrimSpace(current) != name {
+		return // the user is on a different context; leave it alone
+	}
+	if out, err := runOut("docker", "context", "use", "default"); err != nil {
+		logger.Warn("restoring docker context: " + out)
+		return
+	}
+	logger.Info("docker context restored to 'default'")
 }
 
 // DockerHost returns the engine endpoint. The sidecar VM's address is
@@ -144,7 +207,8 @@ func DockerEnv(cfg *config.Config) error {
 	return nil
 }
 
-// DockerDown stops the sidecar (the image store volume stays).
+// DockerDown stops the sidecar (the image store volume stays) and restores
+// the default docker context.
 func DockerDown(cfg *config.Config) error {
 	if !containerExists(dockerName, false) {
 		return fmt.Errorf("docker sidecar does not exist")
@@ -152,16 +216,28 @@ func DockerDown(cfg *config.Config) error {
 	if out, err := runContainer("stop", dockerName); err != nil {
 		return fmt.Errorf("stopping docker sidecar: %s", out)
 	}
+	restoreDockerContext(cfg)
 	logger.Info("docker sidecar stopped (image store kept; k3c docker up restarts it)")
 	return nil
 }
 
-// DockerStatus prints the sidecar state.
+// DockerStatus prints the sidecar state and the active docker context.
 func DockerStatus(cfg *config.Config) error {
 	switch {
 	case containerExists(dockerName, true):
 		fmt.Println("docker sidecar: running")
-		return dockerPrintHost(cfg)
+		if host, err := DockerHost(cfg); err == nil {
+			fmt.Println("  host:    " + host)
+		}
+		if name := cfg.DockerContext; name != "" && name != "off" {
+			if current, err := runOut("docker", "context", "show"); err == nil {
+				active := "inactive"
+				if strings.TrimSpace(current) == name {
+					active = "active"
+				}
+				fmt.Println("  context: " + name + " (" + active + ")")
+			}
+		}
 	case containerExists(dockerName, false):
 		fmt.Println("docker sidecar: stopped (k3c docker up starts it)")
 	default:
