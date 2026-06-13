@@ -29,6 +29,12 @@ func DockerUp(cfg *config.Config) error {
 	if err := preflight(); err != nil {
 		return err
 	}
+	// the sidecar pulls through the host proxy and pull-cache mirror, and
+	// its published ports are mirrored to the host — all served by the
+	// daemons, so ensure they run even without a cluster
+	if err := SpawnDaemons(cfg); err != nil {
+		return err
+	}
 	if containerExists(dockerName, true) {
 		logger.Info("docker sidecar already running")
 		return dockerReady(cfg)
