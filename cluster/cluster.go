@@ -197,8 +197,7 @@ func startServer(cfg *config.Config) error {
 	} else {
 		logger.Info("kernel lacks br_netfilter/vxlan: applying host-gw + masquerade-all workarounds")
 	}
-	proxyURL := fmt.Sprintf("http://%s:%s", cfg.VmnetGateway, cfg.ProxyPort)
-	out, err := runContainer("run", "-d",
+	args := []string{"run", "-d",
 		"--name", cfg.ServerName,
 		// k3s remounts /sys, mounts cgroups, etc. — needs full capabilities
 		"--cap-add", "ALL",
@@ -208,22 +207,48 @@ func startServer(cfg *config.Config) error {
 		"-c", cfg.CPUs,
 		"--tmpfs", "/run",
 		"--tmpfs", "/var/run",
-		"-v", cfg.K3sEtcDir()+":/etc/rancher/k3s",
+		"-v", cfg.K3sEtcDir() + ":/etc/rancher/k3s",
 		// k3s watches this directory and imports image tarballs dropped
 		// into it (used by `k3c image import`)
-		"-v", cfg.ImagesDir()+":/var/lib/rancher/k3s/agent/images",
-		"-e", "HTTP_PROXY="+proxyURL,
-		"-e", "HTTPS_PROXY="+proxyURL,
-		"-e", "NO_PROXY="+cfg.NoProxy(),
+		"-v", cfg.ImagesDir() + ":/var/lib/rancher/k3s/agent/images",
+	}
+	if cfg.TransparentEgress {
+		// dual-NIC: gvnet NIC (default route, transparent egress) + the vmnet
+		// default network (host<->VM, published ports); no CONNECT proxy needed
+		nets, err := gvnetNetworks(cfg, cfg.ServerName)
+		if err != nil {
+			return err
+		}
+		args = append(args, nets...)
+	} else {
+		proxyURL := fmt.Sprintf("http://%s:%s", cfg.VmnetGateway, cfg.ProxyPort)
+		args = append(args,
+			"-e", "HTTP_PROXY="+proxyURL,
+			"-e", "HTTPS_PROXY="+proxyURL,
+			"-e", "NO_PROXY="+cfg.NoProxy())
+	}
+	args = append(args,
 		"-p", "0.0.0.0:"+cfg.APIPortInternal+":6443",
 		"-p", "127.0.0.1:"+cfg.IngressPortInternal+":443",
 		"--entrypoint", "/bin/sh",
 		cfg.Image,
 		"-c", cfg.K3sCommand(modernKernel))
-	if err != nil {
+	if out, err := runContainer(args...); err != nil {
 		return fmt.Errorf("k3s start failed: %s", out)
 	}
 	return nil
+}
+
+// startServerVM (re)starts the existing server VM, first ensuring its
+// transparent-egress netstack is running (the per-VM netstack exits when its
+// VM disconnects, so a restart needs a fresh one). Returns the command output.
+func startServerVM(cfg *config.Config) (string, error) {
+	if cfg.TransparentEgress {
+		if _, err := ensureGvnet(cfg, cfg.ServerName); err != nil {
+			return "", err
+		}
+	}
+	return runContainer("start", cfg.ServerName)
 }
 
 // kubeconfig reads the kubeconfig k3s wrote into the bind mount
@@ -473,6 +498,9 @@ func Delete(cfg *config.Config, snapshots bool) error {
 	logger.Info("removing containers")
 	_, _ = runContainer("rm", "-f", cfg.ServerName)
 	_, _ = runContainer("rm", "-f", cfg.RegistryName)
+	if cfg.TransparentEgress {
+		removeGvnet(cfg, cfg.ServerName)
+	}
 	StopDaemons(cfg)
 	for _, kind := range []string{"delete-context", "delete-cluster", "delete-user"} {
 		_, _ = runOut("kubectl", "config", kind, cfg.KubeContext)
@@ -492,6 +520,9 @@ func Stop(cfg *config.Config) error {
 	logger.Info("stopping cluster '" + cfg.Cluster + "' (state is preserved)")
 	_, _ = runContainer("stop", cfg.ServerName)
 	_, _ = runContainer("stop", cfg.RegistryName)
+	if cfg.TransparentEgress {
+		stopGvnet(cfg, cfg.ServerName)
+	}
 	logger.Info("stopped; resume with: k3c cluster start " + cfg.Cluster)
 	return nil
 }
@@ -512,7 +543,7 @@ func Start(cfg *config.Config) error {
 	}
 	_, _ = runContainer("start", cfg.RegistryName)
 	if !containerExists(cfg.ServerName, true) {
-		if out, err := runContainer("start", cfg.ServerName); err != nil {
+		if out, err := startServerVM(cfg); err != nil {
 			return fmt.Errorf("start failed: %s", out)
 		}
 	}
@@ -528,7 +559,7 @@ func Start(cfg *config.Config) error {
 		// server. Detect the death and start it again, once.
 		if attempt == 0 && !containerExists(cfg.ServerName, true) {
 			logger.Warn("server exited unexpectedly during startup; starting it again")
-			if out, err := runContainer("start", cfg.ServerName); err != nil {
+			if out, err := startServerVM(cfg); err != nil {
 				return fmt.Errorf("restart failed: %s", out)
 			}
 			// the restart spawned a new VM process; without re-clamping it

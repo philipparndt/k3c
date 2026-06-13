@@ -180,7 +180,7 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 		_ = os.RemoveAll(dir)
 		if wasRunning {
 			_, _ = runContainer("start", cfg.RegistryName)
-			_, _ = runContainer("start", cfg.ServerName)
+			_, _ = startServerVM(cfg)
 			repairVirtiofs(cfg)
 		}
 		return err
@@ -193,7 +193,7 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 			logger.Info("restarting cluster")
 		}
 		_, _ = runContainer("start", cfg.RegistryName)
-		if out, err := runContainer("start", cfg.ServerName); err != nil {
+		if out, err := startServerVM(cfg); err != nil {
 			return fmt.Errorf("snapshot saved, but restart failed: %s", out)
 		}
 		applyCPUPriority(cfg)
@@ -232,10 +232,25 @@ func containerIP(name string) string {
 	for _, line := range strings.Split(out, "\n")[1:] {
 		fields := strings.Fields(line)
 		if len(fields) >= 6 && fields[0] == name && strings.Contains(fields[5], ".") {
-			return strings.Split(fields[5], "/")[0]
+			return hostReachableIP(fields[5])
 		}
 	}
 	return ""
+}
+
+// hostReachableIP picks the host-routable address from container ls's IP column,
+// which lists several (comma-separated) when a VM has multiple NICs — e.g. a
+// transparent-egress gvnet NIC plus the vmnet NIC. The gvnet range lives in a
+// userspace netstack the host cannot route to, so prefer the vmnet address
+// (192.168.64.x, the VmnetGateway subnet); fall back to the first listed.
+func hostReachableIP(col string) string {
+	ips := strings.Split(col, ",")
+	for _, ip := range ips {
+		if addr := strings.SplitN(strings.TrimSpace(ip), "/", 2)[0]; strings.HasPrefix(addr, "192.168.64.") {
+			return addr
+		}
+	}
+	return strings.SplitN(strings.TrimSpace(ips[0]), "/", 2)[0]
 }
 
 func writeSnapshot(cfg *config.Config, dir string, warm bool, serverIP string) error {

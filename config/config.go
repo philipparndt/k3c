@@ -78,6 +78,12 @@ type FileConfig struct {
 		// it). The target host also needs an entry in domains so pods
 		// resolve it to the gateway.
 		Forwards []string `yaml:"forwards"`
+		// Transparent enables the gvisor-tap-vsock userspace netstack for
+		// transparent egress: each VM's NIC is backed by a host-side netstack
+		// that re-originates every connection from host sockets, so corporate
+		// egress works with no SNI gateway, no CoreDNS override and no
+		// per-domain config. Opt-in; env K3C_TRANSPARENT_EGRESS also enables it.
+		Transparent *bool `yaml:"transparent"`
 	} `yaml:"egress"`
 	// Pull-through cache: a host-side registry cache serving as first
 	// mirror endpoint for every configured registry. Transparent for the
@@ -151,6 +157,10 @@ type Config struct {
 	IngressDomains []string
 	Registries     string
 
+	// TransparentEgress drives VMs through a per-VM gvisor-tap-vsock netstack
+	// instead of the SNI gateway / CONNECT proxy (see Egress.Transparent).
+	TransparentEgress bool
+
 	ContainerBinary string // the Apple container CLI to use
 	AutoReclaim     string // auto-reclaim interval ("off" disables)
 	CPUPriority     string // "low" (default) or "normal"
@@ -167,6 +177,15 @@ type Config struct {
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
+}
+
+// truthyEnv reports whether an environment variable is set to a truthy value.
+func truthyEnv(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	}
+	return false
 }
 
 // pullCacheRetention resolves the configured retention days: default 14,
@@ -274,6 +293,9 @@ func merge(dst *FileConfig, src FileConfig) {
 	i(&dst.Docker.Port, src.Docker.Port)
 	s(&dst.Docker.Context, src.Docker.Context)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
+	if src.Egress.Transparent != nil {
+		dst.Egress.Transparent = src.Egress.Transparent
+	}
 	s(&dst.Registries, src.Registries)
 }
 
@@ -430,6 +452,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		EgressPorts:          fc.Egress.Ports,
 		EgressForwards:       forwards,
 		IngressDomains:       fc.Egress.IngressDomains,
+		TransparentEgress:    (fc.Egress.Transparent != nil && *fc.Egress.Transparent) || truthyEnv("K3C_TRANSPARENT_EGRESS"),
 		PullCacheEnabled:     fc.PullCache.Enabled != nil && *fc.PullCache.Enabled,
 		PullCachePort:        port(fc.PullCache.Port, 5011),
 		PullCacheRetention:   pullCacheRetention(fc.PullCache.RetentionDays),
@@ -475,6 +498,17 @@ func (c *Config) ContextPrefix() string {
 // dropped (breaking pod DNS) — masquerade-all forces service traffic through
 // the node instead. The modern kernel needs neither: flannel uses its default
 // (vxlan) and DNAT works natively.
+// GvnetRouteSnippet is a shell snippet for a VM entrypoint (transparent egress)
+// that repoints the guest at the gvnet NIC — the second, egress NIC — while the
+// vmnet NIC stays primary for host<->VM (published ports, containerIP). It
+// finds the sole 192.168.x interface that is not the vmnet subnet
+// (192.168.64.x), uses that subnet's .1 as the gateway, makes it the default
+// route, and points DNS at it: the gvnet netstack's resolver re-originates
+// queries from the host (the vmnet gateway does not resolve external names).
+// For k3s this becomes the CoreDNS upstream, so pods resolve + egress too.
+const GvnetRouteSnippet = `GV=$(ip -4 -o addr show | awk '$4 !~ /^192[.]168[.]64[.]/ && $4 ~ /^192[.]168[.]/ {print $2" "$4; exit}'); if [ -n "$GV" ]; then GVGW=$(echo "${GV#* }" | awk -F'[./]' '{print $1"."$2"."$3".1"}'); ip route replace default via "$GVGW" dev "${GV%% *}"; echo "nameserver $GVGW" > /etc/resolv.conf; fi
+`
+
 func (c *Config) K3sCommand(modernKernel bool) string {
 	args := []string{
 		"--disable=traefik",
@@ -488,11 +522,22 @@ func (c *Config) K3sCommand(modernKernel bool) string {
 	if c.APIHost != "127.0.0.1" {
 		args = append(args, "--tls-san="+c.APIHost)
 	}
+	var prefix string
+	if c.TransparentEgress {
+		// Dual-NIC: the gvnet NIC owns the default route (transparent egress),
+		// so pin k3s to the vmnet NIC for the node IP and flannel — that IP
+		// stays host-routable (published API port, kubelet) while egress goes
+		// out gvnet. Resolve the vmnet NIC/IP at boot (the runtime assigns it).
+		args = append(args, "--node-ip=$K3C_NODE_IP", "--flannel-iface=$K3C_VMNET_IF")
+		prefix = `K3C_VMNET_IF=$(ip -4 -o addr show | awk '/192[.]168[.]64[.]/{print $2; exit}')
+K3C_NODE_IP=$(ip -4 -o addr show | awk '/192[.]168[.]64[.]/{split($4,a,"/"); print a[1]; exit}')
+` + GvnetRouteSnippet
+	}
 	args = append(args, c.ExtraK3sArgs...)
 	return `for b in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
 	ln -sf xtables-legacy-multi /bin/aux/$b
 done
-` + c.sysctlCommands() + `exec k3s server ` + strings.Join(args, " ") + "\n"
+` + prefix + c.sysctlCommands() + `exec k3s server ` + strings.Join(args, " ") + "\n"
 }
 
 // sysctlCommands renders the node kernel parameter setup.
@@ -517,6 +562,12 @@ func (c *Config) sysctlCommands() string {
 // would shadow in-cluster DNS; never-matching templates for the cluster
 // zones and the node name fall those queries through to the next plugin.
 func (c *Config) CorednsCustom() string {
+	// Transparent egress resolves real DNS (via the per-VM netstack) and
+	// connects directly, so the egress-domain override is neither needed nor
+	// wanted — pods must not have external names rewritten to a gateway.
+	if c.TransparentEgress {
+		return ""
+	}
 	if len(c.EgressDomains) == 0 {
 		return ""
 	}

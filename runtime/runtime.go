@@ -152,3 +152,35 @@ func Env() []string {
 	}
 	return r.Env
 }
+
+// GvnetBinary resolves the `gvnet` transparent-egress netstack helper. It is
+// a separate binary (so the gvisor netstack does not bloat the k3c binary),
+// shipped alongside the bundled runtime. Resolution precedence:
+//
+//  1. K3C_GVNET_BINARY — explicit path.
+//  2. <bundle>/bin/gvnet — bundled next to the container runtime.
+//  3. <dir of k3c executable>/gvnet — a sibling of the running k3c.
+//  4. "gvnet" from PATH.
+func GvnetBinary() string {
+	if p := os.Getenv("K3C_GVNET_BINARY"); p != "" {
+		return p
+	}
+	if HasBundle() {
+		if dir, err := extractBundle(); err == nil {
+			if bin := filepath.Join(dir, "bin", "gvnet"); fileExists(bin) {
+				return bin
+			}
+		}
+	}
+	if exe, err := os.Executable(); err == nil {
+		if bin := filepath.Join(filepath.Dir(exe), "gvnet"); fileExists(bin) {
+			return bin
+		}
+	}
+	return "gvnet"
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
+}
