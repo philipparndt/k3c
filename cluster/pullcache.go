@@ -226,9 +226,40 @@ func (p *pullCache) serveBlob(w http.ResponseWriter, r *http.Request, ns, name, 
 	if r.Method == http.MethodGet {
 		p.countServe(hit, p.blobPath(digest))
 	}
+	p.serveFile(w, r, p.blobPath(digest), digest, "application/octet-stream")
+}
+
+// serveFile streams a cached file as the response body. It deliberately
+// avoids http.ServeFile: ServeFile copies the *os.File straight to the
+// socket via the sendfile(2) zero-copy path, which corrupts the response
+// body when the peer is across the Apple `container` vmnet virtual NIC —
+// the bytes arrive mangled, so the node reads blob content where the HTTP
+// status line should be ("malformed HTTP status code <binary>"). Wrapping
+// the file in a plain io.Reader defeats the ResponseWriter's sendfile fast
+// path, forcing ordinary write(2) syscalls, which the vmnet path handles
+// correctly. Range requests are not honored — containerd falls back to a
+// full read.
+func (p *pullCache) serveFile(w http.ResponseWriter, r *http.Request, path, digest, contentType string) {
+	f, err := os.Open(path)
+	if err != nil {
+		http.Error(w, "content missing", http.StatusBadGateway)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "content missing", http.StatusBadGateway)
+		return
+	}
 	w.Header().Set("Docker-Content-Digest", digest)
-	w.Header().Set("Content-Type", "application/octet-stream")
-	http.ServeFile(w, r, p.blobPath(digest))
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", fmt.Sprint(info.Size()))
+	if r.Method == http.MethodHead {
+		return
+	}
+	// the anonymous wrapper hides the *os.File type, so the http
+	// ResponseWriter's ReadFrom cannot take the sendfile path
+	_, _ = io.Copy(w, struct{ io.Reader }{f})
 }
 
 func (p *pullCache) serveManifestByDigest(w http.ResponseWriter, r *http.Request, ns, name, digest string) {
