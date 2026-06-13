@@ -16,7 +16,7 @@ func TestK3sCommandContainsSysctls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := cfg.K3sCommand()
+	cmd := cfg.K3sCommand(false)
 	for _, want := range []string{
 		"sysctl -w fs.inotify.max_user_instances=1024",
 		"sysctl -w fs.inotify.max_user_watches=1048576",
@@ -26,6 +26,17 @@ func TestK3sCommandContainsSysctls(t *testing.T) {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("k3s command missing %q:\n%s", want, cmd)
 		}
+	}
+
+	// On the old kernel the workarounds are present; on the modern kernel
+	// (br_netfilter + vxlan) they must be gone.
+	old := cfg.K3sCommand(false)
+	if !strings.Contains(old, "--flannel-backend=host-gw") || !strings.Contains(old, "masquerade-all") {
+		t.Errorf("old-kernel command missing workarounds:\n%s", old)
+	}
+	modern := cfg.K3sCommand(true)
+	if strings.Contains(modern, "host-gw") || strings.Contains(modern, "masquerade-all") {
+		t.Errorf("modern-kernel command should not have workarounds:\n%s", modern)
 	}
 }
 
@@ -129,8 +140,8 @@ configs:
 	}
 	out := cfg.EffectiveRegistries()
 	for _, want := range []string{
-		"http://192.168.64.1:5011", // the cache endpoint
-		"https://dockerhub-remote.example.com", // original upstream as fallback
+		"http://192.168.64.1:5011",                // the cache endpoint
+		"https://dockerhub-remote.example.com",    // original upstream as fallback
 		"https://private-reg.example.com",         // configs-only host gets a mirror
 		"ca_file: /etc/rancher/k3s/ca-bundle.pem", // configs preserved
 	} {

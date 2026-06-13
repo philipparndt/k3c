@@ -191,6 +191,12 @@ func caBundle(cfg *config.Config) ([]byte, error) {
 
 func startServer(cfg *config.Config) error {
 	logger.Info(fmt.Sprintf("starting k3s server (%s cpus, %s memory)", cfg.CPUs, cfg.Memory))
+	modernKernel := KernelHasModernNetfilter()
+	if modernKernel {
+		logger.Info("kernel has br_netfilter + vxlan: flannel default (vxlan), no masquerade workaround")
+	} else {
+		logger.Info("kernel lacks br_netfilter/vxlan: applying host-gw + masquerade-all workarounds")
+	}
 	proxyURL := fmt.Sprintf("http://%s:%s", cfg.VmnetGateway, cfg.ProxyPort)
 	out, err := runContainer("run", "-d",
 		"--name", cfg.ServerName,
@@ -213,7 +219,7 @@ func startServer(cfg *config.Config) error {
 		"-p", "127.0.0.1:"+cfg.IngressPortInternal+":443",
 		"--entrypoint", "/bin/sh",
 		cfg.Image,
-		"-c", cfg.K3sCommand())
+		"-c", cfg.K3sCommand(modernKernel))
 	if err != nil {
 		return fmt.Errorf("k3s start failed: %s", out)
 	}

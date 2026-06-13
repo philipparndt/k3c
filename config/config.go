@@ -459,24 +459,31 @@ func (c *Config) ContextPrefix() string {
 	return strings.TrimSuffix(c.KubeContext, c.Cluster)
 }
 
-// K3sCommand builds the in-container startup script.
+// K3sCommand builds the in-container startup script. modernKernel reports
+// whether the node's kernel has br_netfilter and vxlan (the recommended kata
+// 6.18+ kernel does; the older 6.12.28-153 does not) — see
+// cluster.KernelHasModernNetfilter.
 //
-// The Apple container VM kernel has no nftables support, but k3s' bundled
-// iptables wrapper (iptables-detect.sh) picks the nft backend on a kernel
-// with no pre-existing rules, which kills kube-proxy. Force the legacy
-// backend (same thing kindest/node does in its entrypoint), then start k3s.
-// The kernel also lacks vxlan, so flannel uses host-gw (fine: single node).
-// It lacks br_netfilter too, so same-node ClusterIP replies would bypass
-// iptables un-NAT on the flannel bridge and get dropped (breaking e.g. all
-// pod DNS); masquerade-all forces service traffic through the node instead.
-func (c *Config) K3sCommand() string {
+// k3s' bundled iptables wrapper (iptables-detect.sh) picks the nft backend on
+// a kernel with no pre-existing rules, which killed kube-proxy on the old
+// nftables-less kernel; forcing the legacy backend (as kindest/node does) is
+// harmless on both and kept unconditionally.
+//
+// On the OLD kernel two more workarounds are needed: it lacks vxlan so flannel
+// must use host-gw (fine: single node), and it lacks br_netfilter so same-node
+// ClusterIP replies bypass iptables un-NAT on the flannel bridge and get
+// dropped (breaking pod DNS) — masquerade-all forces service traffic through
+// the node instead. The modern kernel needs neither: flannel uses its default
+// (vxlan) and DNAT works natively.
+func (c *Config) K3sCommand(modernKernel bool) string {
 	args := []string{
 		"--disable=traefik",
 		"--cluster-cidr=" + c.ClusterCIDR,
 		"--service-cidr=" + c.ServiceCIDR,
 		"--tls-san=127.0.0.1",
-		"--flannel-backend=host-gw",
-		"--kube-proxy-arg=masquerade-all=true",
+	}
+	if !modernKernel {
+		args = append(args, "--flannel-backend=host-gw", "--kube-proxy-arg=masquerade-all=true")
 	}
 	if c.APIHost != "127.0.0.1" {
 		args = append(args, "--tls-san="+c.APIHost)
