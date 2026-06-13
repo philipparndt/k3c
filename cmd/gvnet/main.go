@@ -22,6 +22,8 @@ import (
 
 func main() {
 	socket := flag.String("socket", "", "vfkit unixgram socket URI the VM NIC connects to (e.g. unixgram:///path/gvnet.sock)")
+	subnet := flag.String("subnet", gvnet.Subnet, "CIDR of the virtual network the VM sees")
+	gateway := flag.String("gateway", gvnet.GatewayIP, "gateway IP within the subnet")
 	flag.Parse()
 	if *socket == "" {
 		fmt.Fprintln(os.Stderr, "gvnet: -socket is required")
@@ -31,7 +33,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := gvnet.Run(ctx, *socket); err != nil && ctx.Err() == nil {
+	if err := gvnet.RunNet(ctx, *socket, *subnet, *gateway); err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, "gvnet:", err)
 		os.Exit(1)
 	}

@@ -33,29 +33,35 @@ const (
 	mtu        = 1500
 )
 
-// config builds the netstack configuration. The gateway NATs a virtual IP back
-// to the host loopback so the VM can still reach k3c's host daemons (pull
-// cache, registry forward, webhook) while everything else egresses
-// transparently.
-func config() *types.Configuration {
+// config builds the netstack configuration for the given subnet/gateway. The
+// gateway NATs a virtual IP back to the host loopback so the VM can still
+// reach k3c's host daemons (pull cache, registry forward, webhook) while
+// everything else egresses transparently.
+func config(subnet, gatewayIP string) *types.Configuration {
 	return &types.Configuration{
 		MTU:               mtu,
-		Subnet:            Subnet,
-		GatewayIP:         GatewayIP,
+		Subnet:            subnet,
+		GatewayIP:         gatewayIP,
 		GatewayMacAddress: gatewayMAC,
 		NAT: map[string]string{
-			GatewayIP: "127.0.0.1",
+			gatewayIP: "127.0.0.1",
 		},
 		DHCPStaticLeases: map[string]string{},
 		Forwards:         map[string]string{},
 	}
 }
 
-// Run serves the netstack for the VM connected on the vfkit unixgram socket
-// (e.g. "unixgram:///path/to/gvnet.sock") until ctx is done or the connection
-// drops.
+// Run serves the netstack on the default subnet (192.168.127.0/24).
 func Run(ctx context.Context, socketURI string) error {
-	vn, err := virtualnetwork.New(config())
+	return RunNet(ctx, socketURI, Subnet, GatewayIP)
+}
+
+// RunNet serves the netstack for the VM connected on the vfkit unixgram socket
+// (e.g. "unixgram:///path/to/gvnet.sock") using the given subnet (CIDR) and
+// gateway IP, until ctx is done or the connection drops. Each VM gets its own
+// netstack on a distinct subnet (the runtime rejects overlapping networks).
+func RunNet(ctx context.Context, socketURI, subnet, gatewayIP string) error {
+	vn, err := virtualnetwork.New(config(subnet, gatewayIP))
 	if err != nil {
 		return fmt.Errorf("gvnet: new virtual network: %w", err)
 	}
