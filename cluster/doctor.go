@@ -29,6 +29,7 @@ func Doctor(cfg *config.Config) error {
 	d.checkKubectl()
 	d.checkRuntime()
 	d.checkHostDNS(cfg)
+	d.checkCorporateNetwork(cfg)
 	d.checkCIDRCollisions(cfg)
 
 	d.section("daemons")
@@ -148,6 +149,41 @@ func (d *doctor) checkHostDNS(cfg *config.Config) {
 		}
 	}
 	d.pass(fmt.Sprintf("host DNS resolves the registry mirrors (%s)", strings.Join(hosts, ", ")))
+}
+
+// tcpReachable reports whether host:port accepts a TCP connection.
+func tcpReachable(host, port string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), timeout)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// checkCorporateNetwork tests the host's DIRECT reachability of a
+// corporate registry host (not via the k3c proxy). Host-side tools — the
+// `ic`/gradle build pulling from the corporate Maven repo, plain docker —
+// depend on this, and a half-up VPN/Zscaler tunnel leaves public internet
+// working while corporate hosts time out, surfacing as opaque build
+// stack traces. When the corporate host is unreachable, a public probe
+// distinguishes "VPN down" from "no network".
+func (d *doctor) checkCorporateNetwork(cfg *config.Config) {
+	hosts := registryHosts(cfg)
+	if len(hosts) == 0 {
+		return
+	}
+	host := hosts[0]
+	if tcpReachable(host, "443", 6*time.Second) {
+		d.pass("corporate network reachable (" + host + ":443)")
+		return
+	}
+	if tcpReachable("1.1.1.1", "443", 6*time.Second) {
+		d.fail("corporate host "+host+" unreachable, but public internet is up",
+			"VPN/Zscaler appears down — reconnect it; host builds (ic/gradle) and image pulls will fail until then")
+	} else {
+		d.fail("no network connectivity ("+host+" and public both unreachable)", "check your network connection")
+	}
 }
 
 // checkCIDRCollisions warns when another interface (typically the
