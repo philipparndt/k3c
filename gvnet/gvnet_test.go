@@ -1,4 +1,4 @@
-package cluster
+package gvnet
 
 import (
 	"os"
@@ -9,10 +9,10 @@ import (
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 )
 
-// Milestone 1: the transparent-egress netstack must build a valid config,
-// create its virtual network, and stand up the vfkit unixgram socket.
+// The transparent-egress netstack must build a valid config, create its
+// virtual network, and stand up the vfkit unixgram socket.
 func TestGvnetInitializes(t *testing.T) {
-	if _, err := virtualnetwork.New(gvnetConfig()); err != nil {
+	if _, err := virtualnetwork.New(config()); err != nil {
 		t.Fatalf("virtualnetwork.New: %v", err)
 	}
 	sock := filepath.Join(t.TempDir(), "gvnet.sock")
