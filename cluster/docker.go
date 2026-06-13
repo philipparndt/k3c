@@ -29,6 +29,8 @@ func DockerUp(cfg *config.Config) error {
 	if err := preflight(); err != nil {
 		return err
 	}
+	// match the cluster behavior: run the sidecar on a capable kernel
+	EnsureRecommendedKernel()
 	// the sidecar pulls through the host proxy and pull-cache mirror, and
 	// its published ports are mirrored to the host — all served by the
 	// daemons, so ensure they run even without a cluster

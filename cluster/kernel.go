@@ -8,7 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
+
+	"github.com/philipparndt/go-logger"
 )
 
 // Kernel capability detection. The Apple `container` default kernel is a Kata
@@ -22,25 +23,42 @@ import (
 var (
 	ikcfgStart = []byte("IKCFG_ST")
 	ikcfgEnd   = []byte("IKCFG_ED")
-
-	modernKernelOnce sync.Once
-	modernKernelVal  bool
 )
 
 // KernelHasModernNetfilter reports whether the default container kernel has
 // br_netfilter and vxlan built in. On any error (kernel file not found, no
 // embedded config) it returns false, so the k3s workarounds stay enabled —
-// the safe choice for the old kernel.
+// the safe choice for the old kernel. Not cached: the default kernel can
+// change at runtime (see EnsureRecommendedKernel), and it is read at most a
+// couple of times per cluster create.
 func KernelHasModernNetfilter() bool {
-	modernKernelOnce.Do(func() {
-		cfg, err := defaultKernelConfig()
-		if err != nil {
-			return
-		}
-		modernKernelVal = bytes.Contains(cfg, []byte("CONFIG_BRIDGE_NETFILTER=y")) &&
-			bytes.Contains(cfg, []byte("CONFIG_VXLAN=y"))
-	})
-	return modernKernelVal
+	cfg, err := defaultKernelConfig()
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(cfg, []byte("CONFIG_BRIDGE_NETFILTER=y")) &&
+		bytes.Contains(cfg, []byte("CONFIG_VXLAN=y"))
+}
+
+// EnsureRecommendedKernel upgrades the default container kernel to the
+// recommended one when the current default lacks br_netfilter/vxlan, so new
+// clusters (and the docker sidecar) run on a capable kernel and skip the
+// host-gw/masquerade-all workarounds. It is a no-op when the kernel is already
+// modern, and degrades gracefully (keeping the workarounds) if the upgrade
+// fails — e.g. no network to fetch the kernel. Existing VMs keep their kernel;
+// only newly created ones pick up the change.
+func EnsureRecommendedKernel() {
+	if KernelHasModernNetfilter() {
+		return
+	}
+	logger.Info("default kernel lacks br_netfilter/vxlan; installing the recommended kernel (container system kernel set --recommended)")
+	if out, err := runContainer("system", "kernel", "set", "--recommended"); err != nil {
+		logger.Warn("could not install the recommended kernel: " + firstLine(out) + " — new clusters will use the host-gw/masquerade-all workarounds")
+		return
+	}
+	if KernelHasModernNetfilter() {
+		logger.Info("recommended kernel installed (has br_netfilter + vxlan); new clusters run without workarounds")
+	}
 }
 
 // defaultKernelConfig extracts the gzipped .config embedded in the default

@@ -399,6 +399,9 @@ func Create(cfg *config.Config) error {
 	if err := preflight(); err != nil {
 		return err
 	}
+	// upgrade an old kernel before the node VM is created so the new cluster
+	// boots on a br_netfilter/vxlan-capable kernel and skips the workarounds
+	EnsureRecommendedKernel()
 	if containerExists(cfg.ServerName, false) {
 		return fmt.Errorf("cluster '%s' already exists; run delete (or start) first", cfg.Cluster)
 	}
