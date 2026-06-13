@@ -90,6 +90,19 @@ type FileConfig struct {
 		// host daemons (default 14, -1 disables the automatic prune)
 		RetentionDays int `yaml:"retentionDays"`
 	} `yaml:"pullCache"`
+	// Docker sidecar: a docker:dind VM managed by k3c, providing a real
+	// Docker Engine API (DOCKER_HOST) for Testcontainers, docker CLI, and
+	// friends. Pulls go through the k3c proxy and pull cache.
+	Docker struct {
+		Enabled *bool  `yaml:"enabled"`
+		CPUs    int    `yaml:"cpus"`   // default 4
+		Memory  string `yaml:"memory"` // default 8G
+		Port    int    `yaml:"port"`   // engine API port, default 2375
+		// docker CLI context created and activated on `docker up` (and
+		// restored to default on `docker down`); default "k3c", "off"
+		// disables context management
+		Context string `yaml:"context"`
+	} `yaml:"docker"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
 	Registries string `yaml:"registries"`
 	// Path to the Apple `container` CLI (default: container from PATH).
@@ -145,6 +158,12 @@ type Config struct {
 	PullCacheEnabled   bool
 	PullCachePort      string
 	PullCacheRetention int // days; 0 disables the automatic prune
+
+	DockerEnabled bool
+	DockerCPUs    string
+	DockerMemory  string
+	DockerPort    string
+	DockerContext string // docker CLI context name ("off" disables)
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
@@ -247,6 +266,13 @@ func merge(dst *FileConfig, src FileConfig) {
 	}
 	i(&dst.PullCache.Port, src.PullCache.Port)
 	i(&dst.PullCache.RetentionDays, src.PullCache.RetentionDays)
+	if src.Docker.Enabled != nil {
+		dst.Docker.Enabled = src.Docker.Enabled
+	}
+	i(&dst.Docker.CPUs, src.Docker.CPUs)
+	s(&dst.Docker.Memory, src.Docker.Memory)
+	i(&dst.Docker.Port, src.Docker.Port)
+	s(&dst.Docker.Context, src.Docker.Context)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
 	s(&dst.Registries, src.Registries)
 }
@@ -407,6 +433,11 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		PullCacheEnabled:     fc.PullCache.Enabled != nil && *fc.PullCache.Enabled,
 		PullCachePort:        port(fc.PullCache.Port, 5011),
 		PullCacheRetention:   pullCacheRetention(fc.PullCache.RetentionDays),
+		DockerEnabled:        fc.Docker.Enabled != nil && *fc.Docker.Enabled,
+		DockerCPUs:           port(fc.Docker.CPUs, 4),
+		DockerMemory:         def(fc.Docker.Memory, "8G"),
+		DockerPort:           port(fc.Docker.Port, 2375),
+		DockerContext:        def(fc.Docker.Context, "k3c"),
 		Registries:           fc.Registries,
 		ContainerBinary:      def(fc.ContainerBinary, "container"),
 		AutoReclaim:          def(fc.Cluster.AutoReclaim, "10m"),
@@ -428,24 +459,31 @@ func (c *Config) ContextPrefix() string {
 	return strings.TrimSuffix(c.KubeContext, c.Cluster)
 }
 
-// K3sCommand builds the in-container startup script.
+// K3sCommand builds the in-container startup script. modernKernel reports
+// whether the node's kernel has br_netfilter and vxlan (the recommended kata
+// 6.18+ kernel does; the older 6.12.28-153 does not) — see
+// cluster.KernelHasModernNetfilter.
 //
-// The Apple container VM kernel has no nftables support, but k3s' bundled
-// iptables wrapper (iptables-detect.sh) picks the nft backend on a kernel
-// with no pre-existing rules, which kills kube-proxy. Force the legacy
-// backend (same thing kindest/node does in its entrypoint), then start k3s.
-// The kernel also lacks vxlan, so flannel uses host-gw (fine: single node).
-// It lacks br_netfilter too, so same-node ClusterIP replies would bypass
-// iptables un-NAT on the flannel bridge and get dropped (breaking e.g. all
-// pod DNS); masquerade-all forces service traffic through the node instead.
-func (c *Config) K3sCommand() string {
+// k3s' bundled iptables wrapper (iptables-detect.sh) picks the nft backend on
+// a kernel with no pre-existing rules, which killed kube-proxy on the old
+// nftables-less kernel; forcing the legacy backend (as kindest/node does) is
+// harmless on both and kept unconditionally.
+//
+// On the OLD kernel two more workarounds are needed: it lacks vxlan so flannel
+// must use host-gw (fine: single node), and it lacks br_netfilter so same-node
+// ClusterIP replies bypass iptables un-NAT on the flannel bridge and get
+// dropped (breaking pod DNS) — masquerade-all forces service traffic through
+// the node instead. The modern kernel needs neither: flannel uses its default
+// (vxlan) and DNAT works natively.
+func (c *Config) K3sCommand(modernKernel bool) string {
 	args := []string{
 		"--disable=traefik",
 		"--cluster-cidr=" + c.ClusterCIDR,
 		"--service-cidr=" + c.ServiceCIDR,
 		"--tls-san=127.0.0.1",
-		"--flannel-backend=host-gw",
-		"--kube-proxy-arg=masquerade-all=true",
+	}
+	if !modernKernel {
+		args = append(args, "--flannel-backend=host-gw", "--kube-proxy-arg=masquerade-all=true")
 	}
 	if c.APIHost != "127.0.0.1" {
 		args = append(args, "--tls-san="+c.APIHost)

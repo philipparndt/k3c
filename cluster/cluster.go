@@ -155,32 +155,48 @@ func prepareNodeConfig(cfg *config.Config) error {
 			return err
 		}
 	}
+	bundle, err := caBundle(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(etc, "ca-bundle.pem"), bundle, 0o644)
+}
+
+// caBundle builds the trust bundle for guests: the host's system roots
+// plus the configured corporate CAs.
+func caBundle(cfg *config.Config) ([]byte, error) {
 	bundle, err := os.ReadFile("/etc/ssl/cert.pem")
 	if err != nil {
-		return fmt.Errorf("reading system CA bundle: %w", err)
+		return nil, fmt.Errorf("reading system CA bundle: %w", err)
 	}
 	for _, glob := range cfg.CACertGlobs {
 		matches, err := filepath.Glob(glob)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if len(matches) == 0 {
-			return fmt.Errorf("no CA certificates match %s", glob)
+			return nil, fmt.Errorf("no CA certificates match %s", glob)
 		}
 		for _, crt := range matches {
 			data, err := os.ReadFile(crt)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			bundle = append(bundle, '\n')
 			bundle = append(bundle, data...)
 		}
 	}
-	return os.WriteFile(filepath.Join(etc, "ca-bundle.pem"), bundle, 0o644)
+	return bundle, nil
 }
 
 func startServer(cfg *config.Config) error {
 	logger.Info(fmt.Sprintf("starting k3s server (%s cpus, %s memory)", cfg.CPUs, cfg.Memory))
+	modernKernel := KernelHasModernNetfilter()
+	if modernKernel {
+		logger.Info("kernel has br_netfilter + vxlan: flannel default (vxlan), no masquerade workaround")
+	} else {
+		logger.Info("kernel lacks br_netfilter/vxlan: applying host-gw + masquerade-all workarounds")
+	}
 	proxyURL := fmt.Sprintf("http://%s:%s", cfg.VmnetGateway, cfg.ProxyPort)
 	out, err := runContainer("run", "-d",
 		"--name", cfg.ServerName,
@@ -203,7 +219,7 @@ func startServer(cfg *config.Config) error {
 		"-p", "127.0.0.1:"+cfg.IngressPortInternal+":443",
 		"--entrypoint", "/bin/sh",
 		cfg.Image,
-		"-c", cfg.K3sCommand())
+		"-c", cfg.K3sCommand(modernKernel))
 	if err != nil {
 		return fmt.Errorf("k3s start failed: %s", out)
 	}

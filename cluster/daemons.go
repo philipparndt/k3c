@@ -312,6 +312,9 @@ func RunDaemons(cfg *config.Config) error {
 		go func() { errCh <- servePullCache(cfg) }()
 		startPullCachePrune(cfg)
 	}
+	// always on: idles until the docker sidecar exists, then mirrors its
+	// published ports onto the host (cheap container-ls poll otherwise)
+	startDockerPortForward(cfg)
 	if len(ignoredResources(cfg)) > 0 {
 		go func() { errCh <- serveWebhook(cfg) }()
 	}

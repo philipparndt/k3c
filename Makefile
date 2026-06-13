@@ -113,6 +113,8 @@ install-user: ## install to GOPATH/bin (no sudo; ensure it is on PATH)
 	install -m 0755 $(BINARY) $(GOBIN)/$(BINARY)
 	@echo "installed: $(GOBIN)/$(BINARY)"
 
+install-bundled: build-bundled install-user ## build the bundled binary and install it to GOPATH/bin
+
 uninstall: ## remove installed binaries
 	rm -f $(GOBIN)/$(BINARY) 2>/dev/null || true
 	@if [ -e $(PREFIX)/bin/$(BINARY) ]; then \
