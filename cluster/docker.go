@@ -171,6 +171,12 @@ func dockerReady(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	// bake the corporate CA into the configured k3s node images so nested
+	// `k3d cluster create` works unmodified (best-effort: the sidecar itself
+	// is usable for plain docker even if this fails)
+	if err := PrepareK3sNodeImages(cfg); err != nil {
+		logger.Warn("preparing k3d node images: " + err.Error())
+	}
 	if ensureDockerContext(cfg, host) {
 		logger.Info("docker context '" + cfg.DockerContext + "' active")
 		return nil
