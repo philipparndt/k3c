@@ -136,6 +136,9 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 		return err
 	}
 	if !containerExists(cfg.ServerName, false) {
+		if cfg.Cluster == "docker" {
+			return fmt.Errorf("the docker sidecar is not a cluster; snapshot it with: k3c docker snapshot save %s", name)
+		}
 		return fmt.Errorf("cluster '%s' does not exist", cfg.Cluster)
 	}
 	dir := snapshotDir(cfg, name)
@@ -310,6 +313,9 @@ func writeSnapshot(cfg *config.Config, dir string, warm bool, serverIP string) e
 func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 	if err := validSnapshotName(name); err != nil {
 		return err
+	}
+	if cfg.Cluster == "docker" && !containerExists(cfg.ServerName, false) {
+		return fmt.Errorf("the docker sidecar is not a cluster; restore it with: k3c docker snapshot restore %s", name)
 	}
 	dir := snapshotDir(cfg, name)
 	if _, err := os.Stat(filepath.Join(dir, serverRootfs)); err != nil {
