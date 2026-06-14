@@ -139,6 +139,16 @@ func initImagePresent() bool {
 	if err != nil {
 		return false
 	}
-	// vminit:latest -> repository "vminit", tag "latest"
-	return strings.Contains(out, "vminit")
+	// The runtime resolves the init image as the bare ref "vminit:latest", so
+	// match that EXACTLY (name "vminit", tag "latest"). A loose "vminit"
+	// substring also matches the unrelated ghcr.io/apple/containerization/
+	// vminit:<version> images, which would wrongly skip loading the bundled
+	// init image and leave vminit:latest unresolvable at container-run time.
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "vminit" && f[1] == "latest" {
+			return true
+		}
+	}
+	return false
 }
