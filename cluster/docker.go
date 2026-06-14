@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -151,6 +152,29 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 	return dockerAwait(cfg)
 }
 
+// applyDockerSysctls raises the sidecar VM's kernel limits (the configured
+// node sysctls — notably the inotify instance/watch limits, whose defaults are
+// far too low for file-watching workloads) so nested k3d pods get the same
+// limits the native cluster sets on its node. Apple `container run` has no
+// --sysctl, so they are set via exec once the VM is up; best-effort.
+func applyDockerSysctls(cfg *config.Config) {
+	if len(cfg.Sysctls) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(cfg.Sysctls))
+	for k := range cfg.Sysctls {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	args := []string{"exec", dockerName, "sysctl", "-w"}
+	for _, k := range keys {
+		args = append(args, k+"="+cfg.Sysctls[k])
+	}
+	if out, err := runContainer(args...); err != nil {
+		logger.Warn("setting docker sidecar sysctls: " + out)
+	}
+}
+
 // dockerAwait waits until the engine answers, then finalizes the sidecar.
 func dockerAwait(cfg *config.Config) error {
 	logger.Info("waiting for the docker engine")
@@ -171,6 +195,9 @@ func dockerReady(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	// raise the sidecar VM kernel limits (notably inotify) so nested k3d pods
+	// don't hit the low defaults the native cluster also overrides
+	applyDockerSysctls(cfg)
 	// bake the corporate CA into the configured k3s node images so nested
 	// `k3d cluster create` works unmodified (best-effort: the sidecar itself
 	// is usable for plain docker even if this fails)
