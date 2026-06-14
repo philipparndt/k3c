@@ -141,10 +141,47 @@ func (m model) selectedSnapshot() string {
 	return ""
 }
 
+// selectedKind returns the kind of the selected clusters-pane row ("" for a
+// cluster, "docker" for the sidecar).
+func (m model) selectedKind() string {
+	if m.cCur < len(m.clusters) {
+		return m.clusters[m.cCur].Kind
+	}
+	return ""
+}
+
+// dockerKey maps a clusters-pane key to a docker-sidecar lifecycle operation.
+func (m model) dockerKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter", "s":
+		return m.startOp("docker sidecar up", "docker", "up")
+	case "S":
+		return m.startOp("docker sidecar down", "docker", "down")
+	case "p":
+		return m.startOp("docker sidecar pause", "docker", "pause")
+	case "r":
+		return m.startOp("docker sidecar resume", "docker", "resume")
+	case "z":
+		return m.startOp("docker sidecar suspend", "docker", "suspend")
+	case "d", "x":
+		m.confirm = &confirm{
+			prompt: "Remove the docker sidecar? (the image-store volume is kept)",
+			cmd:    m.opCmd("docker sidecar removal", "docker", "rm"),
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m model) refresh() tea.Cmd {
 	cfg, name := m.cfg, m.selectedCluster()
 	return func() tea.Msg {
 		clusters := cluster.Clusters(cfg)
+		// the docker sidecar is another managed VM: list it after the clusters
+		// so its lifecycle (pause/resume/suspend/up/down) is reachable here too
+		if sidecar, ok := cluster.DockerSidecarInfo(cfg); ok {
+			clusters = append(clusters, sidecar)
+		}
 		// keep the selection on reloads; fall back to the first cluster
 		current := name
 		if current == "" && len(clusters) > 0 {
@@ -440,6 +477,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	name := m.selectedCluster()
 	if name == "" {
 		return m, nil
+	}
+
+	// the docker sidecar (clusters pane) has its own lifecycle verbs
+	if m.focus == paneClusters && m.selectedKind() == "docker" {
+		return m.dockerKey(msg.String())
 	}
 
 	switch msg.String() {
