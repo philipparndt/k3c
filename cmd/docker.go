@@ -91,10 +91,38 @@ var dockerEnvCmd = &cobra.Command{
 	},
 }
 
+var dockerPauseCmd = &cobra.Command{
+	Use:   "pause",
+	Short: "Freeze the sidecar in memory (instant resume; freezes the whole nested cluster)",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerPause(loadConfigDefault(nil)))
+	},
+}
+
+var dockerResumeCmd = &cobra.Command{
+	Use:   "resume",
+	Short: "Unfreeze a paused sidecar",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerResume(loadConfigDefault(nil)))
+	},
+}
+
+var dockerSuspendCmd = &cobra.Command{
+	Use:   "suspend",
+	Short: "Suspend the sidecar to disk, releasing CPU and memory (docker up restores it)",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerSuspend(loadConfigDefault(nil)))
+	},
+}
+
 func init() {
 	dockerUpCmd.Flags().StringVar(&dockerUpCPUs, "cpus", "", "override sidecar CPU count (re-creates the sidecar)")
 	dockerUpCmd.Flags().StringVar(&dockerUpMemory, "memory", "", "override sidecar memory, e.g. 32G (re-creates the sidecar)")
 	dockerRmCmd.Flags().BoolVar(&dockerRmVolume, "volume", false, "also remove the image-store volume (deletes all sidecar data)")
-	dockerCmd.AddCommand(dockerUpCmd, dockerDownCmd, dockerRmCmd, dockerStatusCmd, dockerEnvCmd)
+	dockerCmd.AddCommand(dockerUpCmd, dockerDownCmd, dockerRmCmd, dockerStatusCmd, dockerEnvCmd,
+		dockerPauseCmd, dockerResumeCmd, dockerSuspendCmd)
 	rootCmd.AddCommand(dockerCmd)
 }
