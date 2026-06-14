@@ -48,6 +48,7 @@ type nameInput struct {
 	input   textinput.Model
 	cluster string
 	cold    bool
+	docker  bool // snapshot the docker sidecar instead of a cluster
 }
 
 type model struct {
@@ -163,6 +164,14 @@ func (m model) dockerKey(key string) (tea.Model, tea.Cmd) {
 		return m.startOp("docker sidecar resume", "docker", "resume")
 	case "z":
 		return m.startOp("docker sidecar suspend", "docker", "suspend")
+	case "c", "n":
+		in := textinput.New()
+		in.Placeholder = time.Now().Format("2006-01-02-1504")
+		in.Focus()
+		in.CharLimit = 64
+		in.Width = 24
+		m.input = &nameInput{input: in, cluster: "docker", docker: true}
+		return m, textinput.Blink
 	case "d", "x":
 		m.confirm = &confirm{
 			prompt: "Remove the docker sidecar? (the image-store volume is kept)",
@@ -187,7 +196,13 @@ func (m model) refresh() tea.Cmd {
 		if current == "" && len(clusters) > 0 {
 			current = clusters[0].Name
 		}
-		msg := dataMsg{clusters: clusters, snapshots: cluster.Snapshots(cfg, current), forCluster: current}
+		snaps := cluster.Snapshots(cfg, current)
+		for _, c := range clusters {
+			if c.Name == current && c.Kind == "docker" {
+				snaps = cluster.DockerSnapshots(cfg)
+			}
+		}
+		msg := dataMsg{clusters: clusters, snapshots: snaps, forCluster: current}
 		for _, c := range clusters {
 			if c.Name == current && c.Server == "running" {
 				if rx, tx, err := cluster.Traffic(cfg, current); err == nil {
@@ -214,8 +229,11 @@ type snapsMsg struct {
 // directory listing, fast enough for cursor navigation, unlike the full
 // cluster state refresh.
 func (m model) refreshSnapshots() tea.Cmd {
-	cfg, name := m.cfg, m.selectedCluster()
+	cfg, name, docker := m.cfg, m.selectedCluster(), m.selectedKind() == "docker"
 	return func() tea.Msg {
+		if docker {
+			return snapsMsg{snapshots: cluster.DockerSnapshots(cfg), forCluster: name}
+		}
 		return snapsMsg{snapshots: cluster.Snapshots(cfg, name), forCluster: name}
 	}
 }
@@ -431,6 +449,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				name = in.input.Placeholder
 			}
 			args := []string{"snapshot", "save", in.cluster, name}
+			if in.docker {
+				args = []string{"docker", "snapshot", "save", name}
+			}
 			mode := "warm"
 			if in.cold {
 				args = append(args, "--cold")
@@ -491,11 +512,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if snap == "" {
 				return m, nil
 			}
+			restore := m.opCmd("restore of "+snap+" into "+name, "snapshot", "restore", name, snap)
+			if m.selectedKind() == "docker" {
+				restore = m.opCmd("restore of "+snap+" into the docker sidecar", "docker", "snapshot", "restore", snap)
+			}
 			m.confirm = &confirm{
-				prompt: fmt.Sprintf("Restore snapshot %q into %q? The cluster's current state is replaced.", snap, name),
-				cmd:    m.opCmd("restore of "+snap+" into "+name, "snapshot", "restore", name, snap),
+				prompt: fmt.Sprintf("Restore snapshot %q into %q? Its current state is replaced.", snap, name),
+				cmd:    restore,
 			}
 			return m, nil
+		}
+		if m.selectedKind() == "docker" {
+			return m.dockerKey("enter")
 		}
 		return m.startOp("activate "+name, "cluster", "activate", name)
 
@@ -525,8 +553,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case "e":
-		if m.focus != paneSnapshots {
-			return m, nil
+		if m.focus != paneSnapshots || m.selectedKind() == "docker" {
+			return m, nil // docker sidecar snapshots are not exportable
 		}
 		if snap := m.selectedSnapshot(); snap != "" {
 			out := name + "-" + snap + ".k3csnap"
@@ -557,9 +585,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if snap == "" {
 			return m, nil
 		}
+		del := m.opCmd("delete of snapshot "+snap, "snapshot", "delete", name, snap)
+		if m.selectedKind() == "docker" {
+			del = m.opCmd("delete of docker snapshot "+snap, "docker", "snapshot", "delete", snap)
+		}
 		m.confirm = &confirm{
 			prompt: fmt.Sprintf("Delete snapshot %q of %q?", snap, name),
-			cmd:    m.opCmd("delete of snapshot "+snap, "snapshot", "delete", name, snap),
+			cmd:    del,
 		}
 		return m, nil
 	}
