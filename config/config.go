@@ -73,8 +73,8 @@ type FileConfig struct {
 		// Static TCP forwards ("PORT:HOST:PORT"): connections to the
 		// gateway port are spliced to the target through the host network,
 		// without TLS/SNI parsing. For non-TLS protocols like HTTP CONNECT
-		// proxies (e.g. "9480:gateway.zscloud.net:9480" lets pods use the
-		// Zscaler proxy of a CI config; the host's Zscaler client carries
+		// proxies (e.g. "9480:proxy.example.com:9480" lets pods use the
+		// corporate proxy of a CI config; the host's proxy client carries
 		// it). The target host also needs an entry in domains so pods
 		// resolve it to the gateway.
 		Forwards []string `yaml:"forwards"`
@@ -108,6 +108,14 @@ type FileConfig struct {
 		// restored to default on `docker down`); default "k3c", "off"
 		// disables context management
 		Context string `yaml:"context"`
+		// k3s/k3d node images to prepare for nested k3d clusters. On
+		// `docker up` k3c bakes the corporate CA (caCerts) into each, at the
+		// sidecar's native architecture, so `k3d cluster create` works with an
+		// unmodified k3d config: a `--volume cert:/etc/ssl/certs/...` mount
+		// cannot inject the CA through the sidecar (the host path is absent in
+		// the VM, so docker mounts an empty dir), and an emulated-amd64 node
+		// breaks containerd's seccomp detection. See cluster/nodeprep.go.
+		K3sNodeImages []string `yaml:"k3sNodeImages"`
 	} `yaml:"docker"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
 	Registries string `yaml:"registries"`
@@ -169,11 +177,12 @@ type Config struct {
 	PullCachePort      string
 	PullCacheRetention int // days; 0 disables the automatic prune
 
-	DockerEnabled bool
-	DockerCPUs    string
-	DockerMemory  string
-	DockerPort    string
-	DockerContext string // docker CLI context name ("off" disables)
+	DockerEnabled       bool
+	DockerCPUs          string
+	DockerMemory        string
+	DockerPort          string
+	DockerContext       string   // docker CLI context name ("off" disables)
+	DockerK3sNodeImages []string // k3s node images to bake the CA into for nested k3d
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
@@ -292,6 +301,7 @@ func merge(dst *FileConfig, src FileConfig) {
 	s(&dst.Docker.Memory, src.Docker.Memory)
 	i(&dst.Docker.Port, src.Docker.Port)
 	s(&dst.Docker.Context, src.Docker.Context)
+	l(&dst.Docker.K3sNodeImages, src.Docker.K3sNodeImages)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
 	if src.Egress.Transparent != nil {
 		dst.Egress.Transparent = src.Egress.Transparent
@@ -405,6 +415,15 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 	if cpus == 0 {
 		cpus = runtime.NumCPU()
 	}
+	// the docker sidecar defaults to all host cores too (not a small fixed
+	// count): nested k3d schedules the same workloads as the native cluster,
+	// whose pod CPU requests are not stripped by k3c's admission webhook, so
+	// the node needs the host's full allocatable CPU (matching other macOS
+	// docker runtimes that expose all cores).
+	dockerCPUs := fc.Docker.CPUs
+	if dockerCPUs == 0 {
+		dockerCPUs = runtime.NumCPU()
+	}
 	port := func(v, fallback int) string {
 		if v == 0 {
 			v = fallback
@@ -457,10 +476,11 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		PullCachePort:        port(fc.PullCache.Port, 5011),
 		PullCacheRetention:   pullCacheRetention(fc.PullCache.RetentionDays),
 		DockerEnabled:        fc.Docker.Enabled != nil && *fc.Docker.Enabled,
-		DockerCPUs:           port(fc.Docker.CPUs, 4),
+		DockerCPUs:           strconv.Itoa(dockerCPUs),
 		DockerMemory:         def(fc.Docker.Memory, "8G"),
 		DockerPort:           port(fc.Docker.Port, 2375),
 		DockerContext:        def(fc.Docker.Context, "k3c"),
+		DockerK3sNodeImages:  fc.Docker.K3sNodeImages,
 		Registries:           fc.Registries,
 		ContainerBinary:      def(fc.ContainerBinary, "container"),
 		AutoReclaim:          def(fc.Cluster.AutoReclaim, "10m"),
