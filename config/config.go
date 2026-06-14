@@ -415,6 +415,15 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 	if cpus == 0 {
 		cpus = runtime.NumCPU()
 	}
+	// the docker sidecar defaults to all host cores too (not a small fixed
+	// count): nested k3d schedules the same workloads as the native cluster,
+	// whose pod CPU requests are not stripped by k3c's admission webhook, so
+	// the node needs the host's full allocatable CPU (matching other macOS
+	// docker runtimes that expose all cores).
+	dockerCPUs := fc.Docker.CPUs
+	if dockerCPUs == 0 {
+		dockerCPUs = runtime.NumCPU()
+	}
 	port := func(v, fallback int) string {
 		if v == 0 {
 			v = fallback
@@ -467,7 +476,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		PullCachePort:        port(fc.PullCache.Port, 5011),
 		PullCacheRetention:   pullCacheRetention(fc.PullCache.RetentionDays),
 		DockerEnabled:        fc.Docker.Enabled != nil && *fc.Docker.Enabled,
-		DockerCPUs:           port(fc.Docker.CPUs, 4),
+		DockerCPUs:           strconv.Itoa(dockerCPUs),
 		DockerMemory:         def(fc.Docker.Memory, "8G"),
 		DockerPort:           port(fc.Docker.Port, 2375),
 		DockerContext:        def(fc.Docker.Context, "k3c"),
