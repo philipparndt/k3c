@@ -27,23 +27,20 @@ extraction directory. The init image is loaded via
 ## How it is produced
 
 ```
-make bundle          # tar+gzip the staging tree into container-runtime.tar.gz
-make build-bundled   # bundle, then `go build -tags bundled`
+make build           # clone+build the forks into ./tmp, then bundle + go build -tags bundled
 ```
 
-`make bundle` reads the staging tree from `STAGING_DIR` (required, no
-default): `make bundle STAGING_DIR=/path/to/staging`. The tree is what a
-[container](https://github.com/apple/container) build installs —
-`bin/container`, `bin/container-apiserver`, and `libexec/` (e.g. assembled
-from a `make container` checkout, as the release workflow does).
+`make build` is self-contained: it clones the container + containerization
+forks (at the refs in the Makefile, kept in sync with the goreleaser workflow)
+into `./tmp`, builds the container app + init image there (skipping the slow
+Swift builds when the forks are unchanged), assembles the install tree, and
+embeds it. `make install` then installs the bundled binary to `GOPATH/bin`.
 
-For local development, put the variables into a gitignored `.env` file in
-the repo root so plain `make build-bundled` works without arguments:
-
-```
-STAGING_DIR := /path/to/container-staging
-INIT_TAR    := /path/to/init.tar
-```
+To bundle a **pre-built** install tree directly (instead of cloning), use
+`make bundle STAGING_DIR=/path/to/staging` — the tree is what a
+[container](https://github.com/apple/container) build installs (`bin/container`,
+`bin/container-apiserver`, `libexec/`). Put `STAGING_DIR`/`INIT_TAR` in a
+gitignored `.env` to avoid repeating them.
 
 `make bundle` also writes `container-version.txt` (from
 `$(STAGING_DIR)/bin/container --version`, overridable via

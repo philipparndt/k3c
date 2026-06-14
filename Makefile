@@ -1,7 +1,6 @@
 # k3c — local k3s clusters on Apple `container`
 
-# local, gitignored overrides (e.g. STAGING_DIR, INIT_TAR, CONTAINER_VERSION)
-# so plain `make build-bundled` works without arguments
+# local, gitignored overrides (e.g. CONTAINER_REF, FORKS_DIR, STAGING_DIR)
 -include .env
 
 BINARY  := k3c
@@ -12,35 +11,94 @@ LDFLAGS := -s -w \
 	-X k3c/version.GitCommit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	-X k3c/version.BuildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# bundled runtime: tree of the Apple `container` install root staged here
-# (bin/container, bin/container-apiserver, libexec/...); no default — pass
-# STAGING_DIR=... (see runtime/payload/README.md)
-STAGING_DIR ?=
-# guest init image (vminit:latest); defaults to init.tar inside the staging
-# dir if present (see runtime/payload/README.md)
-INIT_TAR ?= $(STAGING_DIR)/init.tar
-PAYLOAD  := runtime/payload/container-runtime.tar.gz
-# version of the bundled container runtime, shown by `k3c version`; derived
-# from the staged binary unless passed explicitly
-CONTAINER_VERSION ?=
+# Fork sources for the bundled runtime. Keep these in sync with
+# .github/workflows/goreleaser.yaml — the release builds the same refs.
+FORKS_DIR             ?= tmp
+CONTAINER_REPO        ?= https://github.com/philipparndt/container
+CONTAINER_REF         ?= feat/gvnet-egress
+CONTAINERIZATION_REPO ?= https://github.com/philipparndt/containerization
+CONTAINERIZATION_REF  ?= feat/gvnet-egress
+CONTAINER_DIR         := $(FORKS_DIR)/container
+CONTAINERIZATION_DIR  := $(FORKS_DIR)/containerization
+RUNTIME_STAGE         := $(FORKS_DIR)/stage
+RUNTIME_INIT_TAR      := $(FORKS_DIR)/init.tar
+RUNTIME_MARKER        := $(FORKS_DIR)/.runtime-built
+
+# embedded runtime payload (built by `make build`, consumed by -tags bundled)
+PAYLOAD         := runtime/payload/container-runtime.tar.gz
 PAYLOAD_VERSION := runtime/payload/container-version.txt
+
+# `make bundle` can stage a pre-built install tree directly (STAGING_DIR=...);
+# `make build` produces that tree from the forks above.
+STAGING_DIR ?=
+INIT_TAR    ?= $(STAGING_DIR)/init.tar
+CONTAINER_VERSION ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help all build fmt vet check test clean install install-user uninstall bundle build-bundled
+.PHONY: help all build build-unbundled runtime forks clone-fork fmt vet check test clean clean-forks install install-system uninstall bundle
 
 help: ## show this help
 	@echo "k3c — local k3s clusters on Apple container"
 	@echo
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  make %-14s %s\n", $$1, $$2}'
-	@echo
-	@echo "variables: PREFIX=$(PREFIX) (install prefix)"
+	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  make %-16s %s\n", $$1, $$2}'
 
 all: check build ## vet + format check + build
 
-build: ## build the k3c binary
+# --- build ---
+
+build: runtime ## build k3c bundled (clones+builds the fork runtime into ./tmp)
+	@$(MAKE) bundle STAGING_DIR="$(RUNTIME_STAGE)" INIT_TAR="$(RUNTIME_INIT_TAR)"
+	go build -tags bundled -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	@echo "built bundled $(BINARY)"
+
+build-unbundled: ## build k3c without the runtime (fast dev build; drives a host container)
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	@echo "built $(BINARY) (no bundled runtime — needs a host-installed container)"
+
+# clone/update the container + containerization forks to their refs, as
+# siblings under $(FORKS_DIR) (the container Package.swift references
+# ../containerization)
+forks: ## clone or update the fork repos in ./tmp at the configured refs
+	@$(MAKE) --no-print-directory clone-fork DIR="$(CONTAINER_DIR)" REPO="$(CONTAINER_REPO)" REF="$(CONTAINER_REF)"
+	@$(MAKE) --no-print-directory clone-fork DIR="$(CONTAINERIZATION_DIR)" REPO="$(CONTAINERIZATION_REPO)" REF="$(CONTAINERIZATION_REF)"
+
+clone-fork:
+	@if [ ! -d "$(DIR)/.git" ]; then \
+		echo "cloning $(REPO) @ $(REF) -> $(DIR)"; \
+		git clone --branch "$(REF)" "$(REPO)" "$(DIR)"; \
+	else \
+		echo "updating $(DIR) -> $(REF)"; \
+		git -C "$(DIR)" fetch -q origin "$(REF)"; \
+		git -C "$(DIR)" checkout -q -B "$(REF)" "origin/$(REF)"; \
+	fi
+
+# build the container app + init image from the forks and assemble the runtime
+# stage; the (slow) Swift builds are skipped when the forks are unchanged
+runtime: forks ## build the fork runtime (container app + init image) into ./tmp/stage
+	@CSHA=$$(git -C "$(CONTAINER_DIR)" rev-parse HEAD); \
+	ZSHA=$$(git -C "$(CONTAINERIZATION_DIR)" rev-parse HEAD); \
+	KEY="$$CSHA $$ZSHA"; \
+	if [ -x "$(RUNTIME_STAGE)/bin/container" ] && [ -f "$(RUNTIME_INIT_TAR)" ] && [ "$$(cat $(RUNTIME_MARKER) 2>/dev/null)" = "$$KEY" ]; then \
+		echo "fork runtime up to date ($$KEY); skipping rebuild"; \
+	else \
+		echo "building container app ($(CONTAINER_REF)) — this is slow on first build"; \
+		$(MAKE) -C "$(CONTAINER_DIR)" container BUILD_CONFIGURATION=release; \
+		echo "preparing the Linux cross-compile toolchain for the init image"; \
+		$(MAKE) -C "$(CONTAINERIZATION_DIR)/vminitd" cross-prep; \
+		echo "building init image ($(CONTAINERIZATION_REF))"; \
+		$(MAKE) -C "$(CONTAINERIZATION_DIR)" init BUILD_CONFIGURATION=release; \
+		"$(CONTAINERIZATION_DIR)/bin/cctl" images save -o "$(RUNTIME_INIT_TAR)" vminit:latest; \
+		echo "assembling runtime stage -> $(RUNTIME_STAGE)"; \
+		rm -rf "$(RUNTIME_STAGE)"; \
+		mkdir -p "$(RUNTIME_STAGE)/bin"; \
+		cp "$(CONTAINER_DIR)/bin/container" "$(RUNTIME_STAGE)/bin/"; \
+		cp "$(CONTAINER_DIR)/bin/container-apiserver" "$(RUNTIME_STAGE)/bin/"; \
+		cp -R "$(CONTAINER_DIR)/libexec" "$(RUNTIME_STAGE)/libexec"; \
+		echo "$$KEY" > "$(RUNTIME_MARKER)"; \
+		echo "fork runtime built ($$KEY)"; \
+	fi
 
 fmt: ## format the Go sources
 	gofmt -w .
@@ -57,7 +115,7 @@ check: vet ## vet + fail on unformatted files
 		echo "gofmt needed for: $$unformatted"; exit 1; \
 	fi
 
-bundle: ## stage the container install tree into runtime/payload (STAGING_DIR=...)
+bundle: ## tar a container install tree into runtime/payload (STAGING_DIR=...)
 	@test -n "$(STAGING_DIR)" || { echo "set STAGING_DIR to a container install tree (see runtime/payload/README.md)"; exit 1; }
 	@test -d "$(STAGING_DIR)" || { echo "STAGING_DIR not found: $(STAGING_DIR)"; exit 1; }
 	@test -x "$(STAGING_DIR)/bin/container" || { echo "no bin/container under $(STAGING_DIR)"; exit 1; }
@@ -90,18 +148,21 @@ bundle: ## stage the container install tree into runtime/payload (STAGING_DIR=..
 	fi
 	@echo "wrote $(PAYLOAD) ($$(du -h $(PAYLOAD) | cut -f1))"
 
-build-bundled: bundle ## bundle the runtime then build k3c with it embedded
-	go build -tags bundled -ldflags "$(LDFLAGS)" -o $(BINARY) .
-	@echo "built bundled $(BINARY)"
-
 clean: ## remove the built binary and bundled payload
 	rm -f $(BINARY) $(PAYLOAD) $(PAYLOAD_VERSION)
 
-# the install targets deliberately do NOT rebuild: they install the binary
-# as previously built (make build OR make build-bundled), so installing a
-# bundled build does not silently degrade to an unbundled one
-install: ## install system-wide to $(PREFIX)/bin (sudo if needed)
-	@test -f $(BINARY) || { echo "no ./$(BINARY) — run 'make build' or 'make build-bundled' first"; exit 1; }
+clean-forks: ## remove the cloned fork repos + runtime stage (./tmp)
+	rm -rf $(FORKS_DIR)
+
+# install does NOT rebuild: it installs the binary as previously built, so a
+# bundled `make build` is not silently degraded to an unbundled one
+install: ## install k3c to GOPATH/bin (no sudo; ensure it is on PATH)
+	@test -f $(BINARY) || { echo "no ./$(BINARY) — run 'make build' first"; exit 1; }
+	install -m 0755 $(BINARY) $(GOBIN)/$(BINARY)
+	@echo "installed: $(GOBIN)/$(BINARY)"
+
+install-system: ## install system-wide to $(PREFIX)/bin (sudo if needed)
+	@test -f $(BINARY) || { echo "no ./$(BINARY) — run 'make build' first"; exit 1; }
 	@if [ -w $(PREFIX)/bin ]; then \
 		install -m 0755 $(BINARY) $(PREFIX)/bin/$(BINARY); \
 	else \
@@ -109,13 +170,6 @@ install: ## install system-wide to $(PREFIX)/bin (sudo if needed)
 		sudo install -m 0755 $(BINARY) $(PREFIX)/bin/$(BINARY); \
 	fi
 	@echo "installed: $(PREFIX)/bin/$(BINARY)"
-
-install-user: ## install to GOPATH/bin (no sudo; ensure it is on PATH)
-	@test -f $(BINARY) || { echo "no ./$(BINARY) — run 'make build' or 'make build-bundled' first"; exit 1; }
-	install -m 0755 $(BINARY) $(GOBIN)/$(BINARY)
-	@echo "installed: $(GOBIN)/$(BINARY)"
-
-install-bundled: build-bundled install-user ## build the bundled binary and install it to GOPATH/bin
 
 uninstall: ## remove installed binaries
 	rm -f $(GOBIN)/$(BINARY) 2>/dev/null || true

@@ -11,8 +11,9 @@ runtime/payload/*.tar
 runtime/payload/init.tar
 runtime/payload/container-version.txt
 
-# fork checkouts made by the release workflow
+# fork checkouts + runtime stage: .forks/ (release workflow), tmp/ (make build)
 .forks/
+/tmp/
 *.k3csnap
 .DS_Store
 ui/.build
