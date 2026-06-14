@@ -24,8 +24,11 @@ const dockerName = "k3c-docker"
 const dockerVolume = "k3c-docker-data"
 const dockerImage = "docker.io/library/docker:dind"
 
-// DockerUp starts (creating if needed) the Docker sidecar.
-func DockerUp(cfg *config.Config) error {
+// DockerUp starts (creating if needed) the Docker sidecar. When recreate is
+// set and the sidecar already exists, it is removed first so it is created
+// fresh — used by `docker up --cpus/--memory`, since a VM's resources are
+// fixed at creation. The image-store volume is preserved.
+func DockerUp(cfg *config.Config, recreate bool) error {
 	if err := preflight(); err != nil {
 		return err
 	}
@@ -36,6 +39,15 @@ func DockerUp(cfg *config.Config) error {
 	// daemons, so ensure they run even without a cluster
 	if err := SpawnDaemons(cfg); err != nil {
 		return err
+	}
+	if recreate && containerExists(dockerName, false) {
+		logger.Info(fmt.Sprintf("recreating docker sidecar (%s cpus, %s memory)", cfg.DockerCPUs, cfg.DockerMemory))
+		if out, err := runContainer("rm", "-f", dockerName); err != nil {
+			return fmt.Errorf("removing docker sidecar: %s", out)
+		}
+		if cfg.TransparentEgress {
+			removeGvnet(cfg, dockerName)
+		}
 	}
 	if containerExists(dockerName, true) {
 		logger.Info("docker sidecar already running")
@@ -260,6 +272,39 @@ func DockerDown(cfg *config.Config) error {
 	}
 	restoreDockerContext(cfg)
 	logger.Info("docker sidecar stopped (image store kept; k3c docker up restarts it)")
+	return nil
+}
+
+// DockerRemove deletes the sidecar container so a subsequent `up` recreates it
+// (e.g. to change CPU/memory). The image-store volume is kept unless
+// removeVolume is set; the gvnet netstack/network and docker context are torn
+// down either way.
+func DockerRemove(cfg *config.Config, removeVolume bool) error {
+	existed := containerExists(dockerName, false)
+	if existed {
+		logger.Info("removing docker sidecar")
+		if out, err := runContainer("rm", "-f", dockerName); err != nil {
+			return fmt.Errorf("removing docker sidecar: %s", out)
+		}
+	}
+	if cfg.TransparentEgress {
+		removeGvnet(cfg, dockerName)
+	}
+	restoreDockerContext(cfg)
+	if removeVolume {
+		logger.Info("removing docker image store volume (" + dockerVolume + ")")
+		if out, err := runContainer("volume", "rm", dockerVolume); err != nil {
+			logger.Warn("removing volume " + dockerVolume + ": " + out)
+		}
+	}
+	switch {
+	case !existed && !removeVolume:
+		return fmt.Errorf("docker sidecar does not exist")
+	case removeVolume:
+		logger.Info("docker sidecar and image store removed")
+	default:
+		logger.Info("docker sidecar removed (image store kept; k3c docker up recreates it)")
+	}
 	return nil
 }
 

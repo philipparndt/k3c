@@ -19,13 +19,33 @@ Testcontainers use the sidecar automatically; for shells/CI that prefer
 an env var, use: eval $(k3c docker env)`,
 }
 
+var (
+	dockerUpCPUs   string
+	dockerUpMemory string
+)
+
 var dockerUpCmd = &cobra.Command{
 	Use:     "up",
 	Aliases: []string{"start"},
 	Short:   "Start the Docker sidecar (created on first use)",
-	Args:    cobra.NoArgs,
+	Long: `Start the Docker sidecar, creating it on first use.
+
+--cpus and --memory override the sidecar's resources. Because a VM's
+resources are fixed at creation, passing either flag re-creates an existing
+sidecar (the image-store volume is preserved).`,
+	Args: cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.DockerUp(loadConfigDefault(nil)))
+		cfg := loadConfigDefault(nil)
+		recreate := false
+		if cmd.Flags().Changed("cpus") {
+			cfg.DockerCPUs = dockerUpCPUs
+			recreate = true
+		}
+		if cmd.Flags().Changed("memory") {
+			cfg.DockerMemory = dockerUpMemory
+			recreate = true
+		}
+		fail(cluster.DockerUp(cfg, recreate))
 	},
 }
 
@@ -36,6 +56,20 @@ var dockerDownCmd = &cobra.Command{
 	Args:    cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		fail(cluster.DockerDown(loadConfigDefault(nil)))
+	},
+}
+
+var dockerRmVolume bool
+
+var dockerRmCmd = &cobra.Command{
+	Use:   "rm",
+	Short: "Remove the Docker sidecar (recreate with 'up'; image store kept unless --volume)",
+	Long: `Remove the Docker sidecar container so 'docker up' recreates it
+(e.g. to change --cpus/--memory). The image-store volume is preserved unless
+--volume is given.`,
+	Args: cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerRemove(loadConfigDefault(nil), dockerRmVolume))
 	},
 }
 
@@ -58,6 +92,9 @@ var dockerEnvCmd = &cobra.Command{
 }
 
 func init() {
-	dockerCmd.AddCommand(dockerUpCmd, dockerDownCmd, dockerStatusCmd, dockerEnvCmd)
+	dockerUpCmd.Flags().StringVar(&dockerUpCPUs, "cpus", "", "override sidecar CPU count (re-creates the sidecar)")
+	dockerUpCmd.Flags().StringVar(&dockerUpMemory, "memory", "", "override sidecar memory, e.g. 32G (re-creates the sidecar)")
+	dockerRmCmd.Flags().BoolVar(&dockerRmVolume, "volume", false, "also remove the image-store volume (deletes all sidecar data)")
+	dockerCmd.AddCommand(dockerUpCmd, dockerDownCmd, dockerRmCmd, dockerStatusCmd, dockerEnvCmd)
 	rootCmd.AddCommand(dockerCmd)
 }
