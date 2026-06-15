@@ -19,6 +19,7 @@ type ClusterInfo struct {
 	RAM      string
 	Context  string
 	Active   bool
+	Kind     string // "" for a cluster, "docker" for the docker sidecar
 }
 
 // SnapshotInfo describes one saved snapshot.

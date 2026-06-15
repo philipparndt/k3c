@@ -33,6 +33,9 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 	if err := preflight(); err != nil {
 		return err
 	}
+	// a paused sidecar's engine cannot answer (dockerReady would hang); lift
+	// any freeze first so `docker up` on a paused sidecar just resumes it
+	dockerResumeIfPaused(cfg)
 	// match the cluster behavior: run the sidecar on a capable kernel
 	EnsureRecommendedKernel()
 	// the sidecar pulls through the host proxy and pull-cache mirror, and
@@ -297,6 +300,7 @@ func DockerDown(cfg *config.Config) error {
 	if !containerExists(dockerName, false) {
 		return fmt.Errorf("docker sidecar does not exist")
 	}
+	dockerResumeIfPaused(cfg) // a frozen VM cannot be stopped cleanly
 	if out, err := runContainer("stop", dockerName); err != nil {
 		return fmt.Errorf("stopping docker sidecar: %s", out)
 	}
@@ -315,6 +319,7 @@ func DockerDown(cfg *config.Config) error {
 func DockerRemove(cfg *config.Config, removeVolume bool) error {
 	existed := containerExists(dockerName, false)
 	if existed {
+		dockerResumeIfPaused(cfg) // clears the paused marker too
 		logger.Info("removing docker sidecar")
 		if out, err := runContainer("rm", "-f", dockerName); err != nil {
 			return fmt.Errorf("removing docker sidecar: %s", out)

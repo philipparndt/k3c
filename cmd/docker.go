@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"k3c/cluster"
@@ -91,10 +93,88 @@ var dockerEnvCmd = &cobra.Command{
 	},
 }
 
+var dockerPauseCmd = &cobra.Command{
+	Use:   "pause",
+	Short: "Freeze the sidecar in memory (instant resume; freezes the whole nested cluster)",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerPause(loadConfigDefault(nil)))
+	},
+}
+
+var dockerResumeCmd = &cobra.Command{
+	Use:   "resume",
+	Short: "Unfreeze a paused sidecar",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerResume(loadConfigDefault(nil)))
+	},
+}
+
+var dockerSuspendCmd = &cobra.Command{
+	Use:   "suspend",
+	Short: "Suspend the sidecar to disk, releasing CPU and memory (docker up restores it)",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerSuspend(loadConfigDefault(nil)))
+	},
+}
+
+var dockerSnapshotCmd = &cobra.Command{
+	Use:   "snapshot",
+	Short: "Save/restore the sidecar (the whole image store: every nested k3d cluster)",
+}
+
+var dockerSnapCold bool
+
+var dockerSnapshotSaveCmd = &cobra.Command{
+	Use:   "save NAME",
+	Short: "Snapshot the sidecar (rootfs + image store) to a named, restorable state",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerSnapshotSave(loadConfigDefault(nil), args[0], dockerSnapCold))
+	},
+}
+
+var dockerSnapshotRestoreCmd = &cobra.Command{
+	Use:   "restore NAME",
+	Short: "Restore the sidecar's image store from a snapshot (replaces current state)",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerSnapshotRestore(loadConfigDefault(nil), args[0], dockerSnapCold))
+	},
+}
+
+var dockerSnapshotListCmd = &cobra.Command{
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List sidecar snapshots",
+	Args:    cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		for _, s := range cluster.DockerSnapshots(loadConfigDefault(nil)) {
+			fmt.Printf("%-24s %-5s %s\n", s.Name, s.Mode, s.Created)
+		}
+	},
+}
+
+var dockerSnapshotDeleteCmd = &cobra.Command{
+	Use:     "delete NAME",
+	Aliases: []string{"rm"},
+	Short:   "Delete a sidecar snapshot",
+	Args:    cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerSnapshotDelete(loadConfigDefault(nil), args[0]))
+	},
+}
+
 func init() {
 	dockerUpCmd.Flags().StringVar(&dockerUpCPUs, "cpus", "", "override sidecar CPU count (re-creates the sidecar)")
 	dockerUpCmd.Flags().StringVar(&dockerUpMemory, "memory", "", "override sidecar memory, e.g. 32G (re-creates the sidecar)")
 	dockerRmCmd.Flags().BoolVar(&dockerRmVolume, "volume", false, "also remove the image-store volume (deletes all sidecar data)")
-	dockerCmd.AddCommand(dockerUpCmd, dockerDownCmd, dockerRmCmd, dockerStatusCmd, dockerEnvCmd)
+	dockerSnapshotSaveCmd.Flags().BoolVar(&dockerSnapCold, "cold", false, "quiesce with a stop instead of a warm suspend")
+	dockerSnapshotRestoreCmd.Flags().BoolVar(&dockerSnapCold, "cold", false, "boot fresh instead of resuming saved machine state")
+	dockerSnapshotCmd.AddCommand(dockerSnapshotSaveCmd, dockerSnapshotRestoreCmd, dockerSnapshotListCmd, dockerSnapshotDeleteCmd)
+	dockerCmd.AddCommand(dockerUpCmd, dockerDownCmd, dockerRmCmd, dockerStatusCmd, dockerEnvCmd,
+		dockerPauseCmd, dockerResumeCmd, dockerSuspendCmd, dockerSnapshotCmd)
 	rootCmd.AddCommand(dockerCmd)
 }
