@@ -68,14 +68,15 @@ type model struct {
 	width  int
 	height int
 
-	spin    spinner.Model
-	busy    string // running operation, "" when idle
-	opLine  string // latest output line of the running operation
-	opCh    chan opEventMsg
-	status  string // last result line
-	failed  bool   // last result was an error
-	output  string // full output of the last operation
-	showOut bool
+	spin     spinner.Model
+	busy     string // running operation, "" when idle
+	opLine   string // latest output line of the running operation
+	opCh     chan opEventMsg
+	status   string // last result line
+	failed   bool   // last result was an error
+	output   string // full output of the last operation
+	showOut  bool
+	showHelp bool // full keybinding help (toggled with ?)
 
 	confirm *confirm
 	input   *nameInput
@@ -490,6 +491,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		m.showOut = !m.showOut
 		return m, nil
+
+	case "?":
+		m.showHelp = !m.showHelp
+		return m, nil
 	}
 
 	if m.busy != "" { // one operation at a time
@@ -702,9 +707,13 @@ func (m model) View() string {
 		rBox.Width(rightW).Render(right),
 	)
 
-	header := titleSt.Render(" k3c ") + dimSt.Render("· clusters & snapshots")
+	header := titleSt.Render(" k3c ") + dimSt.Render("· machines & snapshots")
 
-	parts := []string{header, body, m.statusView()}
+	parts := []string{header, body}
+	if info := m.selectionInfoView(); info != "" {
+		parts = append(parts, info)
+	}
+	parts = append(parts, m.statusView())
 	if m.showOut && m.output != "" {
 		parts = append(parts, blurBox.Width(m.width-4).Render(tail(m.output, 8)))
 	}
@@ -714,7 +723,7 @@ func (m model) View() string {
 
 func (m model) clustersView(width int) string {
 	var b strings.Builder
-	b.WriteString(titleSt.Render("Clusters") + "\n")
+	b.WriteString(titleSt.Render("Machines") + "\n")
 	if len(m.clusters) == 0 {
 		b.WriteString(dimSt.Render("no clusters — k3c cluster create"))
 		return b.String()
@@ -724,22 +733,26 @@ func (m model) clustersView(width int) string {
 		if c.Active {
 			active = titleSt.Render("★")
 		}
-		line := fmt.Sprintf("%s %s %-14s %-9s %6s", active, stateDot(c.Server), c.Name, c.Server, c.RAM)
+		line := fmt.Sprintf("%s %s %-12s %-7s %-9s %6s",
+			active, stateDot(c.Server), c.Name, typeLabel(c.Kind), c.Server, c.RAM)
 		if i == m.cCur && m.focus == paneClusters {
 			line = selectSt.Render(padRight(stripExtra(c, true), width-2))
 		}
 		b.WriteString(line + "\n")
 	}
-	if m.netLine != "" {
-		b.WriteString("\n" + dimSt.Render(" "+m.netLine) + "\n")
-	}
-	if m.cacheLine != "" {
-		b.WriteString(dimSt.Render(" "+m.cacheLine) + "\n")
-	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// stripExtra renders a cluster row without color codes for the selection bar.
+// typeLabel is the short machine-type tag shown in the list: clusters are k3s
+// VMs; the sidecar is the docker VM.
+func typeLabel(kind string) string {
+	if kind == "docker" {
+		return "docker"
+	}
+	return "k3s"
+}
+
+// stripExtra renders a machine row without color codes for the selection bar.
 func stripExtra(c cluster.ClusterInfo, selected bool) string {
 	active := " "
 	if c.Active {
@@ -754,7 +767,32 @@ func stripExtra(c cluster.ClusterInfo, selected bool) string {
 	case "stopped":
 		dot = "○"
 	}
-	return fmt.Sprintf("%s %s %-14s %-9s %6s", active, dot, c.Name, c.Server, c.RAM)
+	return fmt.Sprintf("%s %s %-12s %-7s %-9s %6s",
+		active, dot, c.Name, typeLabel(c.Kind), c.Server, c.RAM)
+}
+
+// selectionInfoView shows details for the highlighted machine — its type and,
+// for a cluster, its kube context — plus its network and pull-cache lines,
+// below the boxes rather than inside the machines list.
+func (m model) selectionInfoView() string {
+	if m.cCur >= len(m.clusters) {
+		return ""
+	}
+	c := m.clusters[m.cCur]
+	detail := ""
+	if c.Kind != "docker" && c.Context != "" {
+		detail = " · " + c.Context
+	}
+	var b strings.Builder
+	b.WriteString(dimSt.Render(fmt.Sprintf(" %s · %s%s · %s",
+		c.Name, typeLabel(c.Kind), detail, c.Server)))
+	if m.netLine != "" {
+		b.WriteString("\n" + dimSt.Render(" "+m.netLine))
+	}
+	if m.cacheLine != "" {
+		b.WriteString("\n" + dimSt.Render(" "+m.cacheLine))
+	}
+	return b.String()
 }
 
 func (m model) snapshotsView(width int) string {
@@ -811,17 +849,23 @@ func (m model) statusView() string {
 }
 
 func (m model) helpView() string {
+	// Condensed by default (k9s-style); the full keymap is shown on ?.
+	if !m.showHelp {
+		return dimSt.Render(" ↑↓ move · ⇥ switch · ↵ select · ? help · q quit")
+	}
 	var keys []string
 	if m.focus == paneClusters {
 		keys = []string{
 			"↑↓ move", "⇥ snapshots", "↵ activate",
 			"s start", "S stop", "p pause", "r resume", "z suspend",
-			"m reclaim", "M release", "c snapshot", "d delete", "o output", "q quit",
+			"m reclaim", "M release", "c snapshot", "d delete",
+			"o output", "? hide help", "q quit",
 		}
 	} else {
 		keys = []string{
 			"↑↓ move", "⇥ clusters", "↵ restore",
-			"c create", "d delete", "e export", "o output", "q quit",
+			"c create", "d delete", "e export",
+			"o output", "? hide help", "q quit",
 		}
 	}
 	return dimSt.Render(" " + strings.Join(keys, " · "))
