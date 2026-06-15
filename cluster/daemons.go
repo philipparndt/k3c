@@ -54,6 +54,27 @@ func allowedSource(addr net.Addr) bool {
 	return strings.HasPrefix(host, "192.168.64.") || ip.IsLoopback()
 }
 
+// isLoopback reports whether the connection originates from the host's own
+// loopback (the Mac), as opposed to a VM/pod on the vmnet subnet.
+func isLoopback(addr net.Addr) bool {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// clusterIngressTarget is where the active cluster's HTTPS ingress is
+// reachable: the sidecar VM for a nested k3d cluster (whose ingress lives on
+// the VM, not a host-local port), else the host-local published port.
+func clusterIngressTarget(active activeState) string {
+	if si := sidecarIngressTarget(); si != "" {
+		return si
+	}
+	return net.JoinHostPort("127.0.0.1", active.IngressPort)
+}
+
 func splice(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	pump := func(dst, src net.Conn) {
@@ -191,8 +212,16 @@ func handleSNIConn(conn net.Conn, cfg *config.Config) {
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 	active := readActive(cfg)
-	target := net.JoinHostPort("127.0.0.1", active.IngressPort)
-	if name := parseSNI(hello); name != "" && !matchesDomain(name, active.IngressDomains) {
+	name := parseSNI(hello)
+
+	// Loopback clients reaching host :443 are the Mac browser hitting the
+	// cluster ingress (nothing else on the host serves :443), so they always
+	// route to it — even when no ingress domains are configured, and for a
+	// nested k3d cluster whose ingress lives on the sidecar VM. VM/pod clients
+	// (192.168.64.x) are egress: traffic for an ingress domain loops back to
+	// the cluster, everything else splices to the real host over the VPN.
+	target := clusterIngressTarget(active)
+	if !isLoopback(conn.RemoteAddr()) && name != "" && !matchesDomain(name, active.IngressDomains) {
 		target = net.JoinHostPort(name, "443")
 	}
 	upstream, err := net.DialTimeout("tcp", target, connectTimeout)

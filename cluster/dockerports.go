@@ -7,12 +7,33 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/philipparndt/go-logger"
 
 	"k3c/config"
 )
+
+// sidecarIngress holds the sidecar's published HTTPS ingress endpoint
+// ("<vm-ip>:443") when a nested k3d cluster publishes :443 there, or "" when
+// there is no sidecar (or it publishes no ingress). A nested cluster's ingress
+// lives on the sidecar VM, not on a host-local port, so the SNI gateway reads
+// this to route browser ingress to it. Refreshed by the port poll below.
+var sidecarIngress atomic.Pointer[string]
+
+// sidecarIngressTarget returns the nested cluster's ingress endpoint, or "".
+func sidecarIngressTarget() string {
+	if p := sidecarIngress.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func storeSidecarIngress(target string) {
+	t := target
+	sidecarIngress.Store(&t)
+}
 
 // Docker published-port forwarding. Docker publishes container ports on
 // the sidecar VM's network (e.g. 0.0.0.0:65270 inside the VM), not on the
@@ -52,11 +73,21 @@ func startDockerPortForward(cfg *config.Config) {
 func reconcileDockerPorts(active map[string]net.Listener) {
 	ip := containerIP(dockerName)
 	desired := map[string]portBind{}
+	ingress := ""
 	if ip != "" {
 		for _, b := range dockerPublishedPorts(ip) {
+			// :443 is the cluster ingress. The SNI gateway owns host :443
+			// (for pod egress too) and forwards browser ingress to the
+			// sidecar, so don't also bind it here — just record the endpoint
+			// for the gateway to route to.
+			if b.port == 443 {
+				ingress = fmt.Sprintf("%s:443", ip)
+				continue
+			}
 			desired[b.addr()] = b
 		}
 	}
+	storeSidecarIngress(ingress)
 
 	for key, b := range desired {
 		if _, ok := active[key]; ok {
