@@ -344,6 +344,9 @@ func RunDaemons(cfg *config.Config) error {
 	// always on: idles until the docker sidecar exists, then mirrors its
 	// published ports onto the host (cheap container-ls poll otherwise)
 	startDockerPortForward(cfg)
+	// publish a stable host unix socket for the sidecar engine, so the
+	// docker context survives sidecar VM-IP changes
+	startDockerSocket(cfg)
 	if len(ignoredResources(cfg)) > 0 {
 		go func() { errCh <- serveWebhook(cfg) }()
 	}

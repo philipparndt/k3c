@@ -271,11 +271,23 @@ func restoreDockerContext(cfg *config.Config) {
 	logger.Info("docker context restored to 'default'")
 }
 
-// DockerHost returns the engine endpoint. The sidecar VM's address is
-// used (not the published localhost port): Testcontainers and friends
-// connect to mapped container ports on the DOCKER_HOST address, and those
-// are only served on the VM.
+// DockerHost returns the engine endpoint: the daemon's host unix socket,
+// which forwards to the sidecar engine. A stable path (it survives sidecar
+// recreation, unlike the VM IP) that the docker context and DOCKER_HOST point
+// at. Published container ports are mirrored to the host loopback by the
+// daemon (startDockerPortForward), so tools that connect to mapped ports on
+// localhost (the convention for a unix-socket DOCKER_HOST) reach them.
 func DockerHost(cfg *config.Config) (string, error) {
+	if !containerExists(dockerName, true) {
+		return "", fmt.Errorf("docker sidecar is not running (k3c docker up)")
+	}
+	return "unix://" + dockerSocketPath(cfg), nil
+}
+
+// DockerHostTCP returns the direct tcp endpoint on the sidecar VM, for tools
+// that cannot use a unix socket or need to reach published ports on the VM
+// address itself rather than the mirrored host loopback.
+func DockerHostTCP(cfg *config.Config) (string, error) {
 	ip := containerIP(dockerName)
 	if ip == "" {
 		return "", fmt.Errorf("docker sidecar is not running (k3c docker up)")

@@ -41,7 +41,7 @@ func startAutoReclaim(cfg *config.Config) {
 			if drift {
 				elapsed = 0
 			}
-			autoReclaimTick(drift)
+			autoReclaimTick(cfg, drift)
 		}
 	}()
 }
@@ -78,7 +78,7 @@ func autoReclaimDriftMB(targetMB int) int {
 	return 4096
 }
 
-func autoReclaimTick(drift bool) {
+func autoReclaimTick(daemonCfg *config.Config, drift bool) {
 	for name, parts := range clusterStates() {
 		if parts["-server"] != "running" {
 			continue
@@ -87,36 +87,61 @@ func autoReclaimTick(drift bool) {
 		if cfg == nil || isPaused(cfg) {
 			continue
 		}
-		_, used, available, err := guestMemMB(cfg)
-		if err != nil {
-			continue
+		autoReclaimVM("cluster "+name, cfg.ServerName, drift, func() error {
+			return Reclaim(cfg, false)
+		})
+	}
+	autoReclaimDocker(daemonCfg, drift)
+}
+
+// autoReclaimDocker applies the reclaim policy to the docker sidecar VM,
+// which is not a cluster server and so is invisible to the loop above. Its
+// dind engine, any nested k3d cluster, and image-layer page cache otherwise
+// grow the host footprint to the configured ceiling and never give it back.
+func autoReclaimDocker(cfg *config.Config, drift bool) {
+	if cfg == nil || cfg.DockerMemory == "" {
+		return
+	}
+	if !containerExists(dockerName, true) || isDockerPaused(cfg) {
+		return
+	}
+	autoReclaimVM("docker sidecar", dockerName, drift, func() error {
+		return DockerReclaim(cfg, false)
+	})
+}
+
+// autoReclaimVM applies the pressure + drift reclaim policy to a single VM,
+// keyed by its container name. reclaim performs the actual balloon reclaim.
+func autoReclaimVM(label, name string, drift bool, reclaim func() error) {
+	_, used, available, err := guestMemMBOf(name)
+	if err != nil {
+		return
+	}
+	// A guest under memory pressure needs the balloon re-sized NOW:
+	// reclaim deflates first, giving everything back instantly, then
+	// re-measures the real usage and sizes the new target from it.
+	if available < pressureFloorMB {
+		logger.Warn(fmt.Sprintf("auto-reclaim %s: guest memory pressure (%dMB available), re-sizing balloon", label, available))
+		if err := reclaim(); err != nil {
+			logger.Warn("auto-reclaim " + label + ": " + err.Error())
 		}
-		// A guest under memory pressure needs the balloon re-sized NOW:
-		// Reclaim deflates first, giving everything back instantly, then
-		// re-measures the real usage and sizes the new target from it.
-		if available < pressureFloorMB {
-			logger.Warn(fmt.Sprintf("auto-reclaim %s: guest memory pressure (%dMB available), re-sizing balloon", name, available))
-			if err := Reclaim(cfg, false); err != nil {
-				logger.Warn("auto-reclaim " + name + ": " + err.Error())
-			}
-			continue
-		}
-		if !drift {
-			continue
-		}
-		// NOTE: used includes inflated balloon pages, overstating the
-		// target after a squeeze — fine for this check: post-squeeze the
-		// footprint sits near the target anyway, so drift stays low until
-		// the balloon is deflated (restart) or pressure re-sizes it.
-		target := used + reclaimHeadroomMB(used)
-		fp := footprintMB(name)
-		if fp < 0 || fp-target < autoReclaimDriftMB(target) {
-			continue
-		}
-		logger.Info(fmt.Sprintf("auto-reclaim %s: footprint %dMB, workload needs %dMB", name, fp, target))
-		if err := Reclaim(cfg, false); err != nil {
-			logger.Warn("auto-reclaim " + name + ": " + err.Error())
-		}
+		return
+	}
+	if !drift {
+		return
+	}
+	// NOTE: used includes inflated balloon pages, overstating the
+	// target after a squeeze — fine for this check: post-squeeze the
+	// footprint sits near the target anyway, so drift stays low until
+	// the balloon is deflated (restart) or pressure re-sizes it.
+	target := used + reclaimHeadroomMB(used)
+	fp := vmFootprintMB(name)
+	if fp < 0 || fp-target < autoReclaimDriftMB(target) {
+		return
+	}
+	logger.Info(fmt.Sprintf("auto-reclaim %s: footprint %dMB, workload needs %dMB", label, fp, target))
+	if err := reclaim(); err != nil {
+		logger.Warn("auto-reclaim " + label + ": " + err.Error())
 	}
 }
 

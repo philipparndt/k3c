@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -14,6 +16,54 @@ import (
 
 	"k3c/config"
 )
+
+// dockerSocketPath is the host-side unix socket the daemon publishes for the
+// sidecar's docker engine. Unlike the sidecar's VM IP (which changes on every
+// recreate), this path is stable, so the docker context and DOCKER_HOST can
+// point at it for the lifetime of the install — the way Docker Desktop and
+// similar tools expose a local engine socket.
+func dockerSocketPath(cfg *config.Config) string {
+	return filepath.Join(cfg.BaseDir, "docker.sock")
+}
+
+// startDockerSocket serves a host unix socket that forwards to the sidecar's
+// docker engine (tcp 2375 on the VM). The sidecar IP is resolved per
+// connection, so the socket keeps working across sidecar recreation;
+// connections made while no sidecar is running are closed. Idle (just an
+// unused listener) until something dials it.
+func startDockerSocket(cfg *config.Config) {
+	path := dockerSocketPath(cfg)
+	// a stale socket file from a previous daemon blocks the bind
+	_ = os.Remove(path)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		logger.Warn("docker socket: " + err.Error())
+		return
+	}
+	_ = os.Chmod(path, 0o600)
+	logger.Info("docker: engine socket at " + path)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				ip := containerIP(dockerName)
+				if ip == "" {
+					_ = conn.Close() // sidecar not running
+					return
+				}
+				upstream, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "2375"), connectTimeout)
+				if err != nil {
+					_ = conn.Close()
+					return
+				}
+				splice(conn, upstream)
+			}()
+		}
+	}()
+}
 
 // sidecarIngress holds the sidecar's published HTTPS ingress endpoint
 // ("<vm-ip>:443") when a nested k3d cluster publishes :443 there, or "" when

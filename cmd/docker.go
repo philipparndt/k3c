@@ -120,6 +120,17 @@ var dockerSuspendCmd = &cobra.Command{
 	},
 }
 
+var dockerReclaimRelease bool
+
+var dockerReclaimCmd = &cobra.Command{
+	Use:   "reclaim",
+	Short: "Return unused sidecar memory to the host (balloons the VM down to its working set)",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerReclaim(loadConfigDefault(nil), dockerReclaimRelease))
+	},
+}
+
 var dockerSnapshotCmd = &cobra.Command{
 	Use:   "snapshot",
 	Short: "Save/restore the sidecar (the whole image store: every nested k3d cluster)",
@@ -173,8 +184,10 @@ func init() {
 	dockerRmCmd.Flags().BoolVar(&dockerRmVolume, "volume", false, "also remove the image-store volume (deletes all sidecar data)")
 	dockerSnapshotSaveCmd.Flags().BoolVar(&dockerSnapCold, "cold", false, "quiesce with a stop instead of a warm suspend")
 	dockerSnapshotRestoreCmd.Flags().BoolVar(&dockerSnapCold, "cold", false, "boot fresh instead of resuming saved machine state")
+	dockerReclaimCmd.Flags().BoolVar(&dockerReclaimRelease, "release", false,
+		"deflate the balloon and give the sidecar its full configured memory again")
 	dockerSnapshotCmd.AddCommand(dockerSnapshotSaveCmd, dockerSnapshotRestoreCmd, dockerSnapshotListCmd, dockerSnapshotDeleteCmd)
 	dockerCmd.AddCommand(dockerUpCmd, dockerDownCmd, dockerRmCmd, dockerStatusCmd, dockerEnvCmd,
-		dockerPauseCmd, dockerResumeCmd, dockerSuspendCmd, dockerSnapshotCmd)
+		dockerPauseCmd, dockerResumeCmd, dockerSuspendCmd, dockerReclaimCmd, dockerSnapshotCmd)
 	rootCmd.AddCommand(dockerCmd)
 }
