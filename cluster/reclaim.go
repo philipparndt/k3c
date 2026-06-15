@@ -43,31 +43,62 @@ func Reclaim(cfg *config.Config, release bool) error {
 	if !containerExists(cfg.ServerName, true) {
 		return fmt.Errorf("cluster '%s' is not running", cfg.Cluster)
 	}
+	return reclaimVM(cfg.ServerName, cfg.Memory, "cluster", "k3c cluster suspend && k3c cluster start", release)
+}
 
+// DockerReclaim returns memory the docker sidecar no longer uses to the
+// host. The sidecar VM (dind plus any nested k3d cluster and its image-layer
+// page cache) only ever grows its host footprint, so without this it sits at
+// its configured ceiling. It applies the same balloon reclaim Reclaim does
+// for a cluster server VM.
+func DockerReclaim(cfg *config.Config, release bool) error {
+	if !capabilities().memory {
+		return fmt.Errorf("the configured container CLI does not support memory reclaim (set containerBinary to a build with balloon support)")
+	}
+	if !containerExists(dockerName, true) {
+		return fmt.Errorf("docker sidecar is not running (k3c docker up)")
+	}
+	if isDockerPaused(cfg) {
+		return fmt.Errorf("docker sidecar is paused (k3c docker resume)")
+	}
+	mem := cfg.DockerMemory
+	if mem == "" {
+		mem = "8G"
+	}
+	return reclaimVM(dockerName, mem, "docker sidecar", "k3c docker suspend && k3c docker up", release)
+}
+
+// reclaimVM drops a VM's guest page caches and inflates its virtio memory
+// balloon to the guest's used memory plus headroom, so the host frees the
+// difference. The balloon STAYS inflated (deflating re-commits the memory);
+// the VM keeps running within the smaller target. label names the VM in log
+// output, and convertHint is the suspend/restore command suggested when a
+// freshly booted VM resists reclaim.
+func reclaimVM(name, fullMem, label, convertHint string, release bool) error {
 	if release {
-		if out, err := runContainer("memory", "target", cfg.ServerName, cfg.Memory); err != nil {
+		if out, err := runContainer("memory", "target", name, fullMem); err != nil {
 			return fmt.Errorf("releasing memory failed: %s", out)
 		}
-		logger.Info("balloon released: the cluster has its full " + cfg.Memory + " again")
+		logger.Info("balloon released: the " + label + " has its full " + fullMem + " again")
 		return nil
 	}
 
-	before := footprintMB(cfg.Cluster)
+	before := vmFootprintMB(name)
 
 	// Deflate first: guest memory accounting must not include balloon
 	// pages, and the host only acts on a fresh inflate.
-	if out, err := runContainer("memory", "target", cfg.ServerName, cfg.Memory); err != nil {
+	if out, err := runContainer("memory", "target", name, fullMem); err != nil {
 		return fmt.Errorf("deflating balloon failed: %s", out)
 	}
 	time.Sleep(2 * time.Second)
 
 	logger.Info("dropping guest page caches")
-	if out, err := runContainer("exec", cfg.ServerName,
+	if out, err := runContainer("exec", name,
 		"sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"); err != nil {
 		return fmt.Errorf("dropping caches failed: %s", out)
 	}
 
-	totalMB, usedMB, _, err := guestMemMB(cfg)
+	totalMB, usedMB, _, err := guestMemMBOf(name)
 	if err != nil {
 		return err
 	}
@@ -77,7 +108,7 @@ func Reclaim(cfg *config.Config, release bool) error {
 		return nil
 	}
 	logger.Info(fmt.Sprintf("reclaiming (guest uses %dMB, balloon target %dMB)", usedMB, target))
-	if out, err := runContainer("memory", "target", cfg.ServerName,
+	if out, err := runContainer("memory", "target", name,
 		fmt.Sprintf("%dm", target)); err != nil {
 		return fmt.Errorf("setting memory target failed: %s", out)
 	}
@@ -87,7 +118,7 @@ func Reclaim(cfg *config.Config, release bool) error {
 	after := -1
 	for i := 0; i < 12; i++ {
 		time.Sleep(5 * time.Second)
-		mb := footprintMB(cfg.Cluster)
+		mb := vmFootprintMB(name)
 		if mb < 0 {
 			break
 		}
@@ -101,7 +132,7 @@ func Reclaim(cfg *config.Config, release bool) error {
 	if before > 0 && after > 0 && before-after < 256 {
 		logger.Warn(fmt.Sprintf("footprint barely moved (%dMB -> %dMB)", before, after))
 		logger.Warn("memory of a freshly booted VM resists reclaim; one suspend/restore cycle")
-		logger.Warn("(k3c cluster suspend && k3c cluster start) converts it, then reclaim works")
+		logger.Warn("(" + convertHint + ") converts it, then reclaim works")
 		return nil
 	}
 	logger.Info(fmt.Sprintf("reclaimed: %dMB -> %dMB (balloon stays at %dMB; rerun reclaim to re-size, --release for full memory)", before, after, target))
@@ -112,7 +143,13 @@ func Reclaim(cfg *config.Config, release bool) error {
 // cluster's VM in MiB. Note that inflated balloon pages count as used and
 // reduce available.
 func guestMemMB(cfg *config.Config) (total, used, available int, err error) {
-	out, err := runContainer("exec", cfg.ServerName,
+	return guestMemMBOf(cfg.ServerName)
+}
+
+// guestMemMBOf returns total, used, and available memory inside a VM in MiB,
+// keyed by the VM's container name.
+func guestMemMBOf(name string) (total, used, available int, err error) {
+	out, err := runContainer("exec", name,
 		"sh", "-c", "free -m | awk '/^Mem:/{print $2, $3, $7}'")
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("reading guest memory failed: %s", out)
@@ -140,7 +177,13 @@ func guestUsedMB(cfg *config.Config) (int, error) {
 
 // footprintMB returns the cluster VM's physical footprint in MiB, or -1.
 func footprintMB(cluster string) int {
-	ram := clusterRAM(cluster)
+	return vmFootprintMB(cluster + "-server")
+}
+
+// vmFootprintMB returns a VM's physical host footprint in MiB, keyed by the
+// VM's container name, or -1.
+func vmFootprintMB(name string) int {
+	ram := vmRAM(name)
 	if ram == "-" {
 		return -1
 	}

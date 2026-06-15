@@ -673,7 +673,15 @@ func List(cfg *config.Config) error {
 // cluster's VM process (the Virtualization.framework process owns the
 // guest memory; the supervisor's RSS is meaningless).
 func clusterRAM(cluster string) string {
-	pid := vzProcessPID(cluster + "-server")
+	return vmRAM(cluster + "-server")
+}
+
+// vmRAM returns the OS-level physical memory footprint of a VM's
+// Virtualization.framework process (the guest memory owner), keyed by the
+// VM's container name, or "-". Used for cluster servers and the docker
+// sidecar alike.
+func vmRAM(vmName string) string {
+	pid := vzProcessPID(vmName)
 	if pid == 0 {
 		return "-"
 	}
