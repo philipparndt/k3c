@@ -543,6 +543,15 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "z":
 		return m.startOp("suspend "+name, "cluster", "suspend", name)
 
+	case "u":
+		if m.selectedKind() == "docker" {
+			return m, nil // the docker sidecar has no kube context
+		}
+		// re-merge ~/.kube/config and switch context to this cluster, fixing a
+		// stale endpoint (e.g. after a restart changed the API port, or a
+		// same-named context was clobbered) without a full restart
+		return m.startOp("use context "+name, "kubeconfig", "merge", name)
+
 	case "m":
 		return m.startOp("memory reclaim of "+name, "cluster", "reclaim", name)
 	case "M":
@@ -858,7 +867,7 @@ func (m model) helpView() string {
 		keys = []string{
 			"↑↓ move", "⇥ snapshots", "↵ activate",
 			"s start", "S stop", "p pause", "r resume", "z suspend",
-			"m reclaim", "M release", "c snapshot", "d delete",
+			"u use-context", "m reclaim", "M release", "c snapshot", "d delete",
 			"o output", "? hide help", "q quit",
 		}
 	} else {
