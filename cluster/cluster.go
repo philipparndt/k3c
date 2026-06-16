@@ -547,7 +547,14 @@ func Start(cfg *config.Config) error {
 			return fmt.Errorf("start failed: %s", out)
 		}
 	}
-	_, _ = runOut("kubectl", "config", "use-context", cfg.KubeContext)
+	// Re-merge ~/.kube/config before waiting on the API. A restart can change
+	// the published API port, and a same-named context (e.g. a nested k3d
+	// cluster reusing this name) can have clobbered the entry — either leaves a
+	// stale endpoint that makes waitReady probe a dead port. KubeconfigMerge
+	// rewrites the entry with the current port and switches context.
+	if err := KubeconfigMerge(cfg); err != nil {
+		return err
+	}
 	applyCPUPriority(cfg)
 	for attempt := 0; ; attempt++ {
 		err := postStart(cfg)
