@@ -553,6 +553,13 @@ func (c *Config) K3sCommand(modernKernel bool) string {
 K3C_NODE_IP=$(ip -4 -o addr show | awk '/192[.]168[.]64[.]/{split($4,a,"/"); print a[1]; exit}')
 ` + GvnetRouteSnippet
 	}
+	// The whole app stack schedules at once on a single node, so the kubelet's
+	// default image-pull rate limit (registryPullQPS=5, burst=10) rejects pulls
+	// with "pull QPS exceeded" and churns through ImagePullBackOff until the
+	// budget refills. Disable it (0 = unlimited); pulls stay serialized by
+	// default, so this drops the self-inflicted backoff without flooding the
+	// registry/mirror. Overridable via extraK3sArgs (later args win).
+	args = append(args, "--kubelet-arg=registry-pull-qps=0")
 	args = append(args, c.ExtraK3sArgs...)
 	return `for b in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
 	ln -sf xtables-legacy-multi /bin/aux/$b
