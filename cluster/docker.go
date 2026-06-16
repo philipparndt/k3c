@@ -207,6 +207,102 @@ func ensureDockerVolume(name string) error {
 	return nil
 }
 
+const (
+	buildkitBaseImage  = "moby/buildkit:buildx-stable-1"
+	buildkitLocalImage = "k3c-buildkit:latest"
+	dockerContextName  = "k3c"
+)
+
+// DockerBuildkit creates (or recreates) a buildx "docker-container" builder in
+// the sidecar that works under k3c: it trusts the cluster CA (the sidecar's
+// egress is TLS-intercepted, so BuildKit otherwise rejects every registry cert
+// as "unknown authority") and routes through the k3c proxy (the sidecar has no
+// direct DNS). Without this, `docker buildx` builds fail even though plain
+// `docker build`/pull work — because BuildKit runs in its own container that,
+// unlike dockerd, k3c doesn't configure. This is what lets buildx-based image
+// builds work the way they did on Docker Desktop / OrbStack.
+//
+// It is corporate-CA-agnostic: it bakes whatever caCerts resolve to (possibly
+// none) into the BuildKit image.
+func DockerBuildkit(cfg *config.Config, name string) error {
+	if !containerExists(dockerName, true) {
+		return fmt.Errorf("docker sidecar is not running — start it with: k3c docker up")
+	}
+	if name == "" {
+		name = "multi-platform"
+	}
+
+	image := buildkitBaseImage
+	ca, err := corpCACerts(cfg)
+	if err != nil {
+		return err
+	}
+	if len(ca) > 0 {
+		if err := buildBuildkitImage(ca); err != nil {
+			return err
+		}
+		image = buildkitLocalImage
+	}
+
+	proxy := "http://" + cfg.VmnetGateway + ":" + cfg.ProxyPort
+	_ = dockerCmd("buildx", "rm", name).Run() // ignore: may not exist
+	create := dockerCmd("buildx", "create", "--name", name, "--driver", "docker-container",
+		"--driver-opt", "image="+image,
+		"--driver-opt", "env.HTTP_PROXY="+proxy,
+		"--driver-opt", "env.HTTPS_PROXY="+proxy,
+		// single comma-free value: --driver-opt splits on commas. The vmnet /24
+		// covers the in-cluster registry so pushes/pulls to it skip the proxy.
+		"--driver-opt", "env.NO_PROXY="+vmnetCIDR(cfg.VmnetGateway),
+		"--bootstrap")
+	create.Stdout, create.Stderr = os.Stdout, os.Stderr
+	if err := create.Run(); err != nil {
+		return fmt.Errorf("creating buildx builder %q: %w", name, err)
+	}
+	logger.Info("buildx builder '" + name + "' is ready (trusts the cluster CA, egress via the k3c proxy)")
+	return nil
+}
+
+// buildBuildkitImage bakes the corporate CA bundle into a BuildKit image so the
+// builder trusts the proxy's re-signed certificates.
+func buildBuildkitImage(ca []byte) error {
+	dir, err := os.MkdirTemp("", "k3c-buildkit")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	if err := os.WriteFile(filepath.Join(dir, "corp-ca.crt"), ca, 0o644); err != nil {
+		return err
+	}
+	dockerfile := "FROM " + buildkitBaseImage + "\n" +
+		"COPY corp-ca.crt /tmp/corp-ca.crt\n" +
+		"RUN cat /tmp/corp-ca.crt >> /etc/ssl/certs/ca-certificates.crt\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
+		return err
+	}
+	logger.Info("building CA-trusting buildkit image " + buildkitLocalImage)
+	build := dockerCmd("build", "-t", buildkitLocalImage, dir)
+	build.Stdout, build.Stderr = os.Stdout, os.Stderr
+	if err := build.Run(); err != nil {
+		return fmt.Errorf("building buildkit image: %w", err)
+	}
+	return nil
+}
+
+// dockerCmd runs the docker CLI against the k3c sidecar context.
+func dockerCmd(args ...string) *exec.Cmd {
+	cmd := exec.Command("docker", args...) //nolint:gosec // args are k3c-controlled
+	cmd.Env = append(os.Environ(), "DOCKER_CONTEXT="+dockerContextName)
+	return cmd
+}
+
+// vmnetCIDR turns a gateway IP (e.g. 192.168.64.1) into its /24 (192.168.64.0/24).
+func vmnetCIDR(gateway string) string {
+	if i := strings.LastIndex(gateway, "."); i > 0 {
+		return gateway[:i] + ".0/24"
+	}
+	return gateway
+}
+
 // applyDockerSysctls raises the sidecar VM's kernel limits (the configured
 // node sysctls — notably the inotify instance/watch limits, whose defaults are
 // far too low for file-watching workloads) so nested k3d pods get the same

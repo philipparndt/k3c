@@ -51,6 +51,29 @@ sidecar (the image-store volume is preserved).`,
 	},
 }
 
+var dockerBuildkitCmd = &cobra.Command{
+	Use:   "buildkit [BUILDER]",
+	Short: "Set up a buildx builder that works under k3c (cluster CA + proxy)",
+	Long: `Create (or recreate) a docker-container buildx builder in the sidecar
+that trusts the cluster CA and routes egress through the k3c proxy.
+
+The sidecar's egress is TLS-intercepted and DNS-less, so the default BuildKit
+container rejects every registry certificate and can't resolve hosts — even
+though plain "docker build"/pull work. This provisions a builder that does, so
+"docker buildx" image builds behave like they do on Docker Desktop / OrbStack.
+
+BUILDER defaults to "multi-platform" (the common builder name in Makefiles), so
+existing build tooling picks it up unchanged.`,
+	Args: cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		name := ""
+		if len(args) > 0 {
+			name = args[0]
+		}
+		fail(cluster.DockerBuildkit(loadConfigDefault(nil), name))
+	},
+}
+
 var dockerDownCmd = &cobra.Command{
 	Use:     "down",
 	Aliases: []string{"stop"},
@@ -188,6 +211,7 @@ func init() {
 		"deflate the balloon and give the sidecar its full configured memory again")
 	dockerSnapshotCmd.AddCommand(dockerSnapshotSaveCmd, dockerSnapshotRestoreCmd, dockerSnapshotListCmd, dockerSnapshotDeleteCmd)
 	dockerCmd.AddCommand(dockerUpCmd, dockerDownCmd, dockerRmCmd, dockerStatusCmd, dockerEnvCmd,
-		dockerPauseCmd, dockerResumeCmd, dockerSuspendCmd, dockerReclaimCmd, dockerSnapshotCmd)
+		dockerPauseCmd, dockerResumeCmd, dockerSuspendCmd, dockerReclaimCmd, dockerSnapshotCmd,
+		dockerBuildkitCmd)
 	rootCmd.AddCommand(dockerCmd)
 }
