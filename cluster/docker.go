@@ -244,16 +244,23 @@ func DockerBuildkit(cfg *config.Config, name string) error {
 		image = buildkitLocalImage
 	}
 
-	proxy := "http://" + cfg.VmnetGateway + ":" + cfg.ProxyPort
 	_ = dockerCmd("buildx", "rm", name).Run() // ignore: may not exist
-	create := dockerCmd("buildx", "create", "--name", name, "--driver", "docker-container",
-		"--driver-opt", "image="+image,
-		"--driver-opt", "env.HTTP_PROXY="+proxy,
-		"--driver-opt", "env.HTTPS_PROXY="+proxy,
-		// single comma-free value: --driver-opt splits on commas. The vmnet /24
-		// covers the in-cluster registry so pushes/pulls to it skip the proxy.
-		"--driver-opt", "env.NO_PROXY="+vmnetCIDR(cfg.VmnetGateway),
-		"--bootstrap")
+	args := []string{"buildx", "create", "--name", name, "--driver", "docker-container",
+		"--driver-opt", "image=" + image}
+	if !cfg.TransparentEgress {
+		// Proxy mode: BuildKit has no DNS, so route registry pulls through the
+		// k3c proxy. With transparent egress the sidecar has real DNS + egress,
+		// so no proxy is needed (and direct is more robust).
+		proxy := "http://" + cfg.VmnetGateway + ":" + cfg.ProxyPort
+		args = append(args,
+			"--driver-opt", "env.HTTP_PROXY="+proxy,
+			"--driver-opt", "env.HTTPS_PROXY="+proxy,
+			// single comma-free value: --driver-opt splits on commas. The vmnet
+			// /24 covers the in-cluster registry so it skips the proxy.
+			"--driver-opt", "env.NO_PROXY="+vmnetCIDR(cfg.VmnetGateway))
+	}
+	args = append(args, "--bootstrap")
+	create := dockerCmd(args...)
 	create.Stdout, create.Stderr = os.Stdout, os.Stderr
 	if err := create.Run(); err != nil {
 		return fmt.Errorf("creating buildx builder %q: %w", name, err)

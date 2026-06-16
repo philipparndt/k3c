@@ -471,7 +471,11 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		EgressPorts:          fc.Egress.Ports,
 		EgressForwards:       forwards,
 		IngressDomains:       fc.Egress.IngressDomains,
-		TransparentEgress:    (fc.Egress.Transparent != nil && *fc.Egress.Transparent) || truthyEnv("K3C_TRANSPARENT_EGRESS"),
+		// Default ON: transparent egress gives VMs (and the docker sidecar's
+		// build containers) real DNS + egress, so `RUN`/npm/`ADD http://…` work
+		// like a normal Docker host. Set egress.transparent:false for the legacy
+		// SNI-gateway / CONNECT-proxy mode.
+		TransparentEgress:    fc.Egress.Transparent == nil || *fc.Egress.Transparent || truthyEnv("K3C_TRANSPARENT_EGRESS"),
 		PullCacheEnabled:     fc.PullCache.Enabled != nil && *fc.PullCache.Enabled,
 		PullCachePort:        port(fc.PullCache.Port, 5011),
 		PullCacheRetention:   pullCacheRetention(fc.PullCache.RetentionDays),
