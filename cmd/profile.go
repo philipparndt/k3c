@@ -15,6 +15,7 @@ import (
 var (
 	profileInterval time.Duration
 	profileDuration time.Duration
+	profileNames    bool
 )
 
 // profileCmd streams exact per-pod CPU and memory accounting read straight
@@ -36,13 +37,17 @@ sampling tick is written to stdout as one JSON object:
 
 cpu_usec is cumulative since the pod started, so a consumer derives CPU rate
 from the delta between two ticks, and CPU-until-ready from the tick nearest a
-pod's Ready transition.`,
-	Args: cobra.MaximumNArgs(1),
+pod's Ready transition.
+
+Pass --names to resolve each pod UID to its "namespace/name" (looked up from
+the API server) and add it as a "name" field on each pod entry.`,
+	Args:         cobra.MaximumNArgs(1),
+	SilenceUsage: true, // operational failures (e.g. cluster not running) aren't usage errors
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := loadConfigDefault(args)
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return cluster.Profile(ctx, cfg, profileInterval, profileDuration, os.Stdout)
+		return cluster.Profile(ctx, cfg, profileInterval, profileDuration, profileNames, os.Stdout)
 	},
 }
 
@@ -52,4 +57,6 @@ func init() {
 		"sampling interval (e.g. 250ms, 1s)")
 	profileCmd.Flags().DurationVar(&profileDuration, "duration", 0,
 		"stop after this long (0 = until interrupted)")
+	profileCmd.Flags().BoolVar(&profileNames, "names", false,
+		"resolve pod UIDs to namespace/name via the API server (adds a \"name\" field)")
 }

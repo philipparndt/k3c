@@ -19,6 +19,10 @@ import (
 // PodSample is one pod's resource accounting at a single instant, read
 // straight from the node's cgroup v2 hierarchy.
 type PodSample struct {
+	// Name is the pod's "namespace/name", populated only when name resolution
+	// is requested (the --names flag). The cgroup hierarchy knows a pod only by
+	// its UID, so this is looked up from the API server. Empty otherwise.
+	Name string `json:"name,omitempty"`
 	// CPUUsec is the cumulative on-CPU time of the whole pod (all its
 	// containers) since the pod sandbox was created, in microseconds. It is
 	// the kernel's own accounting (cpu.stat usage_usec) — the same figure the
@@ -67,7 +71,10 @@ done`
 // reading cgroup accounting directly. It writes one JSON Snapshot per line to
 // emit, every interval, until duration elapses (duration <= 0 streams until
 // ctx is cancelled). It is language- and workload-agnostic.
-func Profile(ctx context.Context, cfg *config.Config, interval, duration time.Duration, emit io.Writer) error {
+func Profile(ctx context.Context, cfg *config.Config, interval, duration time.Duration, names bool, emit io.Writer) error {
+	if !containerExists(cfg.ServerName, true) {
+		return fmt.Errorf("cluster %q is not running — start it with: k3c cluster start", cfg.Cluster)
+	}
 	if interval <= 0 {
 		interval = 500 * time.Millisecond
 	}
@@ -88,13 +95,24 @@ func Profile(ctx context.Context, cfg *config.Config, interval, duration time.Du
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("profile: starting node sampler: %w", err)
 	}
-	logger.Debug("profile: sampling node ", cfg.ServerName, " every ", secs, "s")
+	logger.Debug(fmt.Sprintf("profile: sampling node %s every %ss", cfg.ServerName, secs))
 
 	// Kill the node sampler when the context ends (duration/interrupt).
 	go func() {
 		<-ctx.Done()
 		_ = cmd.Process.Kill()
 	}()
+
+	// Optional pod-UID -> "namespace/name" resolution. The cgroup stream only
+	// knows UIDs; resolve from the API server when asked. Refresh lazily when a
+	// tick contains a UID we haven't seen (pods appearing during a cold start),
+	// throttled so it costs at most one kubectl call every few seconds.
+	var uidNames map[string]string
+	var lastResolve time.Time
+	if names {
+		uidNames = podNames(cfg)
+		lastResolve = time.Now()
+	}
 
 	enc := json.NewEncoder(emit)
 	scanner := bufio.NewScanner(stdout)
@@ -103,6 +121,27 @@ func Profile(ctx context.Context, cfg *config.Config, interval, duration time.Du
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "===" {
+			if names {
+				missing := false
+				for uid := range pods {
+					if _, ok := uidNames[uid]; !ok {
+						missing = true
+						break
+					}
+				}
+				if missing && time.Since(lastResolve) > 2*time.Second {
+					if m := podNames(cfg); len(m) > 0 {
+						uidNames = m
+					}
+					lastResolve = time.Now()
+				}
+				for uid, s := range pods {
+					if n, ok := uidNames[uid]; ok {
+						s.Name = n
+						pods[uid] = s
+					}
+				}
+			}
 			snap := Snapshot{TimeMillis: time.Now().UnixMilli(), Pods: pods}
 			if err := enc.Encode(snap); err != nil {
 				return fmt.Errorf("profile: encoding snapshot: %w", err)
@@ -125,6 +164,24 @@ func Profile(ctx context.Context, cfg *config.Config, interval, duration time.Du
 		return fmt.Errorf("profile: reading node stream: %w", err)
 	}
 	return werr
+}
+
+// podNames returns a pod-UID -> "namespace/name" map from the API server, or
+// nil if it can't be read (e.g. the API is briefly unreachable) — name
+// resolution is best-effort, so callers fall back to the bare UID.
+func podNames(cfg *config.Config) map[string]string {
+	out, err := kubectl(cfg, "get", "pods", "-A", "-o",
+		`jsonpath={range .items[*]}{.metadata.uid}{" "}{.metadata.namespace}/{.metadata.name}{"\n"}{end}`)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 {
+			m[f[0]] = f[1]
+		}
+	}
+	return m
 }
 
 // parsePodLine parses "uid cpu_usec mem_current inactive_file" into a sample.
