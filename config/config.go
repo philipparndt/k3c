@@ -559,7 +559,12 @@ K3C_NODE_IP=$(ip -4 -o addr show | awk '/192[.]168[.]64[.]/{split($4,a,"/"); pri
 	// budget refills. Disable it (0 = unlimited); pulls stay serialized by
 	// default, so this drops the self-inflicted backoff without flooding the
 	// registry/mirror. Overridable via extraK3sArgs (later args win).
-	args = append(args, "--kubelet-arg=registry-pull-qps=0")
+	//
+	// The KubeletConfiguration fields registryPullQPS/registryBurst map to the
+	// kubelet CLI flags --registry-qps/--registry-burst (there is no
+	// --registry-pull-qps flag; passing it makes the kubelet exit on an unknown
+	// flag and the node never goes Ready).
+	args = append(args, "--kubelet-arg=registry-qps=0", "--kubelet-arg=registry-burst=0")
 	args = append(args, c.ExtraK3sArgs...)
 	return `for b in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
 	ln -sf xtables-legacy-multi /bin/aux/$b
