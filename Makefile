@@ -85,17 +85,22 @@ runtime: forks ## build the fork runtime (container app + init image) into ./tmp
 	else \
 		echo "building container app ($(CONTAINER_REF)) — this is slow on first build"; \
 		$(MAKE) -C "$(CONTAINER_DIR)" container BUILD_CONFIGURATION=release; \
+		echo "staging the full install tree (all plugins) from the fork"; \
+		$(MAKE) -C "$(CONTAINER_DIR)" stage BUILD_CONFIGURATION=release; \
 		echo "preparing the Linux cross-compile toolchain for the init image"; \
 		$(MAKE) -C "$(CONTAINERIZATION_DIR)/vminitd" cross-prep; \
 		echo "building init image ($(CONTAINERIZATION_REF))"; \
 		$(MAKE) -C "$(CONTAINERIZATION_DIR)" init BUILD_CONFIGURATION=release; \
 		"$(CONTAINERIZATION_DIR)/bin/cctl" images save -o "$(RUNTIME_INIT_TAR)" vminit:latest; \
 		echo "assembling runtime stage -> $(RUNTIME_STAGE)"; \
+		STG="$(CONTAINER_DIR)/bin/release/staging"; \
 		rm -rf "$(RUNTIME_STAGE)"; \
 		mkdir -p "$(RUNTIME_STAGE)/bin"; \
-		cp "$(CONTAINER_DIR)/bin/container" "$(RUNTIME_STAGE)/bin/"; \
-		cp "$(CONTAINER_DIR)/bin/container-apiserver" "$(RUNTIME_STAGE)/bin/"; \
-		cp -R "$(CONTAINER_DIR)/libexec" "$(RUNTIME_STAGE)/libexec"; \
+		cp "$$STG/bin/container" "$(RUNTIME_STAGE)/bin/"; \
+		cp "$$STG/bin/container-apiserver" "$(RUNTIME_STAGE)/bin/"; \
+		cp -R "$$STG/libexec" "$(RUNTIME_STAGE)/libexec"; \
+		test -x "$(RUNTIME_STAGE)/libexec/container/plugins/container-network-gvnet/bin/container-network-gvnet" \
+			|| { echo "ERROR: container-network-gvnet plugin missing from staged runtime — transparent egress would break"; exit 1; }; \
 		echo "$$KEY" > "$(RUNTIME_MARKER)"; \
 		echo "fork runtime built ($$KEY)"; \
 	fi

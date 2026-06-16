@@ -123,6 +123,22 @@ func pluginMissing(out string) bool {
 	return strings.Contains(lower, "plugin") && strings.Contains(lower, "not found")
 }
 
+// GvnetPluginInstalled reports whether the container-network-gvnet plugin (the
+// backend for transparent egress) is present in the runtime, along with the
+// install root it inspected. A bundled runtime is checked on disk; for a
+// host-installed runtime (no install root) it returns true, since that runtime
+// manages its own plugins and isn't the bundle that can ship incomplete.
+func GvnetPluginInstalled() (bool, string) {
+	root := installRoot()
+	if root == "" {
+		return true, ""
+	}
+	bin := filepath.Join(root, "libexec", "container", "plugins",
+		"container-network-gvnet", "bin", "container-network-gvnet")
+	_, err := os.Stat(bin)
+	return err == nil, root
+}
+
 // installRoot returns the CONTAINER_INSTALL_ROOT from the resolved env, or
 // "" when none is set (host-installed runtime).
 func installRoot() string {

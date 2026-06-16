@@ -11,12 +11,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"k3c/config"
+	"k3c/runtime"
 )
 
 // Doctor walks the chain of known failure modes — host tools, container
@@ -28,6 +30,7 @@ func Doctor(cfg *config.Config) error {
 	d.section("host")
 	d.checkKubectl()
 	d.checkRuntime()
+	d.checkGvnetPlugin(cfg)
 	d.checkHostDNS(cfg)
 	d.checkCorporateNetwork(cfg)
 	d.checkCIDRCollisions(cfg)
@@ -104,6 +107,29 @@ func (d *doctor) checkRuntime() {
 		return
 	}
 	d.pass("container system running (plugins ok)")
+}
+
+// checkGvnetPlugin verifies the transparent-egress network plugin is present.
+// A k3c whose bundled runtime predates the plugin fails cluster/sidecar create
+// the moment transparent egress builds its gvnet network, with "unable to
+// locate network plugin container-network-gvnet". Only relevant when
+// egress.transparent is set.
+func (d *doctor) checkGvnetPlugin(cfg *config.Config) {
+	if !cfg.TransparentEgress {
+		return
+	}
+	ok, root := runtime.GvnetPluginInstalled()
+	if ok {
+		d.pass("transparent-egress plugin present (container-network-gvnet)")
+		return
+	}
+	hint := "upgrade k3c to a build whose bundled runtime includes the plugin"
+	if root != "" {
+		hint += "; or drop container-network-gvnet into " +
+			filepath.Join(root, "libexec/container/plugins") +
+			" then: k3c container system stop && k3c container system start"
+	}
+	d.fail("transparent-egress plugin missing: container-network-gvnet (egress.transparent is set)", hint)
 }
 
 // registryHosts extracts the registry endpoint hosts from the k3s
