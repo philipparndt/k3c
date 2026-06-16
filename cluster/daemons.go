@@ -80,14 +80,24 @@ func splice(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	pump := func(dst, src net.Conn) {
 		_, _ = io.Copy(dst, src)
+		// Half-close the write side so the peer sees EOF, but let the OTHER
+		// direction keep flowing. Tearing both down here would cut hijacked,
+		// half-duplex streams — e.g. `docker run` (no TTY) EOFs its stdin→engine
+		// direction immediately, which must not kill the engine→client attach
+		// stream carrying the container's output.
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		} else {
+			_ = dst.Close()
+		}
 		done <- struct{}{}
 	}
 	go pump(a, b)
 	go pump(b, a)
-	<-done // first direction closing tears down both
+	<-done // wait for BOTH directions before tearing the connections down
+	<-done
 	a.Close()
 	b.Close()
-	<-done
 }
 
 // handleRegistryConn forwards the public registry port to the active
