@@ -100,6 +100,10 @@ jobs:
         if: steps.payload.outputs.build == 'true'
         run: make -C .forks/container container BUILD_CONFIGURATION=release
 
+      - name: Stage the full install tree (all plugins)
+        if: steps.payload.outputs.build == 'true'
+        run: make -C .forks/container stage BUILD_CONFIGURATION=release
+
       - name: Build init image (vminitd + vmexec, Linux cross-compile)
         if: steps.payload.outputs.build == 'true'
         run: |
@@ -110,10 +114,15 @@ jobs:
         if: steps.payload.outputs.build == 'true'
         run: |
           STAGE=/tmp/k3c-runtime/stage
+          STG=.forks/container/bin/release/staging
           mkdir -p "$STAGE/bin"
-          cp .forks/container/bin/container "$STAGE/bin/"
-          cp .forks/container/bin/container-apiserver "$STAGE/bin/"
-          cp -R .forks/container/libexec "$STAGE/libexec"
+          cp "$STG/bin/container" "$STAGE/bin/"
+          cp "$STG/bin/container-apiserver" "$STAGE/bin/"
+          cp -R "$STG/libexec" "$STAGE/libexec"
+          # fail the build rather than ship a runtime missing the transparent-
+          # egress plugin (the bug that broke cluster create on bundled installs)
+          test -x "$STAGE/libexec/container/plugins/container-network-gvnet/bin/container-network-gvnet" \
+            || { echo "::error::container-network-gvnet plugin missing from staged runtime"; exit 1; }
           mv /tmp/k3c-init.tar /tmp/k3c-runtime/init.tar
           du -sh /tmp/k3c-runtime
 
