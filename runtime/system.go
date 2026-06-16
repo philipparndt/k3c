@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -63,11 +64,13 @@ func ensureSystem() error {
 	// Without a configured default kernel `system start` PROMPTS to install
 	// one; k3c often runs it from scripts, so always answer yes via
 	// --enable-kernel-install (the interactive default).
+	started := false
 	if _, err := Output("system", "status"); err != nil {
 		logger.Info("starting container system")
 		if out, err := Output("system", "start", "--enable-kernel-install"); err != nil {
 			return fmt.Errorf("could not start container system: %s", out)
 		}
+		started = true
 	}
 
 	// A `system start` that died half-way (e.g. on the kernel install
@@ -81,6 +84,38 @@ func ensureSystem() error {
 		if out, err := Output("system", "start", "--enable-kernel-install"); err != nil {
 			return fmt.Errorf("could not restart container system: %s", out)
 		}
+		started = true
+	}
+
+	// A k3c upgrade extracts a new bundled runtime, but the running launchd
+	// system keeps the install root it was started with — so newly added
+	// plugins (e.g. container-network-gvnet for transparent egress) stay
+	// unregistered until it is restarted. When the runtime changed since we
+	// last started it, offer to restart now. Skip when containers are running
+	// (a restart stops them) and when non-interactive (just warn).
+	if !started && RuntimeRestartNeeded() {
+		switch {
+		case runningContainers():
+			logger.Warn("the bundled container runtime was updated, but containers are running; " +
+				"apply it later with (this stops running containers): " +
+				"k3c container system stop && k3c container system start")
+		case promptYesNo("The container runtime was updated. Restart the container system now to apply it?"):
+			logger.Info("restarting the container system to apply the updated runtime")
+			_, _ = Output("system", "stop")
+			if out, err := Output("system", "start", "--enable-kernel-install"); err != nil {
+				return fmt.Errorf("could not restart container system: %s", out)
+			}
+			started = true
+		default:
+			logger.Warn("keeping the previous container runtime; transparent egress and other new " +
+				"features may fail until you run: k3c container system stop && k3c container system start")
+		}
+	}
+
+	// Record the runtime version the running system is now on, so the next
+	// upgrade is detected (only after we (re)started it onto the current one).
+	if started {
+		writeSystemVersion(bundleVersion())
 	}
 
 	if err := ensureInitImage(); err != nil {
@@ -137,6 +172,75 @@ func GvnetPluginInstalled() (bool, string) {
 		"container-network-gvnet", "bin", "container-network-gvnet")
 	_, err := os.Stat(bin)
 	return err == nil, root
+}
+
+// RuntimeRestartNeeded reports whether the active bundled runtime changed since
+// the container system was last (re)started by k3c — i.e. a `system stop`+
+// `start` is needed for the running launchd service to pick up the new install
+// root and register newly added plugins. False unless the bundled runtime is
+// the one actually in use (installRoot set); a host-installed/configured
+// runtime manages its own lifecycle.
+func RuntimeRestartNeeded() bool {
+	if installRoot() == "" {
+		return false
+	}
+	return recordedSystemVersion() != bundleVersion()
+}
+
+// systemVersionFile is where k3c records the runtime version the running
+// container system was last started on (under the runtime cache root).
+func systemVersionFile() string {
+	root, err := cacheRoot()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(root, ".system-version")
+}
+
+func recordedSystemVersion() string {
+	p := systemVersionFile()
+	if p == "" {
+		return ""
+	}
+	b, _ := os.ReadFile(p)
+	return strings.TrimSpace(string(b))
+}
+
+func writeSystemVersion(v string) {
+	if p := systemVersionFile(); p != "" {
+		_ = os.WriteFile(p, []byte(v+"\n"), 0o644)
+	}
+}
+
+// runningContainers reports whether the container system has any containers
+// running (a restart would stop them, so we never restart unprompted then).
+func runningContainers() bool {
+	out, err := Output("ls", "--format", "json")
+	if err != nil {
+		return false
+	}
+	out = strings.TrimSpace(out)
+	return out != "" && out != "[]" && out != "null"
+}
+
+func stdinIsTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// promptYesNo asks a yes/no question on the terminal, defaulting to no. A
+// non-interactive invocation (script/CI) never blocks: it returns false.
+func promptYesNo(question string) bool {
+	if !stdinIsTerminal() {
+		return false
+	}
+	fmt.Print(question + " [y/N]: ")
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
 }
 
 // installRoot returns the CONTAINER_INSTALL_ROOT from the resolved env, or

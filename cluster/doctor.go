@@ -118,6 +118,13 @@ func (d *doctor) checkGvnetPlugin(cfg *config.Config) {
 	if !cfg.TransparentEgress {
 		return
 	}
+	// The plugin can be present on disk yet absent from the RUNNING system if
+	// the runtime was upgraded without restarting it — diagnose that first.
+	if runtime.RuntimeRestartNeeded() {
+		d.fail("the running container system is on an outdated runtime; new plugins (e.g. transparent-egress container-network-gvnet) are not registered",
+			"k3c container system stop && k3c container system start --enable-kernel-install")
+		return
+	}
 	ok, root := runtime.GvnetPluginInstalled()
 	if ok {
 		d.pass("transparent-egress plugin present (container-network-gvnet)")
