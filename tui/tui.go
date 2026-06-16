@@ -409,6 +409,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// the full-screen help eats every key: any key closes it (q/ctrl+c quits)
+	if m.showHelp {
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		default:
+			m.showHelp = false
+			return m, nil
+		}
+	}
+
 	// a pending confirmation eats every key
 	if m.confirm != nil {
 		c := *m.confirm
@@ -657,6 +668,7 @@ var (
 	cool      = lipgloss.AdaptiveColor{Light: "#0072C6", Dark: "#56B2F2"}
 	bad       = lipgloss.AdaptiveColor{Light: "#C5283D", Dark: "#F2637E"}
 	titleSt   = lipgloss.NewStyle().Bold(true).Foreground(accent)
+	keySt     = lipgloss.NewStyle().Bold(true).Foreground(cool)
 	dimSt     = lipgloss.NewStyle().Foreground(dim)
 	selectSt  = lipgloss.NewStyle().Bold(true).Background(accent).Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#1A1A1A"})
 	statusOk  = lipgloss.NewStyle().Foreground(good)
@@ -692,6 +704,9 @@ func lastLine(out string, err error) string {
 func (m model) View() string {
 	if m.width == 0 {
 		return "loading…"
+	}
+	if m.showHelp {
+		return m.helpScreen()
 	}
 
 	leftW := m.width * 2 / 5
@@ -857,27 +872,75 @@ func (m model) statusView() string {
 	}
 }
 
+// helpView is the condensed bottom bar (always visible); the full keymap is
+// the ?-toggled full-screen helpScreen.
 func (m model) helpView() string {
-	// Condensed by default (k9s-style); the full keymap is shown on ?.
-	if !m.showHelp {
-		return dimSt.Render(" ↑↓ move · ⇥ switch · ↵ select · ? help · q quit")
-	}
-	var keys []string
-	if m.focus == paneClusters {
-		keys = []string{
-			"↑↓ move", "⇥ snapshots", "↵ activate",
-			"s start", "S stop", "p pause", "r resume", "z suspend",
-			"u use-context", "m reclaim", "M release", "c snapshot", "d delete",
-			"o output", "? hide help", "q quit",
+	return dimSt.Render(" ↑↓ move · ⇥ switch · ↵ select · c snapshot · ? help · q quit")
+}
+
+// helpBind is one key/description row in the full-screen help.
+type helpBind struct{ key, desc string }
+
+// helpScreen renders the full-screen keybinding reference (k9s-style), shown
+// while showHelp is set; any key closes it (see handleKey).
+func (m model) helpScreen() string {
+	col := func(title string, binds []helpBind) string {
+		w := 0
+		for _, b := range binds {
+			if k := lipgloss.Width(b.key); k > w {
+				w = k
+			}
 		}
-	} else {
-		keys = []string{
-			"↑↓ move", "⇥ clusters", "↵ restore",
-			"c create", "d delete", "e export",
-			"o output", "? hide help", "q quit",
+		var sb strings.Builder
+		sb.WriteString(titleSt.Render(title) + "\n")
+		for _, b := range binds {
+			sb.WriteString(" " + keySt.Render(padRight(b.key, w)) + "  " + dimSt.Render(b.desc) + "\n")
 		}
+		return strings.TrimRight(sb.String(), "\n")
 	}
-	return dimSt.Render(" " + strings.Join(keys, " · "))
+
+	general := col("GENERAL", []helpBind{
+		{"↑ ↓ / j k", "move"},
+		{"⇥", "switch pane"},
+		{"g / F5", "refresh"},
+		{"o", "toggle output"},
+		{"? / esc", "close help"},
+		{"q / ^C", "quit"},
+	})
+	machines := col("MACHINES", []helpBind{
+		{"↵", "activate cluster"},
+		{"s", "start"},
+		{"S", "stop"},
+		{"p", "pause"},
+		{"r", "resume"},
+		{"z", "suspend"},
+		{"u", "use-context (kubeconfig)"},
+		{"m", "reclaim memory"},
+		{"M", "release memory"},
+		{"c", "new snapshot"},
+		{"d / x", "delete cluster"},
+	})
+	snapshots := col("SNAPSHOTS", []helpBind{
+		{"↵", "restore"},
+		{"c", "create"},
+		{"d / x", "delete"},
+		{"e", "export"},
+	})
+	docker := col("DOCKER SIDECAR", []helpBind{
+		{"↵ / s", "up"},
+		{"S", "down"},
+		{"p / r", "pause / resume"},
+		{"z", "suspend"},
+		{"c", "snapshot"},
+		{"d / x", "remove"},
+	})
+
+	gap := "    "
+	topRow := lipgloss.JoinHorizontal(lipgloss.Top, general, gap, machines, gap, snapshots)
+	title := titleSt.Render(" k3c ") + dimSt.Render("· keybindings")
+	footer := dimSt.Render(" ? or esc to close")
+	content := lipgloss.JoinVertical(lipgloss.Left, title, "", topRow, "", docker, "", footer)
+	return lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, content)
 }
 
 func padRight(s string, width int) string {
