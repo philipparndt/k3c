@@ -38,7 +38,10 @@ CONTAINER_VERSION ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help all build build-unbundled runtime forks clone-fork fmt vet check test clean clean-forks install install-system uninstall bundle
+.PHONY: help all build build-unbundled runtime forks clone-fork fmt vet check test clean clean-forks install install-system uninstall bundle use-brew
+
+# Homebrew tap formula for the released k3c (see brews: in .goreleaser.yaml)
+BREW_FORMULA ?= philipparndt/k3c/k3c
 
 help: ## show this help
 	@echo "k3c — local k3s clusters on Apple container"
@@ -186,3 +189,21 @@ uninstall: ## remove installed binaries
 	@if [ -e $(PREFIX)/bin/$(BINARY) ]; then \
 		rm -f $(PREFIX)/bin/$(BINARY) 2>/dev/null || sudo rm -f $(PREFIX)/bin/$(BINARY); \
 	fi
+
+# switch the active k3c back to the released Homebrew build by removing the
+# local go build that shadows it on PATH (the inverse of `make install`)
+use-brew: ## activate the Homebrew k3c instead of the local go build
+	@command -v brew >/dev/null 2>&1 || { echo "Homebrew not found (https://brew.sh)"; exit 1; }
+	@if ! brew list k3c >/dev/null 2>&1; then \
+		echo "installing $(BREW_FORMULA) via Homebrew..."; \
+		brew install $(BREW_FORMULA); \
+	fi
+	@if [ -e "$(GOBIN)/$(BINARY)" ]; then \
+		echo "removing local go build that shadows brew: $(GOBIN)/$(BINARY)"; \
+		rm -f "$(GOBIN)/$(BINARY)"; \
+	fi
+	@active="$$(command -v $(BINARY) || true)"; \
+	echo "active k3c: $${active:-<none on PATH>}"; \
+	[ -n "$$active" ] && $$active --version 2>/dev/null | head -1 || true; \
+	echo "note: run 'hash -r' (bash) or 'rehash' (zsh) if your shell still resolves the old path"; \
+	echo "      'brew upgrade k3c' to get the latest released version"
