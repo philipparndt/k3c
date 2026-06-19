@@ -28,9 +28,10 @@ perspective. --rm removes the pod (on shell exit, or standalone).
 With --attach POD an ephemeral debug container (netshoot by default) is
 injected into a running pod, sharing the target container's process
 namespace — the way to get a shell into a distroless/scratch container
-that ships no shell. The target's filesystem is at /proc/1/root, its
-processes via /proc. Use -n for the namespace and -c to pick the target
-container (default: the pod's first container).`,
+that ships no shell. The shell opens inside the target's filesystem
+(/proc/1/root) with netshoot's tools on PATH; its processes are at /proc.
+Use -n for the namespace and --container to pick the target (default: the
+pod's first container).`,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		switch {

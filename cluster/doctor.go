@@ -489,6 +489,18 @@ const debugPodName = "k3c-debug"
 // netshoot v0.14, pinned by digest for reproducibility (--image overrides)
 const defaultDebugImage = "docker.io/nicolaka/netshoot@sha256:47b907d662d139d1e2f22bfe14f4efca1e3f1feed283572f47c970c780c03b61"
 
+// attachShellInit opens the interactive shell already sitting inside the
+// target container's root filesystem. With a shared process namespace the
+// target's main process is PID 1, so its rootfs is at /proc/1/root; the cd is
+// best-effort (a pod-level shareProcessNamespace would put PID 1 elsewhere)
+// and the shell opens regardless. We deliberately do NOT chroot: that would
+// strip netshoot's toolset (a distroless root has no shell or binaries),
+// whereas a plain cd keeps every tool on PATH while the target's files are
+// right there in the working directory.
+const attachShellInit = `cd /proc/1/root 2>/dev/null && ` +
+	`echo "[k3c] cwd is the target's filesystem (/proc/1/root) — netshoot's tools stay on PATH"; ` +
+	`exec bash`
+
 func debugPodManifest(image string) string {
 	return `apiVersion: v1
 kind: Pod
@@ -531,16 +543,17 @@ func DoctorAttach(cfg *config.Config, pod, namespace, container, image string) e
 		case len(names) == 0:
 			return fmt.Errorf("pod %s/%s has no containers", namespace, pod)
 		case len(names) > 1:
-			return fmt.Errorf("pod %s/%s has multiple containers (%s); pick one with -c",
+			return fmt.Errorf("pod %s/%s has multiple containers (%s); pick one with --container",
 				namespace, pod, strings.Join(names, ", "))
 		}
 		container = names[0]
 	}
 	fmt.Printf("attaching debug container to %s/%s (target: %s, image: %s)\n",
 		namespace, pod, container, image)
-	fmt.Println("the target's filesystem is at /proc/1/root, its processes via /proc")
+	fmt.Println("the shell opens inside the target's filesystem (/proc/1/root); its processes are at /proc")
 	dbg := kubectlCommand(cfg, "-n", namespace, "debug", "-it", pod,
-		"--image="+image, "--target="+container, "--profile=general", "--", "bash")
+		"--image="+image, "--target="+container, "--profile=general",
+		"--", "bash", "-c", attachShellInit)
 	dbg.Stdin = os.Stdin
 	dbg.Stdout = os.Stdout
 	dbg.Stderr = os.Stderr
