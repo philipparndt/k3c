@@ -100,8 +100,9 @@ type model struct {
 	busyArgs []string // args of the running operation (recorded into the log)
 	opLine   string   // latest output line of the running operation
 	opCh     chan opEventMsg
-	status   string // last result line
-	failed   bool   // last result was an error
+	status    string // last result line
+	failed    bool   // last result was an error
+	statusSeq int    // bumped on every status change; gates the auto-dismiss timer
 
 	commands []commandRun // session-long command history
 	logVP    viewport.Model
@@ -166,6 +167,18 @@ type opEventMsg struct {
 }
 
 type tickMsg struct{}
+
+// clearStatusMsg fires after a delay to dismiss a success status line. It
+// carries the statusSeq it was scheduled for, so a newer status (or a sticky
+// failure) is left untouched.
+type clearStatusMsg struct{ seq int }
+
+// statusDismiss is how long a success result stays before auto-clearing.
+const statusDismiss = 4 * time.Second
+
+func clearStatusAfter(seq int) tea.Cmd {
+	return tea.Tick(statusDismiss, func(time.Time) tea.Msg { return clearStatusMsg{seq: seq} })
+}
 
 // --- selection helpers ---
 
@@ -467,6 +480,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = msg.desc
 		m.busyArgs = msg.args
 		m.status = ""
+		m.statusSeq++
 		m.opLine = ""
 		m.opCh = startOpStream(msg.args)
 		return m, tea.Batch(waitOp(m.opCh), m.spin.Tick)
@@ -484,6 +498,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.commands = append(m.commands, commandRun{
 			desc: desc, args: args, output: msg.output, err: msg.err, when: time.Now(),
 		})
+		m.statusSeq++
 		if msg.err != nil {
 			m.failed = true
 			m.status = desc + " failed: " + lastLine(msg.output, msg.err)
@@ -494,7 +509,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showLog {
 			m.logVP.SetContent(m.logContent())
 		}
-		return m, m.refresh()
+		// a success line auto-dismisses; failures stay (they point at the log)
+		if m.failed {
+			return m, m.refresh()
+		}
+		return m, tea.Batch(m.refresh(), clearStatusAfter(m.statusSeq))
+
+	case clearStatusMsg:
+		// only clear if no newer status has replaced this one
+		if msg.seq == m.statusSeq {
+			m.status = ""
+		}
+		return m, nil
 
 	case tickMsg:
 		if m.busy == "" && m.confirm == nil && m.input == nil {
@@ -553,6 +579,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.status = "cancelled"
 		m.failed = false
+		m.statusSeq++
 		return m, nil
 	}
 
@@ -563,6 +590,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input = nil
 			m.status = "cancelled"
 			m.failed = false
+			m.statusSeq++
 			return m, nil
 		case tea.KeyCtrlC:
 			return m, tea.Quit
