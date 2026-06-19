@@ -46,7 +46,7 @@ func TestK3sCommandContainsSysctls(t *testing.T) {
 func TestProjectConfigForeignCluster(t *testing.T) {
 	project := t.TempDir()
 	if err := os.WriteFile(filepath.Join(project, "k3c.yaml"),
-		[]byte("cluster:\n  name: vehub\n  contextPrefix: k3d-\n"), 0o644); err != nil {
+		[]byte("cluster:\n  name: myproj\n  contextPrefix: k3d-\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(project)
@@ -63,11 +63,11 @@ func TestProjectConfigForeignCluster(t *testing.T) {
 			foreign.KubeContext, foreign.ConfigFile)
 	}
 
-	own, err := Resolve("vehub", "")
+	own, err := Resolve("myproj", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if own.KubeContext != "k3d-vehub" {
+	if own.KubeContext != "k3d-myproj" {
 		t.Errorf("own cluster did not pick up project config: context=%s", own.KubeContext)
 	}
 
@@ -75,7 +75,7 @@ func TestProjectConfigForeignCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if def.Cluster != "vehub" {
+	if def.Cluster != "myproj" {
 		t.Errorf("default resolution did not use the project cluster: %s", def.Cluster)
 	}
 }
@@ -98,9 +98,9 @@ func TestCorednsCustomCatchAll(t *testing.T) {
 		}
 	}
 
-	cfg.EgressDomains = []string{"vector.com", "vector.int"}
+	cfg.EgressDomains = []string{"example.com", "example.int"}
 	manifest = cfg.CorednsCustom()
-	if !strings.Contains(manifest, "template IN A vector.com vector.int {") {
+	if !strings.Contains(manifest, "template IN A example.com example.int {") {
 		t.Errorf("domain-list manifest changed:\n%s", manifest)
 	}
 	if strings.Contains(manifest, "fallthrough") {

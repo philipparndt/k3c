@@ -20,8 +20,8 @@ var (
 
 // profileCmd streams exact per-pod CPU and memory accounting read straight
 // from the node's cgroup hierarchy, as JSON lines on stdout. It is the
-// language-agnostic measurement primitive other tools build on (e.g. the
-// veHub cli correlates these samples with pod readiness to compute exact
+// language-agnostic measurement primitive other tools build on (e.g. an
+// external CLI can correlate these samples with pod readiness to compute exact
 // CPU-until-ready and idle-CPU figures).
 var profileCmd = &cobra.Command{
 	Use:   "profile [NAME]",

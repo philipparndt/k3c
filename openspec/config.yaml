@@ -1,0 +1,30 @@
+schema: spec-driven
+
+# Project context (optional). Shown to AI when creating artifacts.
+context: |
+  k3c runs local k3s clusters (and a Docker dind sidecar) on Apple's native
+  `container` runtime — like k3d/kind, but without Docker Desktop/Colima.
+  Each `container` is a lightweight per-workload Linux VM
+  (Virtualization.framework) on Apple Silicon (macOS 26+, arm64).
+
+  Tech stack: Go, Cobra CLI (cmd/), spf13 config. Single static binary `k3c`.
+  Release builds embed the Apple `container` runtime tree + gvnet helper.
+  Conventional commits. See ARCHITECTURE.md for layers, networking, runbook.
+
+  Core problem k3c solves: behind a corporate full-tunnel VPN the VMs have no
+  direct internet, can't resolve corporate DNS, and don't trust the corporate
+  CA. k3c bridges that from the host (CONNECT proxy, SNI gateway, pull-cache
+  with CA termination, or transparent gvnet egress).
+
+  Capability specs live under openspec/specs/<capability>/spec.md and describe
+  current behavior. The CLI is the source of truth (cmd/*.go).
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
