@@ -10,6 +10,9 @@ var (
 	doctorShell      bool
 	doctorShellRm    bool
 	doctorShellImage string
+	doctorAttach     string
+	doctorNamespace  string
+	doctorContainer  string
 )
 
 var doctorCmd = &cobra.Command{
@@ -20,10 +23,19 @@ var doctorCmd = &cobra.Command{
 All checks are read-only. With --shell a debug pod (nicolaka/netshoot
 by default) is started in the cluster and an interactive shell opened
 in it, for testing DNS, egress, and service routing from a pod's
-perspective. --rm removes the pod (on shell exit, or standalone).`,
+perspective. --rm removes the pod (on shell exit, or standalone).
+
+With --attach POD an ephemeral debug container (netshoot by default) is
+injected into a running pod, sharing the target container's process
+namespace — the way to get a shell into a distroless/scratch container
+that ships no shell. The target's filesystem is at /proc/1/root, its
+processes via /proc. Use -n for the namespace and -c to pick the target
+container (default: the pod's first container).`,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		switch {
+		case doctorAttach != "":
+			fail(cluster.DoctorAttach(loadConfigDefault(args), doctorAttach, doctorNamespace, doctorContainer, doctorShellImage))
 		case doctorShell:
 			fail(cluster.DoctorShell(loadConfigDefault(args), doctorShellImage, doctorShellRm))
 		case doctorShellRm:
@@ -40,6 +52,12 @@ func init() {
 	doctorCmd.Flags().BoolVar(&doctorShellRm, "rm", false,
 		"remove the debug pod (with --shell: when the shell exits)")
 	doctorCmd.Flags().StringVar(&doctorShellImage, "image", "",
-		"debug pod image (default nicolaka/netshoot, digest-pinned)")
+		"debug pod/container image (default nicolaka/netshoot, digest-pinned)")
+	doctorCmd.Flags().StringVar(&doctorAttach, "attach", "",
+		"inject a debug container into POD and open a shell (for distroless pods)")
+	doctorCmd.Flags().StringVarP(&doctorNamespace, "namespace", "n", "",
+		"namespace of the pod to --attach (default: default)")
+	doctorCmd.Flags().StringVar(&doctorContainer, "container", "",
+		"target container in the pod to --attach (default: first container)")
 	rootCmd.AddCommand(doctorCmd)
 }

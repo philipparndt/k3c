@@ -505,6 +505,48 @@ spec:
 `
 }
 
+// DoctorAttach injects an ephemeral debug container (netshoot by default)
+// into a running pod and opens an interactive shell that SHARES the target
+// container's process namespace — the way to get a shell "into" a
+// distroless/scratch container that ships no shell of its own. The target's
+// filesystem is then reachable at /proc/1/root and its processes via /proc.
+//
+// Unlike --shell's standalone pod, an ephemeral container cannot be removed:
+// it lives until the pod is recreated. The pod's own containers are untouched.
+func DoctorAttach(cfg *config.Config, pod, namespace, container, image string) error {
+	if image == "" {
+		image = defaultDebugImage
+	}
+	if namespace == "" {
+		namespace = "default"
+	}
+	if container == "" {
+		out, err := kubectl(cfg, "-n", namespace, "get", "pod", pod, "--request-timeout=8s",
+			"-o", `jsonpath={range .spec.containers[*]}{.name}{"\n"}{end}`)
+		if err != nil {
+			return fmt.Errorf("pod %s/%s not found: %s", namespace, pod, firstLine(out))
+		}
+		names := strings.Fields(out)
+		switch {
+		case len(names) == 0:
+			return fmt.Errorf("pod %s/%s has no containers", namespace, pod)
+		case len(names) > 1:
+			return fmt.Errorf("pod %s/%s has multiple containers (%s); pick one with -c",
+				namespace, pod, strings.Join(names, ", "))
+		}
+		container = names[0]
+	}
+	fmt.Printf("attaching debug container to %s/%s (target: %s, image: %s)\n",
+		namespace, pod, container, image)
+	fmt.Println("the target's filesystem is at /proc/1/root, its processes via /proc")
+	dbg := kubectlCommand(cfg, "-n", namespace, "debug", "-it", pod,
+		"--image="+image, "--target="+container, "--profile=general", "--", "bash")
+	dbg.Stdin = os.Stdin
+	dbg.Stdout = os.Stdout
+	dbg.Stderr = os.Stderr
+	return dbg.Run()
+}
+
 // DoctorShellRemove deletes the debug pod.
 func DoctorShellRemove(cfg *config.Config) error {
 	out, err := kubectl(cfg, "delete", "pod", debugPodName, "--ignore-not-found", "--wait=false")
