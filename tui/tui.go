@@ -424,7 +424,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showLog {
 			m.sizeLog()
 		}
-		return m, nil
+		// Force a full repaint: on resize Bubble Tea's frame diff can leave
+		// stale cells from the previous (larger) layout on screen.
+		return m, tea.ClearScreen
 
 	case dataMsg:
 		m.clusters = msg.clusters
