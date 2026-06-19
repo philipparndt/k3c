@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -530,45 +531,89 @@ func pidAlive(pidFile string) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
-// DaemonsStatus prints the host daemons' process and listener state.
-func DaemonsStatus(cfg *config.Config) error {
-	pid := "-"
+// ListenerState is one host-daemon listener's name, port, optional detail, and
+// whether it is currently accepting connections.
+type ListenerState struct {
+	Name   string
+	Port   string
+	Detail string
+	Up     bool
+}
+
+// DaemonsInfo is the host daemons' process and listener state, the structured
+// form behind `k3c daemons status` (consumed by the TUI too).
+type DaemonsInfo struct {
+	State     string // "running" or "stopped"
+	Pid       string // pid string, or "-" when none recorded
+	Spawned   string // recorded spawn version, or "" when unknown
+	Listeners []ListenerState
+}
+
+// DaemonsState builds the host daemons' process and listener state. The
+// listener set is config-driven and matches what DaemonsStatus prints. The
+// listeners are probed concurrently so a clutch of down ones does not add up
+// their dial timeouts (each portOpen waits up to a second).
+func DaemonsState(cfg *config.Config) DaemonsInfo {
+	info := DaemonsInfo{State: "stopped", Pid: "-"}
 	if data, err := os.ReadFile(cfg.ProxyPidFile()); err == nil {
-		pid = strings.TrimSpace(string(data))
+		info.Pid = strings.TrimSpace(string(data))
 	}
-	state := "stopped"
 	if pidAlive(cfg.ProxyPidFile()) {
-		state = "running"
+		info.State = "running"
 	}
-	fmt.Printf("daemons: %s (pid %s)\n", state, pid)
 	if recorded, err := os.ReadFile(daemonsVersionFile(cfg)); err == nil {
-		fmt.Printf("spawned: %s\n", strings.TrimSpace(string(recorded)))
+		info.Spawned = strings.TrimSpace(string(recorded))
 	}
-	listener := func(name, port, detail string) {
-		st := "down"
-		if portOpen(port) {
-			st = "up"
-		}
-		fmt.Printf("%-12s :%-6s %-5s %s\n", name, port, st, detail)
-	}
-	listener("proxy", cfg.ProxyPort, "")
-	listener("sni-gateway", "443", "")
+
+	type spec struct{ name, port, detail string }
+	var specs []spec
+	add := func(name, port, detail string) { specs = append(specs, spec{name, port, detail}) }
+	add("proxy", cfg.ProxyPort, "")
+	add("sni-gateway", "443", "")
 	for _, p := range cfg.EgressPorts {
 		if p != 443 {
-			listener("egress", strconv.Itoa(p), "")
+			add("egress", strconv.Itoa(p), "")
 		}
 	}
 	for _, f := range cfg.EgressForwards {
-		listener("forward", f.Port, "-> "+f.Target)
+		add("forward", f.Port, "-> "+f.Target)
 	}
 	if len(ignoredResources(cfg)) > 0 {
-		listener("webhook", webhookPort, "")
+		add("webhook", webhookPort, "")
 	}
 	if cfg.RegistryEnabled {
-		listener("registry", cfg.RegistryPort, "")
+		add("registry", cfg.RegistryPort, "")
 	}
 	if cfg.PullCacheEnabled {
-		listener("pull-cache", cfg.PullCachePort, "")
+		add("pull-cache", cfg.PullCachePort, "")
+	}
+
+	info.Listeners = make([]ListenerState, len(specs))
+	var wg sync.WaitGroup
+	for i, s := range specs {
+		wg.Add(1)
+		go func(i int, s spec) {
+			defer wg.Done()
+			info.Listeners[i] = ListenerState{Name: s.name, Port: s.port, Detail: s.detail, Up: portOpen(s.port)}
+		}(i, s)
+	}
+	wg.Wait()
+	return info
+}
+
+// DaemonsStatus prints the host daemons' process and listener state.
+func DaemonsStatus(cfg *config.Config) error {
+	info := DaemonsState(cfg)
+	fmt.Printf("daemons: %s (pid %s)\n", info.State, info.Pid)
+	if info.Spawned != "" {
+		fmt.Printf("spawned: %s\n", info.Spawned)
+	}
+	for _, l := range info.Listeners {
+		st := "down"
+		if l.Up {
+			st = "up"
+		}
+		fmt.Printf("%-12s :%-6s %-5s %s\n", l.Name, l.Port, st, l.Detail)
 	}
 	return nil
 }

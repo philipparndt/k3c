@@ -88,7 +88,21 @@ func Clusters(cfg *config.Config) []ClusterInfo {
 // Traffic returns a running cluster VM's cumulative external traffic
 // (eth0 receive/transmit bytes).
 func Traffic(cfg *config.Config, cluster string) (rx, tx int64, err error) {
-	out, err := runContainer("exec", cluster+"-server", "cat",
+	return trafficOf(cluster + "-server")
+}
+
+// MachineTraffic returns a machine's cumulative eth0 counters. For a cluster
+// the VM is <name>-server; for the docker sidecar it is the dind container.
+func MachineTraffic(cfg *config.Config, name, kind string) (rx, tx int64, err error) {
+	container := name + "-server"
+	if kind == "docker" {
+		container = dockerName
+	}
+	return trafficOf(container)
+}
+
+func trafficOf(container string) (rx, tx int64, err error) {
+	out, err := runContainer("exec", container, "cat",
 		"/sys/class/net/eth0/statistics/rx_bytes",
 		"/sys/class/net/eth0/statistics/tx_bytes")
 	if err != nil {

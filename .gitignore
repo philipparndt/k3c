@@ -1,6 +1,10 @@
 .idea/
 k3c
 dist/
+# but DO commit the web UI bundle: it is small, content-hashed, and embedded
+# into the binary via go:embed, so `go build ./...` works without a node step.
+!/web/dist/
+!/web/dist/**
 
 # local make overrides (STAGING_DIR, INIT_TAR, ...)
 .env

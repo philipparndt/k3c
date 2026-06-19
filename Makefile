@@ -38,7 +38,13 @@ CONTAINER_VERSION ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help all build build-unbundled runtime forks clone-fork fmt vet check test clean clean-forks install install-system uninstall bundle use-brew
+.PHONY: help all build build-unbundled web web-clean runtime forks clone-fork fmt vet check test clean clean-forks install install-system uninstall bundle use-brew
+
+# web UI front-end (k3c web): a Preact/Vite app built into web/dist and embedded
+# via go:embed. dist is committed (small, content-hashed) so plain `go build`
+# works; `make web` regenerates it.
+WEB_DIR  := web
+WEB_DIST := $(WEB_DIR)/dist
 
 # Homebrew tap formula for the released k3c (see brews: in .goreleaser.yaml)
 BREW_FORMULA ?= philipparndt/k3c/k3c
@@ -53,14 +59,28 @@ all: check build ## vet + format check + build
 
 # --- build ---
 
-build: runtime ## build k3c bundled (clones+builds the fork runtime into ./tmp)
+build: web runtime ## build k3c bundled (clones+builds the fork runtime into ./tmp)
 	@$(MAKE) bundle STAGING_DIR="$(RUNTIME_STAGE)" INIT_TAR="$(RUNTIME_INIT_TAR)"
 	go build -tags bundled -ldflags "$(LDFLAGS)" -o $(BINARY) .
 	@echo "built bundled $(BINARY)"
 
-build-unbundled: ## build k3c without the runtime (fast dev build; drives a host container)
+build-unbundled: web ## build k3c without the runtime (fast dev build; drives a host container)
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 	@echo "built $(BINARY) (no bundled runtime — needs a host-installed container)"
+
+# build the web UI into web/dist. Installs node deps on first run. If npm is
+# unavailable, fall back to the committed bundle so the Go build still works.
+web: ## build the web UI front-end (k3c web) into web/dist
+	@if command -v npm >/dev/null 2>&1; then \
+		cd $(WEB_DIR) && { [ -d node_modules ] || npm ci || npm install; } && npm run build; \
+	elif [ -f $(WEB_DIST)/index.html ]; then \
+		echo "npm not found; using committed $(WEB_DIST)"; \
+	else \
+		echo "npm required to build the web UI (no committed $(WEB_DIST))"; exit 1; \
+	fi
+
+web-clean: ## remove the web UI build output and node_modules
+	rm -rf $(WEB_DIST) $(WEB_DIR)/node_modules
 
 # clone/update the container + containerization forks to their refs, as
 # siblings under $(FORKS_DIR) (the container Package.swift references

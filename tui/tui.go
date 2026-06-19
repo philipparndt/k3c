@@ -93,6 +93,8 @@ type model struct {
 	netTotalLine string // cumulative traffic of the selected cluster
 	cacheLine    string // pull cache performance (global)
 
+	daemons cluster.DaemonsInfo // host-daemon process and listener state
+
 	width  int
 	height int
 
@@ -107,8 +109,9 @@ type model struct {
 
 	commands []commandRun // session-long command history
 	logVP    viewport.Model
-	showLog  bool // command-log dialog open
-	showHelp bool // keybinding help dialog open
+	showLog     bool // command-log dialog open
+	showHelp    bool // keybinding help dialog open
+	showDiagram bool // system data-flow diagram open
 
 	confirm *confirm
 	input   *nameInput
@@ -142,6 +145,7 @@ type dataMsg struct {
 	snapsByMachine map[string][]cluster.SnapshotInfo
 	traffic        *trafficSample
 	cacheStats     *cluster.PullStats
+	daemons        *cluster.DaemonsInfo
 }
 
 // snapsMsg carries a single machine's snapshots — an on-expand lazy load.
@@ -306,6 +310,8 @@ func (m model) refresh() tea.Cmd {
 				msg.cacheStats = stats
 			}
 		}
+		d := cluster.DaemonsState(cfg)
+		msg.daemons = &d
 		return msg
 	}
 }
@@ -466,6 +472,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				float64(st.Hits)*100/float64(st.Hits+st.Misses),
 				humanBytes(st.HitBytes), humanBytes(st.MissBytes))
 		}
+		if msg.daemons != nil {
+			m.daemons = *msg.daemons
+		}
 		return m, nil
 
 	case snapsMsg:
@@ -570,6 +579,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// the full-screen system diagram: D or esc closes it (q/ctrl+c quits)
+	if m.showDiagram {
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "D", "esc":
+			m.showDiagram = false
+			return m, nil
+		}
+		return m, nil
+	}
+
 	// a pending confirmation eats every key
 	if m.confirm != nil {
 		c := *m.confirm
@@ -649,6 +670,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "?":
 		m.showHelp = true
+		return m, nil
+	case "D":
+		m.showDiagram = true
 		return m, nil
 	}
 
@@ -969,6 +993,8 @@ func (m model) View() string {
 		return m.logScreen()
 	case m.showHelp:
 		return m.helpScreen()
+	case m.showDiagram:
+		return m.diagramScreen()
 	case m.confirm != nil:
 		return m.confirmScreen()
 	case m.input != nil:
@@ -980,10 +1006,13 @@ func (m model) View() string {
 // headerView is the k9s-style top bar: a bordered context info panel beside the
 // shortcut menu.
 func (m model) headerView() string {
+	// The info panel's box border takes the first line, so its content starts
+	// on the second. Offset the menu by a blank line to align its first row
+	// with the panel content instead of with the box's top border.
 	return lipgloss.JoinHorizontal(lipgloss.Top,
 		panelBox.Render(m.infoPanelView()),
 		"   ",
-		m.keyMenuView(),
+		"\n"+m.keyMenuView(),
 	)
 }
 
@@ -1241,6 +1270,268 @@ func dockerBinds() []helpBind {
 	}
 }
 
+// --- system diagram ---
+
+// blockBox is the bordered block used for each component in the diagram.
+var blockBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(0, 1)
+
+// listenerDot colors a host-daemon listener: up is green, down is red — a
+// down listener is the thing the diagram exists to make obvious.
+func listenerDot(up bool) string {
+	if up {
+		return lipgloss.NewStyle().Foreground(good).Render("●")
+	}
+	return lipgloss.NewStyle().Foreground(bad).Render("○")
+}
+
+// stateColor maps a machine state to the color of its status dot, so a block's
+// title can echo its symbol: running green, paused yellow, suspended blue,
+// stopped/unknown gray.
+func stateColor(state string) lipgloss.AdaptiveColor {
+	switch state {
+	case "running":
+		return good
+	case "paused":
+		return warn
+	case "suspended":
+		return cool
+	default:
+		return dim
+	}
+}
+
+// stateTitle renders a block title bold in its state's color.
+func stateTitle(state, text string) string {
+	return lipgloss.NewStyle().Bold(true).Foreground(stateColor(state)).Render(text)
+}
+
+// colGlyph places a single glyph at column col on an otherwise blank line.
+func colGlyph(col int, glyph string) string {
+	if col < 0 {
+		col = 0
+	}
+	return strings.Repeat(" ", col) + glyph
+}
+
+// diagramScreen renders the k3c system as a data-flow diagram: the host daemon
+// and its listeners bridge the guest VMs (the k3s clusters and the docker
+// sidecar) that run on the container runtime; image pulls flow through the
+// pull-cache. Toggled with D, refreshed on the same tick as the main view.
+func (m model) diagramScreen() string {
+	title := titleSt.Render(" k3c ") + dimSt.Render("· system")
+	footer := dimSt.Render("D or esc to close")
+
+	const minWidth = 46
+	if m.width < minWidth {
+		body := lipgloss.JoinVertical(lipgloss.Left,
+			title, "", dimSt.Render(" resize wider to view the diagram"), "", footer)
+		return m.center(dialogBox.Render(body))
+	}
+
+	legend := dimSt.Render(" ") + stateDot("running") + dimSt.Render(" running  ") +
+		stateDot("paused") + dimSt.Render(" paused  ") +
+		stateDot("suspended") + dimSt.Render(" suspended  ") +
+		stateDot("stopped") + dimSt.Render(" stopped")
+
+	daemon := m.daemonBlock()
+	runtime := m.runtimeBlock()
+	vmrow, vmCenters := m.vmRow()
+
+	// The spine — daemon, runtime, VM row — is centered on a single vertical
+	// axis J; connectors are drawn at absolute columns so they line up with the
+	// box centers. The pull-cache hangs off the runtime to the right and does
+	// not move the axis.
+	spineW := max(max(lipgloss.Width(daemon), lipgloss.Width(runtime)), lipgloss.Width(vmrow))
+	J := spineW / 2
+	indent := func(block string) string {
+		return lipgloss.NewStyle().PaddingLeft(J - lipgloss.Width(block)/2).Render(block)
+	}
+	vline := dimSt.Render(colGlyph(J, "│"))
+
+	runtimeRow := indent(runtime)
+	if pc := m.pullCacheBlock(); pc != "" {
+		runtimeRow = lipgloss.JoinHorizontal(lipgloss.Center, indent(runtime), dimSt.Render(" ──▶ "), pc)
+	}
+
+	egressLabel := "⇅ egress · pulls"
+	egress := dimSt.Render(colGlyph(J-lipgloss.Width(egressLabel)/2, egressLabel))
+
+	lpVm := J - lipgloss.Width(vmrow)/2
+	parts := []string{indent(daemon), vline, egress, vline, runtimeRow}
+	parts = append(parts, vmBranch(J, lpVm, vmCenters)...)
+	parts = append(parts, indent(vmrow))
+	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	bw := lipgloss.Width(body)
+	ctr := func(s string) string { return lipgloss.PlaceHorizontal(bw, lipgloss.Center, s) }
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		ctr(title), "", body, "", ctr(legend), "", ctr(footer))
+	return m.center(dialogBox.Render(content))
+}
+
+// vmBranch draws the connector from the runtime down to the VM boxes: a single
+// drop when there is one box, or a tee that splits to each box center. centers
+// are columns within the VM row; lpVm is the row's left offset on the spine.
+func vmBranch(J, lpVm int, centers []int) []string {
+	abs := make([]int, len(centers))
+	for i, c := range centers {
+		abs[i] = lpVm + c
+	}
+	if len(abs) <= 1 {
+		return []string{dimSt.Render(colGlyph(J, "│")), dimSt.Render(colGlyph(J, "▼"))}
+	}
+	lo, hi := abs[0], abs[len(abs)-1]
+	row := []rune(strings.Repeat(" ", hi+1))
+	for x := lo; x <= hi; x++ {
+		row[x] = '─'
+	}
+	for _, c := range abs {
+		row[c] = '┬'
+	}
+	row[lo], row[hi] = '┌', '┐'
+	if J >= lo && J <= hi {
+		if row[J] == '┬' {
+			row[J] = '┼'
+		} else {
+			row[J] = '┴'
+		}
+	}
+	arrow := []rune(strings.Repeat(" ", hi+1))
+	for _, c := range abs {
+		arrow[c] = '▼'
+	}
+	return []string{
+		dimSt.Render(colGlyph(J, "│")),
+		dimSt.Render(string(row)),
+		dimSt.Render(string(arrow)),
+	}
+}
+
+// daemonBlock renders the host daemon process and its listeners.
+func (m model) daemonBlock() string {
+	d := m.daemons
+	lines := []string{
+		stateDot(d.State) + " " + stateTitle(d.State, "host daemon"),
+		dimSt.Render(fmt.Sprintf("%s · pid %s", d.State, d.Pid)),
+	}
+	if len(d.Listeners) == 0 {
+		lines = append(lines, dimSt.Render("no listeners"))
+	}
+	for _, l := range d.Listeners {
+		row := listenerDot(l.Up) + " " + dimSt.Render(fmt.Sprintf("%-11s :%-5s", l.Name, l.Port))
+		if l.Detail != "" {
+			row += " " + dimSt.Render(l.Detail)
+		}
+		lines = append(lines, row)
+	}
+	return blockBox.BorderForeground(stateColor(d.State)).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// runtimeBlock renders the Apple container runtime layer. It has no direct
+// health probe, so its state reflects whether it is actively hosting VMs.
+func (m model) runtimeBlock() string {
+	state := "unknown"
+	switch {
+	case m.anyRunning():
+		state = "running"
+	case len(m.clusters) > 0:
+		state = "stopped"
+	}
+	return blockBox.BorderForeground(stateColor(state)).Render(lipgloss.JoinVertical(lipgloss.Left,
+		stateDot(state)+" "+stateTitle(state, "container runtime"),
+		dimSt.Render("apple Virtualization.framework")))
+}
+
+// pullCacheBlock renders the host pull-through cache, or "" when it is not a
+// configured listener.
+func (m model) pullCacheBlock() string {
+	up, enabled := false, false
+	for _, l := range m.daemons.Listeners {
+		if l.Name == "pull-cache" {
+			enabled, up = true, l.Up
+		}
+	}
+	if !enabled {
+		return ""
+	}
+	state := "stopped"
+	if up {
+		state = "running"
+	}
+	lines := []string{listenerDot(up) + " " + stateTitle(state, "pull-cache")}
+	if m.cacheLine != "" {
+		lines = append(lines, dimSt.Render(m.cacheLine))
+	} else {
+		lines = append(lines, dimSt.Render("no pulls yet"))
+	}
+	border := lipgloss.AdaptiveColor(good)
+	if !up {
+		border = bad
+	}
+	return blockBox.BorderForeground(border).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// vmRow renders one block per guest VM (clusters and the docker sidecar), side
+// by side when wide and stacked when narrow, and returns the column of each
+// box's center within the row so the branch connector can line up with them.
+func (m model) vmRow() (string, []int) {
+	blocks := make([]string, 0, len(m.clusters))
+	for _, c := range m.clusters {
+		blocks = append(blocks, m.vmBlock(c))
+	}
+	if len(blocks) == 0 {
+		s := dimSt.Render("no machines")
+		return s, []int{lipgloss.Width(s) / 2}
+	}
+	if m.width < 80 {
+		col := lipgloss.JoinVertical(lipgloss.Center, blocks...)
+		return col, []int{lipgloss.Width(col) / 2}
+	}
+	const gap = 2
+	row := make([]string, 0, len(blocks)*2-1)
+	centers := make([]int, 0, len(blocks))
+	x := 0
+	for i, b := range blocks {
+		if i > 0 {
+			row = append(row, strings.Repeat(" ", gap))
+			x += gap
+		}
+		w := lipgloss.Width(b)
+		centers = append(centers, x+w/2)
+		row = append(row, b)
+		x += w
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, row...), centers
+}
+
+func (m model) vmBlock(c cluster.ClusterInfo) string {
+	kind := "k3s"
+	if c.Kind == "docker" {
+		kind = "docker sidecar"
+	}
+	lines := []string{
+		stateDot(c.Server) + " " + stateTitle(c.Server, c.Name),
+		dimSt.Render(kind + " · " + c.Server),
+	}
+	if c.RAM != "" {
+		lines = append(lines, dimSt.Render("mem "+c.RAM))
+	}
+	if c.Kind != "docker" && c.Context != "" {
+		lines = append(lines, dimSt.Render("ctx "+c.Context))
+	}
+	return blockBox.BorderForeground(stateColor(c.Server)).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// anyRunning reports whether any managed machine is running.
+func (m model) anyRunning() bool {
+	for _, c := range m.clusters {
+		if c.Server == "running" {
+			return true
+		}
+	}
+	return false
+}
+
 // helpScreen renders the full keybinding reference dialog (toggled with ?).
 func (m model) helpScreen() string {
 	general := helpCol("GENERAL", []helpBind{
@@ -1248,6 +1539,7 @@ func (m model) helpScreen() string {
 		{"←→", "expand / collapse"},
 		{"g / F5", "refresh"},
 		{"l", "logs / output"},
+		{"D", "system diagram"},
 		{"? / esc", "close help"},
 		{"q / ^C", "quit"},
 	})

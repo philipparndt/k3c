@@ -1,0 +1,2 @@
+node_modules/
+# dist/ is committed: it is embedded into the k3c binary via go:embed.

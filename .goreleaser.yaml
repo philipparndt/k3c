@@ -6,6 +6,9 @@ before:
     # Release builds embed the container runtime; fail fast when the
     # payload was not assembled (make bundle) before goreleaser runs.
     - test -f runtime/payload/container-runtime.tar.gz
+    # The web UI (k3c web) is embedded from web/dist (committed, built by
+    # `make web`); fail fast if the bundle is missing.
+    - test -f web/dist/index.html
 
 builds:
   - env:
