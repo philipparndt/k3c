@@ -385,12 +385,9 @@ func dockerReady(cfg *config.Config) error {
 	// so `docker push localhost:<port>/…` (build tooling tags images this way,
 	// the same address the host and node resolve) works from the sidecar engine
 	forwardRegistryLoopback(cfg)
-	// bake the corporate CA into the configured k3s node images so nested
-	// `k3d cluster create` works unmodified (best-effort: the sidecar itself
-	// is usable for plain docker even if this fails)
-	if err := PrepareK3sNodeImages(cfg); err != nil {
-		logger.Warn("preparing k3d node images: " + err.Error())
-	}
+	// nested-k3d node images are NOT prepared here — starting the engine
+	// shouldn't pay that one-time pull/bake. Run `k3c docker prepare-k3d`
+	// once before using `k3d cluster create` (see PrepareK3sNodeImages).
 	if ensureDockerContext(cfg, host) {
 		logger.Info("docker context '" + cfg.DockerContext + "' active")
 		return nil

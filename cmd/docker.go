@@ -130,6 +130,25 @@ Activating a cluster (incl. on start/resume) hands those ports back.`,
 	},
 }
 
+var dockerPrepareK3dCmd = &cobra.Command{
+	Use:   "prepare-k3d",
+	Short: "Bake the corporate CA into the configured k3s node images for nested k3d",
+	Long: `Prepare the nested-k3d node images: pull each image in docker.k3sNodeImages,
+bake the corporate CA into its trust store, and rebuild it at the sidecar's
+native architecture (tagged identically, so k3d reuses it without a config
+change). Run this once before 'k3d cluster create'.
+
+This is no longer done automatically on 'docker up' — starting the engine
+stays fast. The result is cached, so re-running is a no-op until the CA or
+the configured images change. The sidecar is brought up if needed.`,
+	Args: cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg := loadConfigDefault(nil)
+		fail(cluster.DockerUp(cfg, false))
+		fail(cluster.PrepareK3sNodeImages(cfg))
+	},
+}
+
 var dockerPauseCmd = &cobra.Command{
 	Use:   "pause",
 	Short: "Freeze the sidecar in memory (instant resume; freezes the whole nested cluster)",
@@ -225,7 +244,7 @@ func init() {
 		"deflate the balloon and give the sidecar its full configured memory again")
 	dockerSnapshotCmd.AddCommand(dockerSnapshotSaveCmd, dockerSnapshotRestoreCmd, dockerSnapshotListCmd, dockerSnapshotDeleteCmd)
 	dockerCmd.AddCommand(dockerUpCmd, dockerActivateCmd, dockerDownCmd, dockerRmCmd, dockerStatusCmd, dockerEnvCmd,
-		dockerPauseCmd, dockerResumeCmd, dockerSuspendCmd, dockerReclaimCmd, dockerSnapshotCmd,
+		dockerPrepareK3dCmd, dockerPauseCmd, dockerResumeCmd, dockerSuspendCmd, dockerReclaimCmd, dockerSnapshotCmd,
 		dockerBuildkitCmd)
 	rootCmd.AddCommand(dockerCmd)
 }

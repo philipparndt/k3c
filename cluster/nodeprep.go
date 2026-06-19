@@ -48,7 +48,12 @@ const caInjectLabel = "k3c.ca-injected"
 // node images or CA certs, and skips images already prepared with the current
 // CA (idempotent across `docker up` runs). The docker sidecar must be running.
 func PrepareK3sNodeImages(cfg *config.Config) error {
-	if len(cfg.DockerK3sNodeImages) == 0 || len(cfg.CACertGlobs) == 0 {
+	if len(cfg.DockerK3sNodeImages) == 0 {
+		logger.Info("no k3d node images configured (docker.k3sNodeImages); nothing to prepare")
+		return nil
+	}
+	if len(cfg.CACertGlobs) == 0 {
+		logger.Info("no corporate CA configured (caCerts); nothing to prepare")
 		return nil
 	}
 	ca, err := corpCACerts(cfg)
