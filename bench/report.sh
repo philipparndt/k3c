@@ -61,7 +61,7 @@ cat > "$OUT" <<'HTML'
   <span class="legend" id="legend"></span>
 </div>
 <div class="grid" id="grid"></div>
-<div class="note">Bars scaled to the slowest engine per card. ★ marks the best (lower is better for time &amp; power). Click a legend swatch to toggle an engine. Δ is relative to k3c.</div>
+<div class="note">Bars scaled to the slowest per card; <b style="color:#42c883">green = best</b>, <b style="color:#56b2f2">blue = others</b> (lower is better). ★ marks the best. Click a legend item to toggle an engine. Δ is relative to k3c.</div>
 <script id="data" type="application/json">/*DATA*/</script>
 <script id="env" type="application/json">/*ENV*/</script>
 <script>
@@ -89,7 +89,7 @@ function legend(){
   const el=document.getElementById('legend'); el.innerHTML='';
   engines().forEach(e=>{
     const s=document.createElement('span'); s.className='lg'+(hidden.has(e)?' off':'');
-    s.innerHTML=`<span class="sw" style="background:${COLORS[e]||'#888'}"></span>${e}`;
+    s.innerHTML=`<span class="sw" style="background:#5a5a6b"></span>${e}`;
     s.onclick=()=>{hidden.has(e)?hidden.delete(e):hidden.add(e);render();};
     el.appendChild(s);
   });
@@ -122,8 +122,9 @@ function render(){
       const win=r.mean===best;
       let delta=''; if(k3c&&e!=='k3c'){const x=r.mean/k3c; delta=` <span style="color:var(--dim)">(${x.toFixed(2)}×)</span>`;}
       const row=document.createElement('div'); row.className='row';
+      const bar = win ? '#42c883' : '#56b2f2';
       row.innerHTML=`<span class="name">${e}</span>
-        <span class="track"><span class="fill" style="width:${w}%;background:${COLORS[e]||'#888'}" title="${fmt(r.mean,unit)}"></span></span>
+        <span class="track"><span class="fill" style="width:${w}%;background:${bar}" title="${fmt(r.mean,unit)}"></span></span>
         <span class="val${win?' win':''}">${win?'★ ':''}${fmt(r.mean,unit)}${delta}</span>`;
       c.appendChild(row);
     });
