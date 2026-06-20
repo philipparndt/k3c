@@ -27,18 +27,23 @@ bench_file() {
     empty)   echo empty_cluster ;;
     helm)    echo helm_workload ;;
     pull)    echo image_pull ;;
+    resume)  echo resume ;;
     build)   echo docker_build ;;
     compose) echo compose_stack ;;
-    *) die "unknown benchmark: $1 (empty|helm|pull|build|compose)" ;;
+    *) die "unknown benchmark: $1 (empty|helm|pull|resume|build|compose)" ;;
   esac
 }
 engine_file() {
   case "$1" in
-    k3c)        echo engine_k3c ;;
-    orb|orbstack) echo engine_orb ;;
-    *) die "unknown engine: $1 (k3c|orb)" ;;
+    k3c)             echo engine_k3c ;;
+    orb|orbstack)    echo engine_orb ;;
+    rd|rancher)      echo engine_rd ;;
+    *) die "unknown engine: $1 (k3c|orb|rd)" ;;
   esac
 }
+
+# every engine that may hold host :443 — quiesced before another engine runs
+ALL_ENGINES="k3c orb rd"
 
 # ---- args ------------------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -96,9 +101,9 @@ IFS=',' read -r -a bench_list <<< "$BENCHMARKS"
 
 for eng in "${engine_list[@]}"; do
   ef="$(engine_file "$eng")"
-  # Host :443 is exclusive: stop the other engine before this one's phase so
-  # their daemons don't collide (OrbStack and k3c both bind 443).
-  for other in k3c orb; do
+  # Host :443 is exclusive: stop the other engines before this one's phase so
+  # their daemons don't collide (k3c, OrbStack, and Rancher Desktop all bind 443).
+  for other in $ALL_ENGINES; do
     [ "$other" = "$eng" ] && continue
     of="$(engine_file "$other")"
     log "quiescing '$other' (freeing host :443 for '$eng')…"
@@ -127,21 +132,19 @@ done
 echo
 log "summary (mean across iterations):"
 jq -rs '
+  def cell($v): if $v==null then "-" else ($v|floor|tostring) end;
   group_by([.benchmark,.variant,.metric,.engine])
   | map({benchmark:.[0].benchmark, variant:.[0].variant, metric:.[0].metric,
          engine:.[0].engine, unit:.[0].unit,
          mean:(map(.value)|add/length)})
   | group_by([.benchmark,.variant,.metric])
-  | (["BENCHMARK","VARIANT","METRIC","k3c","orbstack","UNIT","Δ(orb/k3c)"]
-     | @tsv),
+  | (["BENCHMARK","VARIANT","METRIC","k3c","orbstack","rancher","UNIT"] | @tsv),
     (.[] | . as $g
      | ($g | map(select(.engine=="k3c"))[0].mean) as $k
      | ($g | map(select(.engine=="orbstack"))[0].mean) as $o
+     | ($g | map(select(.engine=="rancher"))[0].mean) as $r
      | [$g[0].benchmark,$g[0].variant,$g[0].metric,
-        ($k|if .==null then "-" else (.|floor|tostring) end),
-        ($o|if .==null then "-" else (.|floor|tostring) end),
-        $g[0].unit,
-        (if ($k!=null and $o!=null and $k>0) then (($o/$k)|.*100|round/100|tostring)+"x" else "-" end)]
+        cell($k), cell($o), cell($r), $g[0].unit]
      | @tsv)
 ' "$BENCH_RESULT_FILE" | column -t -s $'\t'
 

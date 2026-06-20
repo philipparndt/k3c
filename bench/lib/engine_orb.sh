@@ -66,3 +66,9 @@ engine_k8s_destroy() { _orb stop k8s >/dev/null || true; }
 
 # Fully stop OrbStack so it releases host :443 (and :80) for the other engine.
 engine_stop_all() { _orb stop >/dev/null 2>&1 || true; }
+
+# "Suspend"/resume for the resume benchmark. OrbStack has no per-cluster
+# suspend-to-disk; its warm path is a k8s stop+start (the VM stays up), which is
+# the fair analog to bringing a stopped cluster back.
+engine_suspend() { _orb stop k8s >/dev/null || die "orb stop k8s failed"; }
+engine_resume()  { _orb start k8s >/dev/null || die "orb start k8s failed"; }

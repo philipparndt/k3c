@@ -10,8 +10,11 @@ BENCH_CLUSTER="${BENCH_CLUSTER:-bench}"
 
 engine_label() { echo "k3c"; }
 
-# Default control-plane addons k3s ships (used by the empty_cluster benchmark).
-engine_addons() { echo "coredns local-path-provisioner metrics-server"; }
+# Addons that gate a *usable* cluster (DNS + storage). metrics-server is
+# deliberately excluded: k3c deploys it but create never waits on it, and
+# OrbStack omits it entirely — so gating "ready" on it is neither needed for
+# usability nor fair. Add it back with EMPTY_ADDONS to measure it explicitly.
+engine_addons() { echo "coredns local-path-provisioner"; }
 
 engine_docker_context() { echo "k3c"; }
 
@@ -63,6 +66,15 @@ engine_k8s_create() {
 engine_k8s_destroy() {
   _k3c_delete
   [ -n "${ENGINE_KUBECONFIG:-}" ] && rm -f "$ENGINE_KUBECONFIG" || true
+}
+
+# suspend-to-disk and restore (the resume benchmark). suspend releases CPU+RAM
+# to disk; start restores it. Re-fetch the kubeconfig after restore in case the
+# published API port changed.
+engine_suspend() { _k3c cluster suspend "$BENCH_CLUSTER" >/dev/null || die "k3c suspend failed"; }
+engine_resume() {
+  _k3c cluster start "$BENCH_CLUSTER" >/dev/null || die "k3c resume (start) failed"
+  "$K3C_BIN" kubeconfig get "$BENCH_CLUSTER" > "$ENGINE_KUBECONFIG" 2>/dev/null || true
 }
 
 # Stop the bench cluster and the shared host daemons so k3c releases host :443
