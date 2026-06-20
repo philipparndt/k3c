@@ -17,6 +17,15 @@ Go port's rd/k3d/pull/helm paths are validated live.
 
 ```bash
 cd bench
+make full        # build + run every engine & benchmark (the full bench)
+make quick       # fast sanity: k3c vs orb, empty cold, no power
+make summary     # print the table   |   make open  -> build+open the HTML report
+make help        # all targets; override e.g.  make full ENGINES=k3c,orb ITER=5 POWER=false
+```
+
+Or drive the binary directly:
+
+```bash
 go build -o k3cbench .          # or: go run .
 
 # run + accumulate (results append to results/store.jsonl)
