@@ -18,11 +18,11 @@ engine_addons() { echo "coredns local-path-provisioner"; }
 
 engine_docker_context() { echo "k3c"; }
 
-# _k3c <args...>: run k3c, capturing combined output; on failure print the tail
-# so errors are visible (the harness otherwise runs commands quietly).
+# _k3c <args...>: run k3c (threading --config when K3C_CONFIG is set), capturing
+# combined output; on failure print the tail so errors are visible.
 _k3c() {
   local out rc
-  out="$("$K3C_BIN" "$@" 2>&1)"; rc=$?
+  out="$("$K3C_BIN" ${K3C_CONFIG:+--config "$K3C_CONFIG"} "$@" 2>&1)"; rc=$?
   if [ $rc -ne 0 ]; then
     printf '%s\n' "$out" | tail -5 >&2
   fi
@@ -30,7 +30,10 @@ _k3c() {
 }
 
 # _k3c_delete: delete the bench cluster if present (no-op if it isn't).
-_k3c_delete() { "$K3C_BIN" cluster delete "$BENCH_CLUSTER" >/dev/null 2>&1 || true; }
+_k3c_delete() { "$K3C_BIN" ${K3C_CONFIG:+--config "$K3C_CONFIG"} cluster delete "$BENCH_CLUSTER" >/dev/null 2>&1 || true; }
+
+# _k3c_kubeconfig: write the bench cluster's kubeconfig to $1.
+_k3c_kubeconfig() { "$K3C_BIN" ${K3C_CONFIG:+--config "$K3C_CONFIG"} kubeconfig get "$BENCH_CLUSTER" > "$1" 2>/dev/null; }
 
 engine_docker_up() {
   _k3c docker up >/dev/null || die "k3c docker up failed"
@@ -41,7 +44,7 @@ engine_docker_up() {
 # cold/warm delta for the empty cluster is mostly VM + k3s start, not pulls.)
 engine_cold_prep() {
   _k3c_delete
-  "$K3C_BIN" pull-cache clear >/dev/null 2>&1 || true
+  "$K3C_BIN" ${K3C_CONFIG:+--config "$K3C_CONFIG"} pull-cache clear >/dev/null 2>&1 || true
 }
 
 # Warm: ensure the cluster image + caches are present by creating once and
@@ -57,8 +60,7 @@ engine_k8s_create() {
   _k3c_delete
   _k3c cluster create "$BENCH_CLUSTER" >/dev/null || die "k3c cluster create failed"
   ENGINE_KUBECONFIG="$(mktemp -t bench-kubeconfig)"
-  "$K3C_BIN" kubeconfig get "$BENCH_CLUSTER" > "$ENGINE_KUBECONFIG" 2>/dev/null \
-    || die "k3c kubeconfig get failed"
+  _k3c_kubeconfig "$ENGINE_KUBECONFIG" || die "k3c kubeconfig get failed"
   ENGINE_KCTX=""   # standalone kubeconfig -> use its current-context
   export ENGINE_KUBECONFIG ENGINE_KCTX
 }
@@ -74,7 +76,7 @@ engine_k8s_destroy() {
 engine_suspend() { _k3c cluster suspend "$BENCH_CLUSTER" >/dev/null || die "k3c suspend failed"; }
 engine_resume() {
   _k3c cluster start "$BENCH_CLUSTER" >/dev/null || die "k3c resume (start) failed"
-  "$K3C_BIN" kubeconfig get "$BENCH_CLUSTER" > "$ENGINE_KUBECONFIG" 2>/dev/null || true
+  _k3c_kubeconfig "$ENGINE_KUBECONFIG" || true
 }
 
 # Stop the bench cluster and the shared host daemons so k3c releases host :443

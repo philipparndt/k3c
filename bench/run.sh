@@ -38,12 +38,13 @@ engine_file() {
     k3c)             echo engine_k3c ;;
     orb|orbstack)    echo engine_orb ;;
     rd|rancher)      echo engine_rd ;;
-    *) die "unknown engine: $1 (k3c|orb|rd)" ;;
+    k3d)             echo engine_k3d ;;
+    *) die "unknown engine: $1 (k3c|orb|rd|k3d)" ;;
   esac
 }
 
-# every engine that may hold host :443 — quiesced before another engine runs
-ALL_ENGINES="k3c orb rd"
+# every engine that may hold host :443 (or OrbStack) — quiesced before another runs
+ALL_ENGINES="k3c orb rd k3d"
 
 # ---- args ------------------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -138,13 +139,14 @@ jq -rs '
          engine:.[0].engine, unit:.[0].unit,
          mean:(map(.value)|add/length)})
   | group_by([.benchmark,.variant,.metric])
-  | (["BENCHMARK","VARIANT","METRIC","k3c","orbstack","rancher","UNIT"] | @tsv),
+  | (["BENCHMARK","VARIANT","METRIC","k3c","orbstack","rancher","k3d","UNIT"] | @tsv),
     (.[] | . as $g
      | ($g | map(select(.engine=="k3c"))[0].mean) as $k
      | ($g | map(select(.engine=="orbstack"))[0].mean) as $o
      | ($g | map(select(.engine=="rancher"))[0].mean) as $r
+     | ($g | map(select(.engine=="k3d"))[0].mean) as $d
      | [$g[0].benchmark,$g[0].variant,$g[0].metric,
-        cell($k), cell($o), cell($r), $g[0].unit]
+        cell($k), cell($o), cell($r), cell($d), $g[0].unit]
      | @tsv)
 ' "$BENCH_RESULT_FILE" | column -t -s $'\t'
 
