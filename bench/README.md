@@ -53,10 +53,17 @@ comparison table prints at the end.
   stopped once to get an idle baseline if you want a delta. Treat the absolute
   mW as comparable-between-engines-here, not 1:1 with OrbStack's published bars.
 - **Cold/warm are defined per engine** (`lib/engine_*.sh`):
-  - k3c cold = delete cluster + `pull-cache clear`; warm = pre-create once.
-  - orb cold = stop k8s + `docker system prune -af` (it keeps one persistent
-    cluster + shared image store; a true wipe is `orbctl reset`, deliberately
-    avoided). So orb "cold" is less cold than k3c's. Noted, not hidden.
+  - k3c cold = delete cluster + `pull-cache clear`; warm = pre-create once. Each
+    run is a genuinely fresh VM + cluster.
+  - orb has ONE persistent cluster + shared image store and no non-destructive
+    wipe (`orbctl reset` destroys everything, so we don't), so orb cold ≈ warm:
+    both measure a k8s **stop+start**, not a from-scratch cluster. The suite does
+    **not** prune OrbStack's images.
+- **Addon set differs by engine.** OrbStack's cluster ships only coredns +
+  local-path-provisioner; k3s also runs metrics-server. So `empty_cluster` times
+  each engine's own addons (k3c waits for 3, orb for 2). For a strictly
+  apples-to-apples number, force a common set:
+  `EMPTY_ADDONS="coredns local-path-provisioner" ./run.sh --benchmarks empty`.
 - **Empty-cluster addons are bundled** in the k3s node image (airgap tar), so
   the cold/warm delta there is VM boot + k3s start, *not* registry pulls. The
   pull path is what `pull` measures.

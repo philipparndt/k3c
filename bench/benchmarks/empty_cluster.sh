@@ -7,7 +7,9 @@
 # pull path is exercised by the image_pull benchmark).
 BENCH_NAME="empty_cluster"
 
-ADDONS="${EMPTY_ADDONS:-coredns local-path-provisioner metrics-server}"
+# Addon set is engine-specific (OrbStack has no metrics-server); override with
+# EMPTY_ADDONS to force a fixed list across engines.
+ADDONS="${EMPTY_ADDONS:-$(engine_addons)}"
 
 _wait_addons() {
   local deadline=$(( $(date +%s) + READY_TIMEOUT ))

@@ -10,6 +10,9 @@ BENCH_CLUSTER="${BENCH_CLUSTER:-bench}"
 
 engine_label() { echo "k3c"; }
 
+# Default control-plane addons k3s ships (used by the empty_cluster benchmark).
+engine_addons() { echo "coredns local-path-provisioner metrics-server"; }
+
 engine_docker_context() { echo "k3c"; }
 
 # _k3c <args...>: run k3c, capturing combined output; on failure print the tail
