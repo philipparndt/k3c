@@ -96,6 +96,14 @@ IFS=',' read -r -a bench_list <<< "$BENCHMARKS"
 
 for eng in "${engine_list[@]}"; do
   ef="$(engine_file "$eng")"
+  # Host :443 is exclusive: stop the other engine before this one's phase so
+  # their daemons don't collide (OrbStack and k3c both bind 443).
+  for other in k3c orb; do
+    [ "$other" = "$eng" ] && continue
+    of="$(engine_file "$other")"
+    log "quiescing '$other' (freeing host :443 for '$eng')…"
+    ( source "$BENCH_ROOT/lib/common.sh"; source "$BENCH_ROOT/lib/$of.sh"; engine_stop_all ) || true
+  done
   for b in "${bench_list[@]}"; do
     bf="$(bench_file "$b")"
     for i in $(seq 1 "$ITERATIONS"); do

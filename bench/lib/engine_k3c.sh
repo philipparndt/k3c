@@ -64,3 +64,12 @@ engine_k8s_destroy() {
   _k3c_delete
   [ -n "${ENGINE_KUBECONFIG:-}" ] && rm -f "$ENGINE_KUBECONFIG" || true
 }
+
+# Stop the bench cluster and the shared host daemons so k3c releases host :443
+# for the other engine. NOTE: this stops the daemons serving ALL k3c clusters,
+# including any persistent one you use — restart them afterwards with
+# `k3c daemons restart` (or by restarting that cluster).
+engine_stop_all() {
+  _k3c_delete
+  "$K3C_BIN" daemons stop >/dev/null 2>&1 || true
+}

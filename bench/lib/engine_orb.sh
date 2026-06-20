@@ -25,19 +25,37 @@ _orb() {
   return $rc
 }
 
-engine_docker_up() {
-  _orb start >/dev/null || die "orb start failed"
+# _orb_start_vm: bring the OrbStack VM up, retrying — a full `orb stop` followed
+# quickly by `orb start` can report "start VM: timed out" on the first attempt.
+_orb_start_vm() {
+  local n=0
+  while [ "$("$ORB_BIN" status 2>/dev/null)" != "Running" ] && [ $n -lt 3 ]; do
+    _orb start >/dev/null || true
+    sleep 2
+    n=$((n + 1))
+  done
+  [ "$("$ORB_BIN" status 2>/dev/null)" = "Running" ]
 }
 
-# OrbStack has ONE persistent cluster with a shared image store; there is no
-# per-run fresh cluster and no non-destructive image wipe (that is `orbctl
-# reset`, which we will not run). So "cold" and "warm" both measure a k8s
-# stop+start — documented in the README. We deliberately do NOT prune images.
-engine_cold_prep() { _orb start >/dev/null || true; }
-engine_warm_prep() { _orb start k8s >/dev/null || true; _orb stop k8s >/dev/null || true; }
+engine_docker_up() { _orb_start_vm || die "orb VM did not start"; }
 
+# OrbStack has ONE persistent cluster + shared image store; there is no per-run
+# fresh cluster and no non-destructive image wipe (`orbctl reset` would, but we
+# won't). So cold vs warm here differs in VM state, not images:
+#   cold  = OrbStack fully stopped -> create times VM boot + k8s start + addons
+#   warm  = VM already up, k8s down -> create times only k8s start + addons
+# (k3c builds a fresh VM every time, so its cold≈warm — note the asymmetry.)
+engine_cold_prep() { _orb stop >/dev/null 2>&1 || true; sleep 2; }
+engine_warm_prep() {
+  _orb_start_vm || true
+  _orb start k8s >/dev/null 2>&1 || true
+  _orb stop k8s  >/dev/null 2>&1 || true
+}
+
+# Times VM boot (cold) or just k8s start (warm), so the metric is comparable to
+# k3c's create-from-scratch.
 engine_k8s_create() {
-  _orb stop k8s >/dev/null || true
+  _orb_start_vm || die "orb VM did not start"
   _orb start k8s >/dev/null || die "orb start k8s failed/timed out"
   ENGINE_KUBECONFIG="$ORB_KUBECONFIG"
   ENGINE_KCTX="orbstack"
@@ -45,3 +63,6 @@ engine_k8s_create() {
 }
 
 engine_k8s_destroy() { _orb stop k8s >/dev/null || true; }
+
+# Fully stop OrbStack so it releases host :443 (and :80) for the other engine.
+engine_stop_all() { _orb stop >/dev/null 2>&1 || true; }
