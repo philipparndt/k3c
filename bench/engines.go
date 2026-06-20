@@ -29,6 +29,11 @@ func (e *k3cEngine) Addons() []string { return []string{"coredns", "local-path-p
 // k3c's VM + networking run under the bundled runtime cache path; the
 // container-runtime-linux --uuid <cluster> process is the cluster VM.
 func (e *k3cEngine) EnergyPatterns() []string { return []string{"/.cache/k3c/runtime/"} }
+func (e *k3cEngine) DockerContext() string    { return "k3c" }
+func (e *k3cEngine) DockerUp(ctx context.Context) error {
+	_, err := e.k3c(ctx, "docker", "up")
+	return err
+}
 
 func (e *k3cEngine) base() []string {
 	if e.config != "" {
@@ -106,9 +111,11 @@ func (e *k3cEngine) StopAll(ctx context.Context) error {
 
 type orbEngine struct{}
 
-func (e *orbEngine) Name() string             { return "orbstack" }
-func (e *orbEngine) Addons() []string         { return []string{"coredns", "local-path-provisioner"} }
-func (e *orbEngine) EnergyPatterns() []string { return []string{"OrbStack"} }
+func (e *orbEngine) Name() string                       { return "orbstack" }
+func (e *orbEngine) Addons() []string                   { return []string{"coredns", "local-path-provisioner"} }
+func (e *orbEngine) EnergyPatterns() []string           { return []string{"OrbStack"} }
+func (e *orbEngine) DockerContext() string              { return "orbstack" }
+func (e *orbEngine) DockerUp(ctx context.Context) error { return e.startVM(ctx) }
 
 func (e *orbEngine) orb(ctx context.Context, args ...string) (string, error) {
 	c, cancel := withTimeout(ctx, 240*time.Second)
@@ -169,6 +176,8 @@ func (e *rdEngine) Addons() []string { return []string{"coredns", "local-path-pr
 func (e *rdEngine) EnergyPatterns() []string {
 	return []string{"Rancher Desktop", "rancher-desktop", "lima"}
 }
+func (e *rdEngine) DockerContext() string              { return "rancher-desktop" }
+func (e *rdEngine) DockerUp(ctx context.Context) error { _, err := e.rd(ctx, "start"); return err }
 
 func rdctlPath() string {
 	if p := os.Getenv("RDCTL"); p != "" {
@@ -198,34 +207,84 @@ func (e *rdEngine) Suspend(ctx context.Context) error { _, err := e.rd(ctx, "shu
 func (e *rdEngine) Resume(ctx context.Context) error  { _, err := e.rd(ctx, "start"); return err }
 func (e *rdEngine) StopAll(ctx context.Context) error { _, _ = e.rd(ctx, "shutdown"); return nil }
 
+// -------------------------------------------------------------- colima -------
+
+type colimaEngine struct{}
+
+func (e *colimaEngine) Name() string             { return "colima" }
+func (e *colimaEngine) Addons() []string         { return []string{"coredns", "local-path-provisioner"} }
+func (e *colimaEngine) EnergyPatterns() []string { return []string{"colima", "limactl", "qemu-system"} }
+func (e *colimaEngine) DockerContext() string    { return "colima" }
+
+func (e *colimaEngine) colima(ctx context.Context, args ...string) (string, error) {
+	c, cancel := withTimeout(ctx, 600*time.Second)
+	defer cancel()
+	return run(c, "colima", args...)
+}
+func (e *colimaEngine) DockerUp(ctx context.Context) error {
+	_, err := e.colima(ctx, "start")
+	return err
+}
+func (e *colimaEngine) ColdPrep(ctx context.Context) error {
+	_, _ = e.colima(ctx, "stop")
+	time.Sleep(2 * time.Second)
+	return nil
+}
+func (e *colimaEngine) WarmPrep(ctx context.Context) error {
+	_, _ = e.colima(ctx, "start", "--kubernetes")
+	_, _ = e.colima(ctx, "stop")
+	return nil
+}
+func (e *colimaEngine) Create(ctx context.Context) (Kube, error) {
+	if _, err := e.colima(ctx, "start", "--kubernetes"); err != nil {
+		return Kube{}, fmt.Errorf("colima start: %w", err)
+	}
+	return Kube{Path: homeDir() + "/.kube/config", Context: "colima"}, nil
+}
+func (e *colimaEngine) Destroy(ctx context.Context) error { _, _ = e.colima(ctx, "stop"); return nil }
+func (e *colimaEngine) Suspend(ctx context.Context) error {
+	_, err := e.colima(ctx, "stop")
+	return err
+}
+func (e *colimaEngine) Resume(ctx context.Context) error {
+	_, err := e.colima(ctx, "start", "--kubernetes")
+	return err
+}
+func (e *colimaEngine) StopAll(ctx context.Context) error { _, _ = e.colima(ctx, "stop"); return nil }
+
 // ---------------------------------------------------------------- k3d --------
+// k3d runs k3s in containers on a docker provider's engine; it is not a runtime
+// itself, so each variant is "<provider>-k3d" (orb-k3d / rancher-k3d /
+// colima-k3d). Its host energy is the backend VM's (not separable).
 
 type k3dEngine struct {
 	cluster  string
+	label    string // orb-k3d / rancher-k3d / colima-k3d
+	backend  Engine // orb / rd / colima — provides docker, energy, stop
 	kubePath string
 }
 
-func (e *k3dEngine) Name() string     { return "k3d" }
-func (e *k3dEngine) Addons() []string { return []string{"coredns", "local-path-provisioner"} }
+func (e *k3dEngine) Name() string                       { return e.label }
+func (e *k3dEngine) Addons() []string                   { return []string{"coredns", "local-path-provisioner"} }
+func (e *k3dEngine) EnergyPatterns() []string           { return e.backend.EnergyPatterns() }
+func (e *k3dEngine) DockerContext() string              { return "" } // uses the backend's docker, not its own
+func (e *k3dEngine) DockerUp(ctx context.Context) error { return e.backend.DockerUp(ctx) }
 
-// k3d runs inside OrbStack's VM, so its host energy IS the OrbStack VM process
-// — k3d and orb are not separable at the host level (documented).
-func (e *k3dEngine) EnergyPatterns() []string { return []string{"OrbStack"} }
-
-func orbSocket(ctx context.Context) string {
-	out, err := runOut(ctx, nil, "docker", "context", "inspect", "orbstack", "-f", "{{.Endpoints.docker.Host}}")
+func dockerSocket(ctx context.Context, name string) string {
+	if name == "" {
+		return ""
+	}
+	out, err := runOut(ctx, nil, "docker", "context", "inspect", name, "-f", "{{.Endpoints.docker.Host}}")
 	if s := strings.TrimSpace(out); err == nil && s != "" {
 		return s
 	}
-	return "unix://" + homeDir() + "/.orbstack/run/docker.sock"
+	return ""
 }
 func (e *k3dEngine) dockerEnv(ctx context.Context) []string {
-	return []string{"DOCKER_HOST=" + orbSocket(ctx)}
-}
-func (e *k3dEngine) orbUp(ctx context.Context) {
-	if strings.TrimSpace(mustOut(runQ(context.Background(), "orb", "status"))) != "Running" {
-		_, _ = run(ctx, "orb", "start")
+	if s := dockerSocket(ctx, e.backend.DockerContext()); s != "" {
+		return []string{"DOCKER_HOST=" + s}
 	}
+	return nil
 }
 func (e *k3dEngine) k3d(ctx context.Context, args ...string) (string, error) {
 	c, cancel := withTimeout(ctx, 300*time.Second)
@@ -235,10 +294,20 @@ func (e *k3dEngine) k3d(ctx context.Context, args ...string) (string, error) {
 func (e *k3dEngine) del(ctx context.Context) {
 	_, _ = runEnv(ctx, e.dockerEnv(ctx), "k3d", "cluster", "delete", e.cluster)
 }
-func (e *k3dEngine) ColdPrep(ctx context.Context) error { e.orbUp(ctx); e.del(ctx); return nil }
-func (e *k3dEngine) WarmPrep(ctx context.Context) error { e.orbUp(ctx); e.del(ctx); return nil }
+func (e *k3dEngine) ColdPrep(ctx context.Context) error {
+	_ = e.backend.DockerUp(ctx)
+	e.del(ctx)
+	return nil
+}
+func (e *k3dEngine) WarmPrep(ctx context.Context) error {
+	_ = e.backend.DockerUp(ctx)
+	e.del(ctx)
+	return nil
+}
 func (e *k3dEngine) Create(ctx context.Context) (Kube, error) {
-	e.orbUp(ctx)
+	if err := e.backend.DockerUp(ctx); err != nil {
+		return Kube{}, fmt.Errorf("%s docker up: %w", e.label, err)
+	}
 	e.del(ctx)
 	if _, err := e.k3d(ctx, "cluster", "create", e.cluster, "--wait", "--timeout", durSecs(gReadyTimeout)); err != nil {
 		return Kube{}, fmt.Errorf("k3d cluster create: %w", err)
@@ -273,11 +342,6 @@ func (e *k3dEngine) Resume(ctx context.Context) error {
 	_, err := e.k3d(ctx, "cluster", "start", e.cluster)
 	return err
 }
-func (e *k3dEngine) StopAll(ctx context.Context) error {
-	e.del(ctx)
-	_, _ = run(ctx, "orb", "stop")
-	return nil
-}
+func (e *k3dEngine) StopAll(ctx context.Context) error { e.del(ctx); return e.backend.StopAll(ctx) }
 
-func mustOut(s string, _ error) string { return s }
-func durSecs(d time.Duration) string   { return fmt.Sprintf("%ds", int(d.Seconds())) }
+func durSecs(d time.Duration) string { return fmt.Sprintf("%ds", int(d.Seconds())) }

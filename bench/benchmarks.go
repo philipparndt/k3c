@@ -4,9 +4,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+func getenvDefault(k, d string) string {
+	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+		return v
+	}
+	return d
+}
 
 // Emit records one measurement for the current engine/iteration.
 type Emit func(variant, metric string, value float64, unit string)
@@ -66,8 +74,10 @@ func newBenchmark(name string) (Benchmark, error) {
 		return pullBench{}, nil
 	case "helm":
 		return helmBench{}, nil
+	case "edx":
+		return edxBench{}, nil
 	}
-	return nil, fmt.Errorf("unknown benchmark %q (empty|resume|pull|helm)", name)
+	return nil, fmt.Errorf("unknown benchmark %q (empty|resume|pull|helm|edx)", name)
 }
 
 // ---- empty: time create -> usable addons Ready (cold & warm) ----------------
@@ -229,6 +239,64 @@ func (pullBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 		_ = e.Destroy(ctx)
 	}
 	return nil
+}
+
+// ---- edx: OrbStack's Open edX heavy build (Docker Compose) ------------------
+// Mirrors docs.orbstack.dev/benchmarks#perf-edx: clone devstack, `make pull`
+// (untimed), then time `make dev.provision`. Runs against a docker provider's
+// engine (k3c sidecar / orbstack / rancher / colima); skips k3d (no own docker).
+// Heavy and Docker-Hub-bound — opt-in.
+
+type edxBench struct{}
+
+func (edxBench) Name() string { return "edx" }
+func (edxBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
+	dc := e.DockerContext()
+	if dc == "" {
+		warnf("[%s] edx: no standalone docker engine; skipping", e.Name())
+		return nil
+	}
+	if err := e.DockerUp(ctx); err != nil {
+		return fmt.Errorf("docker up: %w", err)
+	}
+	repo := getenvDefault("BENCH_EDX_REPO", "https://github.com/openedx/devstack")
+	ref := getenvDefault("BENCH_EDX_REF", "48096774")
+	ws, err := os.MkdirTemp("", "bench-edx-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(ws)
+	dir := filepath.Join(ws, "devstack")
+
+	logf("[%s] edx: cloning devstack@%s…", e.Name(), ref)
+	if _, err := run(ctx, "git", "clone", "--quiet", repo, dir); err != nil {
+		return fmt.Errorf("clone: %w", err)
+	}
+	if _, err := runDir(ctx, dir, nil, "git", "checkout", "--quiet", ref); err != nil {
+		return fmt.Errorf("checkout %s: %w", ref, err)
+	}
+	denv := []string{"DOCKER_CONTEXT=" + dc, "DEVSTACK_WORKSPACE=" + ws}
+
+	logf("[%s] edx: make pull (untimed)…", e.Name())
+	if _, err := runDir(ctx, dir, denv, "make", "pull"); err != nil {
+		warnf("[%s] edx: make pull issues (continuing): %v", e.Name(), err)
+	}
+	logf("[%s] edx: timing make dev.provision…", e.Name())
+	ms, ei, hasEI, err := env.timed(e.EnergyPatterns(), true, func() error {
+		_, e2 := runDir(ctx, dir, denv, "make", "dev.provision")
+		return e2
+	})
+	if err == nil {
+		emit("provision", "provision_time", ms, "ms")
+		if hasEI {
+			emit("provision", "energy", ei, "EI")
+		}
+		okf("[%s] edx provision: %.0f ms", e.Name(), ms)
+	} else {
+		warnf("[%s] edx provision failed: %v", e.Name(), err)
+	}
+	_, _ = runDir(ctx, dir, denv, "make", "destroy")
+	return err
 }
 
 // ---- helm: Traefik + Grafana install, then steady-state power --------------

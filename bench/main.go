@@ -88,14 +88,17 @@ func main() {
 		if err != nil {
 			die("%v", err)
 		}
-		// Host :443 is exclusive — quiesce the other engines first.
-		for _, other := range allEngines {
-			if other == en || (en == "orbstack" && other == "orb") {
+		// Providers are mutually exclusive (VM + host ports). Quiesce every other
+		// provider first; a k3d engine shares its backend's provider so it is not
+		// stopped out from under itself.
+		cur := providerOf(en)
+		for _, p := range providers {
+			if p == cur {
 				continue
 			}
-			if oe, err := newEngine(other); err == nil {
-				logf("quiescing '%s' (freeing host for '%s')…", other, en)
-				_ = oe.StopAll(ctx)
+			if pe, err := newEngine(p); err == nil {
+				logf("quiescing '%s' (freeing host for '%s')…", p, en)
+				_ = pe.StopAll(ctx)
 			}
 		}
 		for _, bn := range csv(*benchmarks) {
@@ -134,9 +137,33 @@ func main() {
 	}
 }
 
+// engineOrder is the preferred left-to-right column order; engines present but
+// not listed are appended alphabetically.
+var engineOrder = []string{"k3c", "orbstack", "rancher", "colima", "orb-k3d", "rancher-k3d", "colima-k3d"}
+
+func orderedEngines(recs []Record) []string {
+	present := map[string]bool{}
+	for _, r := range recs {
+		present[r.Engine] = true
+	}
+	var out []string
+	for _, e := range engineOrder {
+		if present[e] {
+			out = append(out, e)
+			delete(present, e)
+		}
+	}
+	var extra []string
+	for e := range present {
+		extra = append(extra, e)
+	}
+	sort.Strings(extra)
+	return append(out, extra...)
+}
+
 func printSummary(recs []Record) {
 	aggs := aggregate(recs)
-	cols := []string{"k3c", "orbstack", "rancher", "k3d"}
+	cols := orderedEngines(recs)
 	type key struct{ b, v, m string }
 	groups := map[key]map[string]Agg{}
 	var order []key
@@ -158,7 +185,7 @@ func printSummary(recs []Record) {
 		return order[i].m < order[j].m
 	})
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "BENCHMARK\tVARIANT\tMETRIC\tk3c\torbstack\trancher\tk3d\tUNIT")
+	fmt.Fprintf(w, "BENCHMARK\tVARIANT\tMETRIC\t%s\tUNIT\n", strings.Join(cols, "\t"))
 	for _, k := range order {
 		row := groups[k]
 		unit := ""
