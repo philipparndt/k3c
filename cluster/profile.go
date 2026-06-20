@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -72,8 +73,33 @@ done`
 // emit, every interval, until duration elapses (duration <= 0 streams until
 // ctx is cancelled). It is language- and workload-agnostic.
 func Profile(ctx context.Context, cfg *config.Config, interval, duration time.Duration, names bool, emit io.Writer) error {
+	if duration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, duration)
+		defer cancel()
+	}
+	snaps, err := ProfileStream(ctx, cfg, interval, names)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(emit)
+	for snap := range snaps {
+		if err := enc.Encode(snap); err != nil {
+			return fmt.Errorf("profile: encoding snapshot: %w", err)
+		}
+	}
+	return nil
+}
+
+// ProfileStream is the in-process form of Profile: it starts the node sampler
+// and delivers one Snapshot per tick on the returned channel until ctx is
+// cancelled or the node stream ends, then closes the channel. It is the shared
+// sampling implementation behind both the CLI (Profile) and the web server.
+// Startup failures (cluster not running, exec setup) are returned synchronously;
+// errors that arise mid-stream are logged and end the stream.
+func ProfileStream(ctx context.Context, cfg *config.Config, interval time.Duration, names bool) (<-chan Snapshot, error) {
 	if !containerExists(cfg.ServerName, true) {
-		return fmt.Errorf("cluster %q is not running — start it with: k3c cluster start", cfg.Cluster)
+		return nil, fmt.Errorf("cluster %q is not running — start it with: k3c cluster start", cfg.Cluster)
 	}
 	if interval <= 0 {
 		interval = 500 * time.Millisecond
@@ -81,19 +107,13 @@ func Profile(ctx context.Context, cfg *config.Config, interval, duration time.Du
 	secs := strconv.FormatFloat(interval.Seconds(), 'f', -1, 64)
 	script := fmt.Sprintf(profileScript, secs)
 
-	if duration > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, duration)
-		defer cancel()
-	}
-
 	cmd := runtime.Command("exec", cfg.ServerName, "sh", "-c", script)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("profile: stdout pipe: %w", err)
+		return nil, fmt.Errorf("profile: stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("profile: starting node sampler: %w", err)
+		return nil, fmt.Errorf("profile: starting node sampler: %w", err)
 	}
 	logger.Debug(fmt.Sprintf("profile: sampling node %s every %ss", cfg.ServerName, secs))
 
@@ -103,67 +123,100 @@ func Profile(ctx context.Context, cfg *config.Config, interval, duration time.Du
 		_ = cmd.Process.Kill()
 	}()
 
-	// Optional pod-UID -> "namespace/name" resolution. The cgroup stream only
-	// knows UIDs; resolve from the API server when asked. Refresh lazily when a
-	// tick contains a UID we haven't seen (pods appearing during a cold start),
-	// throttled so it costs at most one kubectl call every few seconds.
-	var uidNames map[string]string
-	var lastResolve time.Time
-	if names {
-		uidNames = podNames(cfg)
-		lastResolve = time.Now()
-	}
+	out := make(chan Snapshot)
+	go func() {
+		defer close(out)
 
-	enc := json.NewEncoder(emit)
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	pods := make(map[string]PodSample)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "===" {
-			if names {
-				missing := false
-				for uid := range pods {
-					if _, ok := uidNames[uid]; !ok {
-						missing = true
-						break
-					}
-				}
-				if missing && time.Since(lastResolve) > 2*time.Second {
-					if m := podNames(cfg); len(m) > 0 {
-						uidNames = m
-					}
-					lastResolve = time.Now()
-				}
-				for uid, s := range pods {
-					if n, ok := uidNames[uid]; ok {
-						s.Name = n
-						pods[uid] = s
-					}
-				}
-			}
-			snap := Snapshot{TimeMillis: time.Now().UnixMilli(), Pods: pods}
-			if err := enc.Encode(snap); err != nil {
-				return fmt.Errorf("profile: encoding snapshot: %w", err)
-			}
-			pods = make(map[string]PodSample)
-			continue
+		// Optional pod-UID -> "namespace/name" resolution. The cgroup stream
+		// only knows UIDs; resolve from the API server when asked. Refresh
+		// lazily when a tick contains a UID we haven't seen (pods appearing
+		// during a cold start), throttled so it costs at most one kubectl call
+		// every few seconds.
+		var uidNames map[string]string
+		var lastResolve time.Time
+		if names {
+			uidNames = podNames(cfg)
+			lastResolve = time.Now()
 		}
-		uid, s, ok := parsePodLine(line)
-		if ok {
-			pods[uid] = s
+
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		pods := make(map[string]PodSample)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "===" {
+				if names {
+					missing := false
+					for uid := range pods {
+						if _, ok := uidNames[uid]; !ok {
+							missing = true
+							break
+						}
+					}
+					if missing && time.Since(lastResolve) > 2*time.Second {
+						if m := podNames(cfg); len(m) > 0 {
+							uidNames = m
+						}
+						lastResolve = time.Now()
+					}
+					for uid, s := range pods {
+						if n, ok := uidNames[uid]; ok {
+							s.Name = n
+							pods[uid] = s
+						}
+					}
+				}
+				snap := Snapshot{TimeMillis: time.Now().UnixMilli(), Pods: pods}
+				select {
+				case out <- snap:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					return
+				}
+				pods = make(map[string]PodSample)
+				continue
+			}
+			uid, s, ok := parsePodLine(line)
+			if ok {
+				pods[uid] = s
+			}
 		}
+		// A killed process surfaces as a scanner/Wait error; that is the normal
+		// way the stream stops, so a cancelled context is clean completion.
+		werr := cmd.Wait()
+		if ctx.Err() != nil {
+			return
+		}
+		if err := scanner.Err(); err != nil {
+			logger.Warn("profile: reading node stream: " + err.Error())
+			return
+		}
+		if werr != nil {
+			logger.Warn("profile: node sampler exited: " + werr.Error())
+		}
+	}()
+	return out, nil
+}
+
+// PodInfo identifies one pod for the web pod list: its UID (the only key the
+// cgroup stream carries) and its resolved "namespace/name".
+type PodInfo struct {
+	UID  string `json:"uid"`
+	Name string `json:"name"`
+}
+
+// PodList returns the pods currently known to the API server as UID +
+// "namespace/name", sorted by name. It is read-only and returns an empty slice
+// when the cluster is unreachable, so callers can render an empty list rather
+// than error.
+func PodList(cfg *config.Config) []PodInfo {
+	m := podNames(cfg)
+	infos := make([]PodInfo, 0, len(m))
+	for uid, name := range m {
+		infos = append(infos, PodInfo{UID: uid, Name: name})
 	}
-	// A killed process surfaces as a scanner/Wait error; that is the normal
-	// way Profile stops, so treat a cancelled context as clean completion.
-	werr := cmd.Wait()
-	if ctx.Err() != nil {
-		return nil
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("profile: reading node stream: %w", err)
-	}
-	return werr
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
+	return infos
 }
 
 // podNames returns a pod-UID -> "namespace/name" map from the API server, or

@@ -3,6 +3,7 @@ import type { State, Machine } from './types';
 import { Stats } from './components/Stats';
 import { Diagram } from './components/Diagram';
 import { Legend } from './components/Legend';
+import { PodsPanel } from './components/PodsPanel';
 
 export interface Flows {
   pulls: boolean; // image pulls happening (cache activity), within the hold window
@@ -22,6 +23,7 @@ export function App() {
   const [state, setState] = useState<State | null>(null);
   const [live, setLive] = useState(true);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [selected, setSelected] = useState<string | null>(null);
   const [flows, setFlows] = useState<Flows>({ pulls: false, traffic: {} });
   const spark = useRef<number[]>([]);
   const prevPulls = useRef<number | null>(null);
@@ -94,7 +96,18 @@ export function App() {
       {state ? (
         <>
           <Stats state={state} spark={spark.current} />
-          <Diagram state={state} flows={flows} busy={busy} onAction={onAction} />
+          <Diagram
+            state={state}
+            flows={flows}
+            busy={busy}
+            onAction={onAction}
+            selected={selected}
+            onSelect={(m) => setSelected((cur) => (cur === m.name ? null : m.name))}
+          />
+          {(() => {
+            const m = state.machines.find((x) => x.name === selected && x.kind !== 'docker');
+            return m ? <PodsPanel machine={m} onClose={() => setSelected(null)} /> : null;
+          })()}
           <Legend />
         </>
       ) : (
