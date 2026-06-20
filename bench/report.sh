@@ -50,7 +50,7 @@ cat > "$OUT" <<'HTML'
   .row{display:flex;align-items:center;gap:8px;margin:6px 0}
   .row .name{width:74px;flex:none;font-size:12px;color:var(--dim)}
   .track{flex:1;background:#0f0f17;border-radius:5px;overflow:hidden;height:22px;position:relative}
-  .fill{height:100%;border-radius:5px;transition:width .25s}
+  .fill{display:block;height:100%;border-radius:5px;transition:width .25s;min-width:2px}
   .row .val{width:78px;flex:none;text-align:right;font-size:12px}
   .win{color:var(--good)}.note{color:var(--dim);font-size:11px;margin-top:12px}
 </style></head><body>
