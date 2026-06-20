@@ -40,7 +40,7 @@ func startPower() *powerSampler {
 		os.Remove(name)
 		return nil
 	}
-	cmd := exec.Command("sudo", "powermetrics", "--samplers", "cpu_power", "-i", "1000", "-n", "100000")
+	cmd := exec.Command("sudo", "-n", "powermetrics", "--samplers", "cpu_power", "-i", "1000", "-n", "100000")
 	cmd.Stdout = out
 	if err := cmd.Start(); err != nil {
 		out.Close()
@@ -57,7 +57,8 @@ func (p *powerSampler) stop() (float64, bool) {
 		return 0, false
 	}
 	// The actual powermetrics runs as root under sudo; kill it directly.
-	_ = exec.Command("sudo", "pkill", "-f", "powermetrics --samplers cpu_power").Run()
+	// -n so a stale sudo cache never blocks the run on a password prompt.
+	_ = exec.Command("sudo", "-n", "pkill", "-f", "powermetrics --samplers cpu_power").Run()
 	_ = p.cmd.Wait()
 	defer os.Remove(p.path)
 

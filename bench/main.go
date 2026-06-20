@@ -92,6 +92,24 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Keep the sudo credential cache warm so power sampling never blocks on a
+	// password prompt during long steps (a slow pod pull can outlast the ~5min
+	// cache). All sudo calls are -n, so if this ever fails power is just skipped.
+	if env.Power {
+		go func() {
+			t := time.NewTicker(60 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					_ = exec.Command("sudo", "-n", "-v").Run()
+				}
+			}
+		}()
+	}
+
 	runID := time.Now().Format("20060102-150405")
 	logf("run %s → store %s", runID, *storePath)
 
