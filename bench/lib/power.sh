@@ -15,6 +15,17 @@ power_available() {
   command -v powermetrics >/dev/null 2>&1 && sudo -n true 2>/dev/null
 }
 
+# _power_cleanup: kill a still-running sampler. Registered on EXIT so a benchmark
+# that dies between power_begin and power_end cannot leak a long-lived
+# `powermetrics` (it runs with -n 100000 ≈ a day otherwise).
+_power_cleanup() {
+  [ -n "$_POWER_PID" ] || return 0
+  sudo kill "$_POWER_PID" 2>/dev/null || true
+  wait "$_POWER_PID" 2>/dev/null || true
+  [ -n "$_POWER_OUT" ] && rm -f "$_POWER_OUT" 2>/dev/null || true
+  _POWER_PID=""; _POWER_OUT=""
+}
+
 # power_begin: start sampling CPU power in the background until power_end.
 power_begin() {
   [ "${BENCH_POWER:-1}" = "1" ] || return 0
@@ -23,6 +34,7 @@ power_begin() {
     BENCH_POWER=0
     return 0
   fi
+  trap _power_cleanup EXIT
   _POWER_OUT="$(mktemp -t bench-power)"
   # -n 0 would run forever; use a very large count and kill on power_end.
   sudo powermetrics --samplers cpu_power -i "$POWER_INTERVAL_MS" -n 100000 \
