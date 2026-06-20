@@ -5,6 +5,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -42,6 +43,7 @@ type Server struct {
 	cfg  *config.Config
 	mu   sync.Mutex
 	last map[string]sample
+	pods *podStreamManager
 }
 
 type sample struct {
@@ -271,7 +273,11 @@ func runK3c(args ...string) (string, error) {
 // Serve starts the web server, opening the browser unless suppressed. It
 // returns when the server stops.
 func Serve(cfg *config.Config, opts Options) error {
-	s := &Server{cfg: cfg, last: map[string]sample{}}
+	// Bound every pod profiler to the server's lifetime: when Serve returns,
+	// cancelling this context stops any node samplers still running.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := &Server{cfg: cfg, last: map[string]sample{}, pods: newPodStreamManager(ctx)}
 
 	sub, err := fs.Sub(dist, "dist")
 	if err != nil {
@@ -281,6 +287,8 @@ func Serve(cfg *config.Config, opts Options) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/action", s.handleAction)
+	mux.HandleFunc("/api/pods", s.handlePods)
+	mux.HandleFunc("/api/pods/stream", s.handlePodsStream)
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
 	addr := opts.Addr

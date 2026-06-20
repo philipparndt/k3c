@@ -45,3 +45,27 @@ export interface State {
   cache: Cache;
   net: Net;
 }
+
+// PodSample is one pod's accounting at a single tick, mirroring cluster.PodSample.
+// cpu_usec is cumulative since the pod started; rate is derived client-side.
+export interface PodSample {
+  name?: string;
+  cpu_usec: number;
+  mem_ws: number;
+  mem_current: number;
+}
+
+// PodSnapshot is one sampling tick streamed from /api/pods/stream.
+export interface PodSnapshot {
+  t_ms: number;
+  pods: Record<string, PodSample>; // keyed by pod UID
+}
+
+// PodSeries is the derived, render-ready history for one pod over the recent
+// window: aligned CPU-rate (bytes? no — usec/s) and memory working-set samples.
+export interface PodSeries {
+  uid: string;
+  name: string;
+  cpu: number[]; // CPU rate, fraction of a core (usec-per-usec), per tick
+  mem: number[]; // memory working set in bytes, per tick
+}

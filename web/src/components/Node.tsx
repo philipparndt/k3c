@@ -61,8 +61,10 @@ export function VmNode(props: {
   m: Machine;
   busy: boolean;
   onAction: (m: Machine, action: string) => void;
+  selected?: boolean;
+  onSelect?: (m: Machine) => void;
 }) {
-  const { m, busy, onAction } = props;
+  const { m, busy, onAction, selected, onSelect } = props;
   const kind = m.kind === 'docker' ? 'docker sidecar' : 'k3s';
   const running = m.state === 'running';
   const halted = m.state === 'paused' || m.state === 'suspended';
@@ -91,6 +93,16 @@ export function VmNode(props: {
         <button class="act" disabled={stopped || busy} title="stop" onClick={() => onAction(m, 'stop')}>
           ⏹
         </button>
+        {m.kind !== 'docker' && onSelect && (
+          <button
+            class={'act pods-btn' + (selected ? ' on' : '')}
+            disabled={!running}
+            title={running ? 'show pods' : 'start the cluster to see pods'}
+            onClick={() => onSelect(m)}
+          >
+            pods
+          </button>
+        )}
         {busy && <span class="spin">working…</span>}
       </div>
     </Node>

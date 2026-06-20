@@ -8,8 +8,10 @@ export function Diagram(props: {
   flows: Flows;
   busy: Record<string, boolean>;
   onAction: (m: Machine, action: string) => void;
+  selected: string | null;
+  onSelect: (m: Machine) => void;
 }) {
-  const { state, flows, busy, onAction } = props;
+  const { state, flows, busy, onAction, selected, onSelect } = props;
   const machines = state.machines || [];
   const runtimeState = machines.some((m) => m.state === 'running')
     ? 'running'
@@ -49,7 +51,14 @@ export function Diagram(props: {
               </div>
               <div class="row vms">
                 {machines.map((m) => (
-                  <VmNode key={m.name} m={m} busy={!!busy[m.name]} onAction={onAction} />
+                  <VmNode
+                    key={m.name}
+                    m={m}
+                    busy={!!busy[m.name]}
+                    onAction={onAction}
+                    selected={selected === m.name}
+                    onSelect={onSelect}
+                  />
                 ))}
               </div>
             </div>

@@ -114,3 +114,46 @@ svg.edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-eve
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
 .flowkey { display: inline-block; width: 18px; border-top: 2px dashed; margin-right: 5px; vertical-align: 4px; }
 .note { color: var(--dim); font-size: 12px; text-align: center; margin-top: 14px; line-height: 1.6; }
+
+/* pods panel */
+.pods-btn.on { border-color: var(--accent); background: #2a2a38; color: var(--accent); }
+.pods {
+  margin-top: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.pods-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.pods-title { font-size: 14px; font-weight: 700; color: var(--accent); }
+.pods-head .live { margin-left: 0; }
+.pods-head .act { margin-left: auto; padding: 4px 8px; }
+
+.podlist { display: flex; flex-direction: column; gap: 2px; }
+.podrow {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.2fr) minmax(160px, 1.2fr);
+  gap: 14px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+.podname { font-size: 12px; color: var(--txt); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.podmetric { display: flex; align-items: center; gap: 8px; }
+.podmetric .mlbl { font-size: 11px; color: var(--dim); min-width: 78px; }
+.pspark { height: 22px; flex: 1; display: block; }
+
+/* heatmaps */
+.heatmaps { display: flex; gap: 18px; margin-top: 16px; flex-wrap: wrap; }
+.heat { flex: 1; min-width: 320px; }
+.heat-title { font-size: 12px; color: var(--txt); margin-bottom: 6px; }
+.heat-title small { color: var(--dim); }
+.heat-grid { display: flex; flex-direction: column; height: 260px; gap: 1px; }
+.heat-row { display: flex; align-items: stretch; gap: 8px; min-height: 6px; }
+.heat-label {
+  width: 150px; flex: none; font-size: 11px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: center;
+}
+.heat-cells { flex: 1; display: flex; gap: 1px; }
+.heat-cell { flex: 1; border-radius: 1px; background: var(--line); min-height: 4px; }
+.heat-val { width: 56px; flex: none; font-size: 11px; color: var(--dim); text-align: right; align-self: center; }
