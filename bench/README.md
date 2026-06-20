@@ -39,6 +39,17 @@ Flags: `--engines k3c,orb` · `--benchmarks …` · `--variants cold,warm` ·
 Results land in `results/<run-id>/` (`results.jsonl` + `env.json`); a mean
 comparison table prints at the end.
 
+## Host port 443 is exclusive
+
+OrbStack and k3c **both bind host `:443`** (and `:80`), so they cannot run at the
+same time. The runner enforces this: before each engine's phase it stops the
+other engine (`orb stop`, or for k3c `cluster delete` + `daemons stop`).
+
+> ⚠️ The k3c quiesce stops the **shared host daemons**, which serve *every* k3c
+> cluster — including any persistent one you use day-to-day. After a run that
+> includes `orb`, restore them with `k3c daemons restart` (or restart that
+> cluster). Stop any unrelated k3c clusters before benchmarking to avoid surprise.
+
 ## Requirements
 
 `k3c`, `orb`, `kubectl`, `helm`, `docker`, `jq`, `git`, and `powermetrics`
