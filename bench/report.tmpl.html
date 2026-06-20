@@ -30,6 +30,7 @@
 </style></head><body>
 <h1><span class="a">k3c</span> benchmark report</h1>
 <div class="meta" id="meta"></div>
+<div class="meta" id="wins"></div>
 <div class="bar-tools"><span style="font-size:12px;color:var(--dim)">metric:</span>
   <span id="filters"></span>
   <span class="legend" id="legend"></span>
@@ -79,6 +80,7 @@ function key(d){return d.benchmark+' · '+d.variant+' · '+d.metric;}
 function render(){
   legend(); filters();
   const grid=document.getElementById('grid'); grid.innerHTML='';
+  const wins={};
   const cards={};
   DATA.filter(d=>family==='all'||fam(d.unit)===family)
       .forEach(d=>{(cards[key(d)]=cards[key(d)]||[]).push(d);});
@@ -87,6 +89,8 @@ function render(){
     if(!rows.length) return;
     const unit=rows[0].unit, max=Math.max(...rows.map(r=>r.mean));
     const best=Math.min(...rows.map(r=>r.mean));
+    const winner=rows.reduce((a,b)=>b.mean<a.mean?b:a).engine;
+    wins[winner]=(wins[winner]||0)+1;
     const k3c=(cards[k].find(d=>d.engine==='k3c')||{}).mean;
     const c=document.createElement('div'); c.className='card';
     c.innerHTML=`<h3>${cards[k][0].benchmark}</h3><div class="sub">${cards[k][0].variant} · ${cards[k][0].metric}</div>`;
@@ -96,13 +100,20 @@ function render(){
       let delta=''; if(k3c&&e!=='k3c'){const x=r.mean/k3c; delta=` <span style="color:var(--dim)">(${x.toFixed(2)}×)</span>`;}
       const bar = win ? '#42c883' : '#56b2f2';   // best = green, others = blue
       const row=document.createElement('div'); row.className='row';
-      row.innerHTML=`<span class="name">${e}</span>
+      const nameStyle = win ? ' style="color:#42c883;font-weight:700"' : '';
+      row.innerHTML=`<span class="name"${nameStyle}>${e}</span>
         <span class="track"><span class="fill" style="width:${w}%;background:${bar}" title="${fmt(r.mean,unit)}"></span></span>
         <span class="val${win?' win':''}">${win?'★ ':''}${fmt(r.mean,unit)}${delta}</span>`;
       c.appendChild(row);
     });
     grid.appendChild(c);
   });
+
+  // overall wins tally across the visible cards; leader(s) in green
+  const tally=engines().map(e=>[e,wins[e]||0]).sort((a,b)=>b[1]-a[1]);
+  const top=tally.length?tally[0][1]:0;
+  document.getElementById('wins').innerHTML='wins: '+tally.map(([e,n])=>
+    (n===top&&n>0)?`<b style="color:#42c883">${e} ${n}</b>`:`${e} ${n}`).join('  ·  ');
 }
 meta(); render();
 </script></body></html>
