@@ -8,7 +8,11 @@ It measures **wall-clock time** and **per-engine energy impact** (the macOS
 process-energy metric, sampled **without sudo**) for each benchmark, and prints
 a side-by-side comparison.
 
-Engines: **k3c**, **OrbStack**, **Rancher Desktop**, and **k3d-on-OrbStack**.
+Engines — native providers **k3c**, **OrbStack** (`orb`), **Rancher Desktop**
+(`rancher`), **colima** — plus **k3d** on each provider's Docker (`orb-k3d`,
+`rancher-k3d`, `colima-k3d`). k3d isn't a runtime, it's k8s-in-Docker, so it's
+named per backend. Providers are mutually exclusive (each owns a VM / host
+ports); the runner quiesces the others before each engine's phase.
 
 ## Go version (preferred)
 
@@ -55,7 +59,8 @@ Every lifecycle command is logged (`exec: …`) so a run is fully auditable.
 |-----------|--------------|---------|
 | `empty`   | bring up a bare cluster; time until coredns + local-path-provisioner + metrics-server are Ready (cold & warm) | `time_to_ready`, `cpu_power` |
 | `helm`    | OrbStack "Battery: Kubernetes" — install Traefik + Grafana via Helm, sample steady-state power | `install_to_ready`, `cpu_power` |
-| `pull`    | cold/warm image pull of a set of images **into the cluster** (exercises k3c's pull-through cache) | `pull_time`, `cpu_power` |
+| `pull`    | cold/warm image pull of a set of images **into the cluster** (exercises k3c's pull-through cache) | `pull_time`, energy |
+| `edx`     | OrbStack's Open edX heavy build — clone devstack, `make pull` then time `make dev.provision` (docker providers only) | `provision_time`, energy |
 | `build`   | OrbStack "Heavy Build: PostHog" — clone + `docker build` for arm64 then amd64 | `build_time`, `cpu_power` |
 | `compose` | OrbStack "Battery: Supabase/Sentry" — `docker compose up` a stack, sample steady-state power | `time_to_up`, `cpu_power` |
 

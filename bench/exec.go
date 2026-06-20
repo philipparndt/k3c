@@ -40,6 +40,7 @@ type execOpts struct {
 	env        []string // extra environment (appended to os.Environ)
 	stdin      string   // stdin to feed
 	stdoutOnly bool     // capture stdout only (stderr logged on error) — for outputs we parse
+	dir        string   // working directory
 }
 
 func exec1(ctx context.Context, o execOpts, name string, args ...string) (string, error) {
@@ -49,6 +50,9 @@ func exec1(ctx context.Context, o execOpts, name string, args ...string) (string
 	cmd := exec.CommandContext(ctx, name, args...)
 	if o.env != nil {
 		cmd.Env = append(os.Environ(), o.env...)
+	}
+	if o.dir != "" {
+		cmd.Dir = o.dir
 	}
 	if o.stdin != "" {
 		cmd.Stdin = strings.NewReader(o.stdin)
@@ -91,6 +95,11 @@ func runEnv(ctx context.Context, env []string, name string, args ...string) (str
 // runStdin runs feeding stdin, logged (combined output).
 func runStdin(ctx context.Context, stdin, name string, args ...string) (string, error) {
 	return exec1(ctx, execOpts{log: true, stdin: stdin}, name, args...)
+}
+
+// runDir runs in a working directory with extra env, logged (combined output).
+func runDir(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
+	return exec1(ctx, execOpts{log: true, env: env, dir: dir}, name, args...)
 }
 
 func withTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
