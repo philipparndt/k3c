@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -34,7 +33,7 @@ func main() {
 		benchmarks  = flag.String("benchmarks", "empty,resume", "comma list: empty,resume,pull,helm")
 		variants    = flag.String("variants", "cold,warm", "cold,warm filter for empty/pull")
 		iterations  = flag.Int("iterations", 1, "rounds to append this run (results accumulate)")
-		power       = flag.Bool("power", true, "sample CPU power (needs sudo)")
+		power       = flag.Bool("power", true, "sample per-engine energy impact (sudo-free)")
 		powerWindow = flag.Int("power-window", 120, "steady-state power window seconds (helm)")
 		readySecs   = flag.Int("ready-timeout", 300, "seconds to wait for readiness")
 		storePath   = flag.String("store", "results/store.jsonl", "append-only results store")
@@ -76,39 +75,8 @@ func main() {
 		ReadyTimeout: gReadyTimeout,
 	}
 
-	if env.Power {
-		if _, err := exec.LookPath("powermetrics"); err != nil {
-			warnf("powermetrics not found; disabling power")
-			env.Power = false
-		} else {
-			logf("power on — priming sudo (powermetrics needs root)…")
-			if exec.Command("sudo", "-v").Run() != nil {
-				warnf("no sudo; disabling power")
-				env.Power = false
-			}
-		}
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	// Keep the sudo credential cache warm so power sampling never blocks on a
-	// password prompt during long steps (a slow pod pull can outlast the ~5min
-	// cache). All sudo calls are -n, so if this ever fails power is just skipped.
-	if env.Power {
-		go func() {
-			t := time.NewTicker(60 * time.Second)
-			defer t.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					_ = exec.Command("sudo", "-n", "-v").Run()
-				}
-			}
-		}()
-	}
 
 	runID := time.Now().Format("20060102-150405")
 	logf("run %s → store %s", runID, *storePath)

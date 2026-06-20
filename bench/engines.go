@@ -26,6 +26,10 @@ type k3cEngine struct {
 func (e *k3cEngine) Name() string     { return "k3c" }
 func (e *k3cEngine) Addons() []string { return []string{"coredns", "local-path-provisioner"} }
 
+// k3c's VM + networking run under the bundled runtime cache path; the
+// container-runtime-linux --uuid <cluster> process is the cluster VM.
+func (e *k3cEngine) EnergyPatterns() []string { return []string{"/.cache/k3c/runtime/"} }
+
 func (e *k3cEngine) base() []string {
 	if e.config != "" {
 		return []string{"--config", e.config}
@@ -102,8 +106,9 @@ func (e *k3cEngine) StopAll(ctx context.Context) error {
 
 type orbEngine struct{}
 
-func (e *orbEngine) Name() string     { return "orbstack" }
-func (e *orbEngine) Addons() []string { return []string{"coredns", "local-path-provisioner"} }
+func (e *orbEngine) Name() string             { return "orbstack" }
+func (e *orbEngine) Addons() []string         { return []string{"coredns", "local-path-provisioner"} }
+func (e *orbEngine) EnergyPatterns() []string { return []string{"OrbStack"} }
 
 func (e *orbEngine) orb(ctx context.Context, args ...string) (string, error) {
 	c, cancel := withTimeout(ctx, 240*time.Second)
@@ -161,6 +166,9 @@ type rdEngine struct{}
 
 func (e *rdEngine) Name() string     { return "rancher" }
 func (e *rdEngine) Addons() []string { return []string{"coredns", "local-path-provisioner"} }
+func (e *rdEngine) EnergyPatterns() []string {
+	return []string{"Rancher Desktop", "rancher-desktop", "lima"}
+}
 
 func rdctlPath() string {
 	if p := os.Getenv("RDCTL"); p != "" {
@@ -199,6 +207,10 @@ type k3dEngine struct {
 
 func (e *k3dEngine) Name() string     { return "k3d" }
 func (e *k3dEngine) Addons() []string { return []string{"coredns", "local-path-provisioner"} }
+
+// k3d runs inside OrbStack's VM, so its host energy IS the OrbStack VM process
+// — k3d and orb are not separable at the host level (documented).
+func (e *k3dEngine) EnergyPatterns() []string { return []string{"OrbStack"} }
 
 func orbSocket(ctx context.Context) string {
 	out, err := runOut(ctx, nil, "docker", "context", "inspect", "orbstack", "-f", "{{.Endpoints.docker.Host}}")
