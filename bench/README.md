@@ -7,6 +7,37 @@ methodology from OrbStack's published benchmarks
 It measures **wall-clock time** and **average CPU power** (mW, via `powermetrics`)
 for each benchmark, and prints a side-by-side comparison.
 
+Engines: **k3c**, **OrbStack**, **Rancher Desktop**, and **k3d-on-OrbStack**.
+
+## Go version (preferred)
+
+The suite has been ported to Go (a nested module, isolated from the product
+build). It is the primary implementation; the shell scripts remain until the
+Go port's rd/k3d/pull/helm paths are validated live.
+
+```bash
+cd bench
+go build -o k3cbench .          # or: go run .
+
+# run + accumulate (results append to results/store.jsonl)
+./k3cbench -engines k3c,orb -benchmarks empty,resume,pull,helm -iterations 3
+
+# INCREMENTAL: add an engine later, or more rounds — just run again; the
+# append-only store accumulates and every summary/report means over all of it.
+./k3cbench -engines k3d -benchmarks empty            # adds k3d to the same store
+./k3cbench -engines k3c -benchmarks empty            # adds another round
+
+./k3cbench -summary                                  # print table from the store
+./k3cbench -report                                   # (re)generate results/report.html
+```
+
+Flags: `-engines k3c,orb,rd,k3d` · `-benchmarks empty,resume,pull,helm` ·
+`-variants cold,warm` · `-iterations N` · `-power` / `-power=false` ·
+`-power-window SECS` · `-ready-timeout SECS` · `-store PATH` · `-fresh`
+(truncate) · `-report` · `-summary`. Pull-cache: set `K3C_CONFIG=$PWD/configs/k3c-pullcache.yaml`.
+
+Every lifecycle command is logged (`exec: …`) so a run is fully auditable.
+
 ## Benchmarks
 
 | alias     | what it does | metrics |
