@@ -1,0 +1,12 @@
+# k3c config for the "with cache" pull benchmark: routes docker.io pulls through
+# the pull-through cache. With pullCache.enabled AND a configured registry, k3c
+# prepends the cache as the first mirror endpoint (EffectiveRegistries) and gives
+# the cache daemon the upstream mapping. Pass it via K3C_CONFIG to the runner:
+#   K3C_CONFIG=$PWD/configs/k3c-pullcache.yaml ./run.sh --benchmarks pull --engines k3c
+pullCache:
+  enabled: true
+registries: |
+  mirrors:
+    docker.io:
+      endpoint:
+        - "https://registry-1.docker.io"
