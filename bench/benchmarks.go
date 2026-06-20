@@ -20,34 +20,34 @@ type Env struct {
 
 func (env *Env) want(v string) bool { return len(env.Variants) == 0 || env.Variants[v] }
 
-// timed runs fn, returning its wall time in ms and (optionally) the average CPU
-// power sampled across it.
-func (env *Env) timed(samplePower bool, fn func() error) (ms, mw float64, hasMW bool, err error) {
-	var ps *powerSampler
-	if samplePower && env.Power {
-		ps = startPower()
+// timed runs fn, returning its wall time in ms and (optionally) the mean
+// per-engine energy impact sampled across it (sudo-free).
+func (env *Env) timed(patterns []string, sampleEnergy bool, fn func() error) (ms, ei float64, hasEI bool, err error) {
+	var es *energySampler
+	if sampleEnergy && env.Power {
+		es = startEnergy(patterns)
 	}
 	t0 := time.Now()
 	err = fn()
 	ms = float64(time.Since(t0).Milliseconds())
-	if ps != nil {
-		mw, hasMW = ps.stop()
+	if es != nil {
+		ei, hasEI = es.stop()
 	}
 	return
 }
 
-// windowPower samples CPU power for a fixed window (steady-state workloads).
-func (env *Env) windowPower(d time.Duration) (float64, bool) {
+// windowEnergy samples per-engine energy for a fixed window (steady-state).
+func (env *Env) windowEnergy(patterns []string, d time.Duration) (float64, bool) {
 	if !env.Power {
 		return 0, false
 	}
-	ps := startPower()
-	if ps == nil {
+	es := startEnergy(patterns)
+	if es == nil {
 		return 0, false
 	}
-	logf("sampling power for %s (steady state)…", d)
+	logf("sampling energy for %s (steady state)…", d)
 	time.Sleep(d)
-	return ps.stop()
+	return es.stop()
 }
 
 type Benchmark interface {
@@ -86,7 +86,7 @@ func (emptyBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error 
 			_ = e.WarmPrep(ctx)
 		}
 		var k Kube
-		ms, mw, hasMW, err := env.timed(true, func() error {
+		ms, ei, hasEI, err := env.timed(e.EnergyPatterns(), true, func() error {
 			var e2 error
 			if k, e2 = e.Create(ctx); e2 != nil {
 				return e2
@@ -99,8 +99,8 @@ func (emptyBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error 
 			continue
 		}
 		emit(v, "time_to_ready", ms, "ms")
-		if hasMW {
-			emit(v, "cpu_power", mw, "mW")
+		if hasEI {
+			emit(v, "energy", ei, "EI")
 		}
 		okf("[%s] empty (%s): %.0f ms", e.Name(), v, ms)
 		_ = e.Destroy(ctx)
@@ -129,7 +129,7 @@ func (resumeBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error
 		_ = e.Destroy(ctx)
 		return err
 	}
-	ms, mw, hasMW, err := env.timed(true, func() error {
+	ms, ei, hasEI, err := env.timed(e.EnergyPatterns(), true, func() error {
 		if err := e.Resume(ctx); err != nil {
 			return err
 		}
@@ -137,8 +137,8 @@ func (resumeBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error
 	})
 	if err == nil {
 		emit("restore", "resume_time", ms, "ms")
-		if hasMW {
-			emit("restore", "cpu_power", mw, "mW")
+		if hasEI {
+			emit("restore", "energy", ei, "EI")
 		}
 		okf("[%s] resume: %.0f ms", e.Name(), ms)
 	} else {
@@ -190,7 +190,7 @@ func (pullBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 			warnf("[%s] pull (%s): create: %v", e.Name(), v, err)
 			continue
 		}
-		ms, mw, hasMW, err := env.timed(true, func() error {
+		ms, ei, hasEI, err := env.timed(e.EnergyPatterns(), true, func() error {
 			// The API can briefly reject applies right after create; retry a few
 			// times and surface the real output if it keeps failing.
 			var out string
@@ -208,8 +208,8 @@ func (pullBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 		})
 		if err == nil {
 			emit(v, "pull_time", ms, "ms")
-			if hasMW {
-				emit(v, "cpu_power", mw, "mW")
+			if hasEI {
+				emit(v, "energy", ei, "EI")
 			}
 			okf("[%s] pull (%s): %.0f ms", e.Name(), v, ms)
 		} else {
@@ -246,7 +246,7 @@ func (helmBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 	_, _ = run(ctx, "helm", "repo", "update")
 
 	to := durSecs(env.ReadyTimeout)
-	ms, _, _, err := env.timed(false, func() error {
+	ms, _, _, err := env.timed(nil, false, func() error {
 		_, e1 := run(ctx, "helm", helmArgs(k, "upgrade", "--install", "traefik", "traefik/traefik",
 			"-n", "traefik", "--create-namespace", "--wait", "--timeout", to)...)
 		_, e2 := run(ctx, "helm", helmArgs(k, "upgrade", "--install", "grafana", "grafana/grafana",
@@ -262,8 +262,8 @@ func (helmBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 		emit("steady", "install_to_ready", ms, "ms")
 		okf("[%s] helm install→ready: %.0f ms", e.Name(), ms)
 	}
-	if mw, ok := env.windowPower(env.PowerWindow); ok {
-		emit("steady", "cpu_power", mw, "mW")
+	if ei, ok := env.windowEnergy(e.EnergyPatterns(), env.PowerWindow); ok {
+		emit("steady", "energy", ei, "EI")
 	}
 	_, _ = run(ctx, "helm", helmArgs(k, "uninstall", "grafana", "-n", "grafana")...)
 	_, _ = run(ctx, "helm", helmArgs(k, "uninstall", "traefik", "-n", "traefik")...)

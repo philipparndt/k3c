@@ -4,8 +4,9 @@ A local, reproducible harness that pits **k3c** against **OrbStack** using the
 methodology from OrbStack's published benchmarks
 (<https://docs.orbstack.dev/benchmarks>) plus a bare-cluster bring-up test.
 
-It measures **wall-clock time** and **average CPU power** (mW, via `powermetrics`)
-for each benchmark, and prints a side-by-side comparison.
+It measures **wall-clock time** and **per-engine energy impact** (the macOS
+process-energy metric, sampled **without sudo**) for each benchmark, and prints
+a side-by-side comparison.
 
 Engines: **k3c**, **OrbStack**, **Rancher Desktop**, and **k3d-on-OrbStack**.
 
@@ -92,17 +93,22 @@ other engine (`orb stop`, or for k3c `cluster delete` + `daemons stop`).
 
 ## Requirements
 
-`k3c`, `orb`, `kubectl`, `helm`, `docker`, `jq`, `git`, and `powermetrics`
-(built in). Power sampling needs `sudo` — the runner primes it once. Use
-`--no-power` to skip.
+`k3c`, `orb`, `kubectl`, `helm`, `docker`, `git` — and `go` for the Go version.
+Energy sampling uses macOS `top` (built in, **no sudo**). Disable with
+`-power=false`. (The legacy shell suite additionally used `jq`/`powermetrics`.)
 
 ## Caveats (read before trusting numbers)
 
-- **Power ≠ OrbStack's exact metric.** OrbStack attributes *per-process* energy
-  via kernel sampling and converts to mW. This harness samples **whole-system
-  CPU power** and reports the average over the window. Run with both engines
-  stopped once to get an idle baseline if you want a delta. Treat the absolute
-  mW as comparable-between-engines-here, not 1:1 with OrbStack's published bars.
+- **Energy is per-engine "Energy Impact" (EI), sudo-free.** Like OrbStack, we
+  attribute energy to the engine's own host processes (matched by command
+  substring; see `EnergyPatterns` per engine) using the macOS process-energy
+  metric via `top -stats power` — no root, independent of unrelated machine load.
+  EI is a relative kernel score (Activity Monitor's metric), **not Watts**;
+  directly comparable across engines on this machine, not 1:1 with OrbStack's
+  published mW bars. Two caveats: (1) **k3d runs inside OrbStack's VM**, so its
+  EI is the OrbStack VM process — k3d and orb are not separable; (2) the k3c
+  matcher catches *all* k3c clusters' processes, so for clean numbers run only
+  the cluster under test (stop any persistent one).
 - **Cold/warm are defined per engine** (`lib/engine_*.sh`):
   - k3c cold = delete cluster + `pull-cache clear`; warm = pre-create once. Each
     run is a genuinely fresh VM + cluster.

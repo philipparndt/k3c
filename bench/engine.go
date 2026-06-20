@@ -12,6 +12,7 @@ import (
 type Engine interface {
 	Name() string                       // canonical label (results key + report column)
 	Addons() []string                   // kube-system deployments that gate "usable"
+	EnergyPatterns() []string           // host command substrings to attribute energy to
 	ColdPrep(ctx context.Context) error // prepare a cold run (caches/cluster cleared)
 	WarmPrep(ctx context.Context) error // prepare a warm run (caches/VM primed)
 	Create(ctx context.Context) (Kube, error)

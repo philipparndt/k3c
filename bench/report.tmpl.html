@@ -47,8 +47,9 @@ const hidden=new Set();
 let family='all';
 
 function fmt(v,u){ if(u==='ms') return v>=1000?(v/1000).toFixed(1)+'s':Math.round(v)+'ms';
-  if(u==='mW') return v>=1000?(v/1000).toFixed(2)+'W':Math.round(v)+'mW'; return Math.round(v)+(u||''); }
-function fam(u){ return u==='mW'?'power':(u==='ms'?'time':'other'); }
+  if(u==='mW') return v>=1000?(v/1000).toFixed(2)+'W':Math.round(v)+'mW';
+  if(u==='EI') return Math.round(v)+' EI'; return Math.round(v)+(u||''); }
+function fam(u){ return (u==='mW'||u==='EI')?'energy':(u==='ms'?'time':'other'); }
 
 function meta(){
   const e=ENV||{};
