@@ -214,26 +214,118 @@ func (p *pullCache) serveBlob(w http.ResponseWriter, r *http.Request, ns, name, 
 		http.Error(w, "unsupported digest", http.StatusBadRequest)
 		return
 	}
-	hit := true
-	if _, err := os.Stat(p.blobPath(digest)); err != nil {
-		hit = false
-		lock := p.digestLock(digest)
-		lock.Lock()
-		_, err = os.Stat(p.blobPath(digest))
-		if err != nil {
-			err = p.fetchContent(ns, name, "blobs", digest, digest, "")
+	path := p.blobPath(digest)
+
+	// Warm hit: serve straight from the content store.
+	if _, err := os.Stat(path); err == nil {
+		if r.Method == http.MethodGet {
+			p.countServe(true, path)
 		}
-		lock.Unlock()
-		if err != nil {
-			logger.Warn("pull cache: blob " + digest + " from " + ns + "/" + name + ": " + err.Error())
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
+		p.serveFile(w, r, path, digest, "application/octet-stream")
+		return
+	}
+
+	// A HEAD miss only needs the size: forward an upstream HEAD without
+	// downloading or caching the (potentially huge) blob.
+	if r.Method == http.MethodHead {
+		p.headUpstreamBlob(w, ns, name, digest)
+		return
+	}
+
+	// Cold GET miss: serialize same-digest fetches so the blob is downloaded
+	// once, then stream it to the node *while* it lands in the cache, instead
+	// of fully downloading to the host first (store-and-forward) and only then
+	// starting the host->node transfer.
+	lock := p.digestLock(digest)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, err := os.Stat(path); err == nil {
+		// Another request filled the cache while we waited for the lock.
+		p.countServe(true, path)
+		p.serveFile(w, r, path, digest, "application/octet-stream")
+		return
+	}
+	p.streamBlob(w, ns, name, digest)
+}
+
+// streamBlob fetches a blob from the upstream and tees it simultaneously to the
+// node (the HTTP response) and to a temp file in the content store, hashing as
+// it flows. The cached copy is committed only if the stream completes and its
+// digest matches, so a partial transfer or corrupt upstream never poisons the
+// cache. The node may still receive unverified bytes — that is safe because
+// containerd verifies the digest itself and retries on a mismatch.
+func (p *pullCache) streamBlob(w http.ResponseWriter, ns, name, digest string) {
+	resp, err := p.upstreamRequest(http.MethodGet, ns, name, "blobs", digest, "")
+	if err != nil {
+		logger.Warn("pull cache: blob " + digest + " from " + ns + "/" + name + ": " + err.Error())
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	tmp, err := os.CreateTemp(filepath.Join(pullCacheDir(p.cfg), "blobs"), ".download-*")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tmpName := tmp.Name()
+	closed, committed := false, false
+	closeTmp := func() {
+		if !closed {
+			_ = tmp.Close()
+			closed = true
 		}
 	}
-	if r.Method == http.MethodGet {
-		p.countServe(hit, p.blobPath(digest))
+	defer func() {
+		closeTmp()
+		if !committed {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	// Headers must be set before the first body byte. Forward the upstream
+	// length so the node knows the size up front (registries always send it for
+	// blobs); io.Copy from a network reader never takes the sendfile path, so
+	// the vmnet corruption that serveFile guards against does not apply here.
+	w.Header().Set("Docker-Content-Digest", digest)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
 	}
-	p.serveFile(w, r, p.blobPath(digest), digest, "application/octet-stream")
+
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(w, tmp, hasher), io.LimitReader(resp.Body, pullCacheBlobLimit)); err != nil {
+		// The node got a partial body and will retry; leave the cache untouched.
+		logger.Warn("pull cache: streaming blob " + digest + ": " + err.Error())
+		return
+	}
+	if got := "sha256:" + hex.EncodeToString(hasher.Sum(nil)); got != digest {
+		logger.Warn("pull cache: digest mismatch streaming " + digest + " (got " + got + "), not caching")
+		return
+	}
+	closeTmp()
+	if err := os.Rename(tmpName, p.blobPath(digest)); err != nil {
+		logger.Warn("pull cache: committing blob " + digest + ": " + err.Error())
+		return
+	}
+	committed = true
+	p.countServe(false, p.blobPath(digest))
+}
+
+// headUpstreamBlob answers a HEAD for an uncached blob by forwarding an upstream
+// HEAD: it reports existence and size without downloading the body.
+func (p *pullCache) headUpstreamBlob(w http.ResponseWriter, ns, name, digest string) {
+	resp, err := p.upstreamRequest(http.MethodHead, ns, name, "blobs", digest, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Docker-Content-Digest", digest)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
 }
 
 // serveFile streams a cached file as the response body. It deliberately
