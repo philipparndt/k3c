@@ -79,6 +79,8 @@ func main() {
 	defer stop()
 
 	runID := time.Now().Format("20060102-150405")
+	ui = newUI(len(csv(*engines)) * len(csv(*benchmarks)) * *iterations)
+	ui.setStep("starting…")
 	logf("run %s → store %s", runID, *storePath)
 
 	for _, en := range csv(*engines) {
@@ -105,7 +107,7 @@ func main() {
 				if ctx.Err() != nil {
 					break
 				}
-				logf("=== %s / %s (iter %d/%d) ===", eng.Name(), bn, i, *iterations)
+				ui.setStep(fmt.Sprintf("%s / %s — iteration %d/%d", eng.Name(), bn, i, *iterations))
 				iter := i
 				emit := func(variant, metric string, value float64, unit string) {
 					_ = store.append(Record{
@@ -116,10 +118,12 @@ func main() {
 				if err := b.Run(ctx, env, eng, emit); err != nil {
 					warnf("%s/%s iter %d: %v", eng.Name(), bn, i, err)
 				}
+				ui.advance()
 			}
 		}
 	}
 
+	ui.finish()
 	recs, _ := store.load()
 	fmt.Println()
 	printSummary(recs)

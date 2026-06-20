@@ -14,15 +14,18 @@ import (
 // point of a comparison benchmark: you can see exactly what hit each engine).
 var verbose = true
 
-func logf(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "\033[2m[bench]\033[0m "+format+"\n", a...)
+// log lines are stored plain (no ANSI) and routed to the UI, which scrolls them
+// in a window and tints by the leading marker. Without a UI they print plainly.
+func emitLine(s string) {
+	if ui != nil {
+		ui.addLog(s)
+		return
+	}
+	fmt.Fprintln(os.Stderr, s)
 }
-func okf(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "\033[32m[ ok ]\033[0m "+format+"\n", a...)
-}
-func warnf(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "\033[33m[warn]\033[0m "+format+"\n", a...)
-}
+func logf(format string, a ...any)  { emitLine("· " + fmt.Sprintf(format, a...)) }
+func okf(format string, a ...any)   { emitLine("✓ " + fmt.Sprintf(format, a...)) }
+func warnf(format string, a ...any) { emitLine("! " + fmt.Sprintf(format, a...)) }
 
 func tail(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
