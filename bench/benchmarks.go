@@ -158,6 +158,7 @@ var pullImages = []string{"nginx:1.27", "redis:7.4", "postgres:16", "node:22-boo
 
 func pullManifest(ns string) string {
 	var b strings.Builder
+	fmt.Fprintf(&b, "apiVersion: v1\nkind: Namespace\nmetadata: {name: %s}\n---\n", ns)
 	for i, img := range pullImages {
 		fmt.Fprintf(&b, `apiVersion: v1
 kind: Pod
@@ -189,10 +190,19 @@ func (pullBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 			warnf("[%s] pull (%s): create: %v", e.Name(), v, err)
 			continue
 		}
-		_, _ = kc(ctx, k, "create", "namespace", ns)
 		ms, mw, hasMW, err := env.timed(true, func() error {
-			if _, err := runStdin(ctx, pullManifest(ns), "kubectl", k.args("apply", "-f", "-")...); err != nil {
-				return err
+			// The API can briefly reject applies right after create; retry a few
+			// times and surface the real output if it keeps failing.
+			var out string
+			var aerr error
+			for try := 0; try < 5; try++ {
+				if out, aerr = runStdin(ctx, pullManifest(ns), "kubectl", k.args("apply", "-f", "-")...); aerr == nil {
+					break
+				}
+				time.Sleep(2 * time.Second)
+			}
+			if aerr != nil {
+				return fmt.Errorf("apply: %s", tail(out, 4))
 			}
 			return waitPodsReady(ctx, k, ns, len(pullImages), env.ReadyTimeout)
 		})
