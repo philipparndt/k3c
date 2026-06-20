@@ -30,7 +30,8 @@ Or drive the binary directly:
 go build -o k3cbench .          # or: go run .
 
 # run + accumulate (results append to results/store.jsonl)
-./k3cbench -engines k3c,orb -benchmarks empty,resume,pull,helm -iterations 3
+./k3cbench -engines k3c,orb -benchmarks empty,resume,helm -iterations 3
+# pull is opt-in (Docker Hub rate-limits cold pulls): make pull  /  -benchmarks pull
 
 # INCREMENTAL: add an engine later, or more rounds — just run again; the
 # append-only store accumulates and every summary/report means over all of it.
@@ -41,7 +42,7 @@ go build -o k3cbench .          # or: go run .
 ./k3cbench -report                                   # (re)generate results/report.html
 ```
 
-Flags: `-engines k3c,orb,rd,k3d` · `-benchmarks empty,resume,pull,helm` ·
+Flags: `-engines k3c,orb,rd,k3d` · `-benchmarks empty,resume,helm,pull` (pull opt-in) ·
 `-variants cold,warm` · `-iterations N` · `-power` / `-power=false` ·
 `-power-window SECS` · `-ready-timeout SECS` · `-store PATH` · `-fresh`
 (truncate) · `-report` · `-summary`. Pull-cache: set `K3C_CONFIG=$PWD/configs/k3c-pullcache.yaml`.

@@ -30,7 +30,7 @@ func csv(s string) []string {
 func main() {
 	var (
 		engines     = flag.String("engines", "k3c,orb", "comma list: k3c,orb,rd,k3d")
-		benchmarks  = flag.String("benchmarks", "empty,resume", "comma list: empty,resume,pull,helm")
+		benchmarks  = flag.String("benchmarks", "empty,resume,helm", "comma list: empty,resume,helm,pull (pull is opt-in; Docker Hub rate-limits)")
 		variants    = flag.String("variants", "cold,warm", "cold,warm filter for empty/pull")
 		iterations  = flag.Int("iterations", 1, "rounds to append this run (results accumulate)")
 		power       = flag.Bool("power", true, "sample per-engine energy impact (sudo-free)")
