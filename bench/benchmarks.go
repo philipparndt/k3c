@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -154,7 +155,16 @@ type pullBench struct{}
 
 func (pullBench) Name() string { return "pull" }
 
-var pullImages = []string{"nginx:1.27", "redis:7.4", "postgres:16", "node:22-bookworm", "python:3.12"}
+// Default pull images. Docker Hub rate-limits anonymous pulls (~100/6h per IP),
+// which repeated cold-pull benchmarking trips — override with BENCH_PULL_IMAGES
+// (space-separated), e.g. point at registry.k8s.io / ghcr.io / a mirror, or
+// authenticate to Docker Hub, or rely on the pull cache (don't clear it).
+var pullImages = func() []string {
+	if s := os.Getenv("BENCH_PULL_IMAGES"); strings.TrimSpace(s) != "" {
+		return strings.Fields(s)
+	}
+	return []string{"nginx:1.27", "redis:7.4", "postgres:16", "node:22-bookworm", "python:3.12"}
+}()
 
 func pullManifest(ns string) string {
 	var b strings.Builder

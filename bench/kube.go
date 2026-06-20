@@ -69,7 +69,9 @@ func waitPodsReady(ctx context.Context, k Kube, ns string, want int, timeout tim
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("only %d/%d pods Ready in %s within %s", ready, want, ns, timeout)
+			// Surface why (e.g. ImagePullBackOff / 429) instead of a bare count.
+			status, _ := kc(ctx, k, "-n", ns, "get", "pods", "--no-headers")
+			return fmt.Errorf("only %d/%d pods Ready in %s within %s:\n%s", ready, want, ns, timeout, tail(status, want))
 		}
 		time.Sleep(time.Second)
 	}
