@@ -113,6 +113,9 @@ for eng in "${engine_list[@]}"; do
         source "$BENCH_ROOT/lib/common.sh"
         source "$BENCH_ROOT/lib/power.sh"
         source "$BENCH_ROOT/lib/$ef.sh"
+        # canonicalize the engine name for results so the summary matches
+        # (--engines may pass "orb", engine_label is "orbstack")
+        export ENGINE="$(engine_label)"
         source "$BENCH_ROOT/benchmarks/$bf.sh"
         bench_main
       ) || warn "${eng}/${b} iteration $i failed (continuing)"
