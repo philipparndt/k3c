@@ -1,15 +1,18 @@
 # Benchmark suite: k3c vs OrbStack / Rancher Desktop / k3d-on-OrbStack.
 # Override any variable, e.g.:  make full ENGINES=k3c,orb ITER=5 POWER=false
 BIN        := k3cbench
+# pull is intentionally NOT in the default set: cold-pull benchmarking trips
+# Docker Hub's anonymous rate limit (429). Run it explicitly with `make pull`
+# (ideally with the cache or a non-Hub BENCH_PULL_IMAGES).
 ENGINES    ?= k3c,orb,k3d,rd
-BENCHMARKS ?= empty,resume,pull,helm
+BENCHMARKS ?= empty,resume,helm
 VARIANTS   ?= cold,warm
 ITER       ?= 3
 POWER      ?= true
 STORE      ?= results/store.jsonl
 EXTRA      ?=
 
-.PHONY: help build full k8s quick summary report open clean
+.PHONY: help build full k8s quick pull summary report open clean
 
 help: ## list targets
 	@grep -E '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort | column -t -s "$$(printf '\t')"
@@ -28,6 +31,10 @@ k8s: build ## full bench but k8s engines only (k3c, orb, k3d)
 
 quick: build ## fast sanity run: k3c vs orb, empty cold, no power
 	./$(BIN) -engines k3c,orb -benchmarks empty -variants cold -iterations 1 -power=false -store $(STORE)
+
+pull: build ## image-pull bench (opt-in; Docker Hub rate-limits — prefer the cache or BENCH_PULL_IMAGES)
+	./$(BIN) -engines $(ENGINES) -benchmarks pull -variants $(VARIANTS) \
+	  -iterations $(ITER) -power=$(POWER) -store $(STORE) $(EXTRA)
 
 summary: build ## print the comparison table from the store
 	./$(BIN) -summary -store $(STORE)
