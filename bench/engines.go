@@ -26,10 +26,29 @@ type k3cEngine struct {
 func (e *k3cEngine) Name() string     { return "k3c" }
 func (e *k3cEngine) Addons() []string { return []string{"coredns", "local-path-provisioner"} }
 
-// k3c's VM + networking run under the bundled runtime cache path; the
-// container-runtime-linux --uuid <cluster> process is the cluster VM.
-func (e *k3cEngine) EnergyPatterns() []string { return []string{"/.cache/k3c/runtime/"} }
-func (e *k3cEngine) DockerContext() string    { return "k3c" }
+// k3c runs each cluster as a generic Apple Virtualization.framework helper
+// (com.apple.Virtualization.VirtualMachine), reparented to launchd with no k3c
+// marker in its name — so a substring match misses it entirely (the bug that
+// made k3c read ~0 EI). Identify THIS cluster's VM by its open container disk
+// files via lsof (sudo-free), cached per pid. Other k3c clusters' VMs (e.g. a
+// persistent k3c-server) are excluded by the cluster-specific path.
+func (e *k3cEngine) EnergyMatcher() Matcher {
+	const vmProc = "com.apple.Virtualization.VirtualMachine"
+	needle := "containers/" + e.cluster + "-" // e.g. containers/bench-
+	cache := map[int]bool{}
+	return func(pid int, cmd string) bool {
+		if !strings.Contains(cmd, vmProc) {
+			return false
+		}
+		if v, ok := cache[pid]; ok {
+			return v
+		}
+		v := pidHasOpenPath(pid, needle)
+		cache[pid] = v
+		return v
+	}
+}
+func (e *k3cEngine) DockerContext() string { return "k3c" }
 func (e *k3cEngine) DockerUp(ctx context.Context) error {
 	_, err := e.k3c(ctx, "docker", "up")
 	return err
@@ -113,7 +132,7 @@ type orbEngine struct{}
 
 func (e *orbEngine) Name() string                       { return "orbstack" }
 func (e *orbEngine) Addons() []string                   { return []string{"coredns", "local-path-provisioner"} }
-func (e *orbEngine) EnergyPatterns() []string           { return []string{"OrbStack"} }
+func (e *orbEngine) EnergyMatcher() Matcher             { return substringMatcher("OrbStack") }
 func (e *orbEngine) DockerContext() string              { return "orbstack" }
 func (e *orbEngine) DockerUp(ctx context.Context) error { return e.startVM(ctx) }
 
@@ -173,8 +192,8 @@ type rdEngine struct{}
 
 func (e *rdEngine) Name() string     { return "rancher" }
 func (e *rdEngine) Addons() []string { return []string{"coredns", "local-path-provisioner"} }
-func (e *rdEngine) EnergyPatterns() []string {
-	return []string{"Rancher Desktop", "rancher-desktop", "lima"}
+func (e *rdEngine) EnergyMatcher() Matcher {
+	return substringMatcher("Rancher Desktop", "rancher-desktop", "lima", "qemu-system")
 }
 func (e *rdEngine) DockerContext() string              { return "rancher-desktop" }
 func (e *rdEngine) DockerUp(ctx context.Context) error { _, err := e.rd(ctx, "start"); return err }
@@ -211,10 +230,12 @@ func (e *rdEngine) StopAll(ctx context.Context) error { _, _ = e.rd(ctx, "shutdo
 
 type colimaEngine struct{}
 
-func (e *colimaEngine) Name() string             { return "colima" }
-func (e *colimaEngine) Addons() []string         { return []string{"coredns", "local-path-provisioner"} }
-func (e *colimaEngine) EnergyPatterns() []string { return []string{"colima", "limactl", "qemu-system"} }
-func (e *colimaEngine) DockerContext() string    { return "colima" }
+func (e *colimaEngine) Name() string     { return "colima" }
+func (e *colimaEngine) Addons() []string { return []string{"coredns", "local-path-provisioner"} }
+func (e *colimaEngine) EnergyMatcher() Matcher {
+	return substringMatcher("lima-colima", "colima", "limactl")
+}
+func (e *colimaEngine) DockerContext() string { return "colima" }
 
 func (e *colimaEngine) colima(ctx context.Context, args ...string) (string, error) {
 	c, cancel := withTimeout(ctx, 600*time.Second)
@@ -266,7 +287,7 @@ type k3dEngine struct {
 
 func (e *k3dEngine) Name() string                       { return e.label }
 func (e *k3dEngine) Addons() []string                   { return []string{"coredns", "local-path-provisioner"} }
-func (e *k3dEngine) EnergyPatterns() []string           { return e.backend.EnergyPatterns() }
+func (e *k3dEngine) EnergyMatcher() Matcher             { return e.backend.EnergyMatcher() }
 func (e *k3dEngine) DockerContext() string              { return "" } // uses the backend's docker, not its own
 func (e *k3dEngine) DockerUp(ctx context.Context) error { return e.backend.DockerUp(ctx) }
 

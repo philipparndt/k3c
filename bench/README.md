@@ -106,15 +106,27 @@ Energy sampling uses macOS `top` (built in, **no sudo**). Disable with
 ## Caveats (read before trusting numbers)
 
 - **Energy is per-engine "Energy Impact" (EI), sudo-free.** Like OrbStack, we
-  attribute energy to the engine's own host processes (matched by command
-  substring; see `EnergyPatterns` per engine) using the macOS process-energy
-  metric via `top -stats power` — no root, independent of unrelated machine load.
-  EI is a relative kernel score (Activity Monitor's metric), **not Watts**;
-  directly comparable across engines on this machine, not 1:1 with OrbStack's
-  published mW bars. Two caveats: (1) **k3d runs inside OrbStack's VM**, so its
-  EI is the OrbStack VM process — k3d and orb are not separable; (2) the k3c
-  matcher catches *all* k3c clusters' processes, so for clean numbers run only
-  the cluster under test (stop any persistent one).
+  attribute energy to the engine's own host processes using the macOS
+  process-energy metric via `top -stats power` — no root, independent of
+  unrelated machine load. EI is a relative kernel score (Activity Monitor's
+  metric), **not Watts**; comparable across engines on this machine, not 1:1
+  with OrbStack's published mW bars.
+- **Two energy metrics are emitted.** `energy` is the mean EI *rate* over the
+  window; `energy_total` (EI·s) integrates it over the elapsed time
+  (energy = power × time). **Use `energy_total` to compare engines whose
+  durations differ** (e.g. orb's 7 s warm bring-up vs k3c's 34 s) — a short
+  high-power burst and a long low-power tail can land at similar totals; the
+  mean rate alone is misleading. For the fixed-window `helm steady` test the
+  rate is already a fair comparison.
+- **Attribution is per-engine** (`EnergyMatcher`). Most engines match by VM
+  process name (colima → `lima-colima` qemu; orb → `OrbStack`). **k3c is
+  special:** its cluster runs as a *generic* Apple `com.apple.Virtualization.
+  VirtualMachine` helper (reparented to launchd, no k3c marker), so it's
+  identified by the bench cluster's open container disk files via `lsof` — which
+  also correctly excludes any other/persistent k3c clusters.
+- **Caveat: k3d runs inside its backend's VM**, so `orb-k3d` energy is the
+  OrbStack VM, `colima-k3d` the colima VM, etc. — k3d isn't separable from its
+  backend at the host level.
 - **Cold/warm are defined per engine** (`lib/engine_*.sh`):
   - k3c cold = delete cluster + `pull-cache clear`; warm = pre-create once. Each
     run is a genuinely fresh VM + cluster.
