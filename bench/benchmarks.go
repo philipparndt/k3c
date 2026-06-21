@@ -31,10 +31,10 @@ func (env *Env) want(v string) bool { return len(env.Variants) == 0 || env.Varia
 
 // timed runs fn, returning its wall time in ms and (optionally) the mean
 // per-engine energy impact sampled across it (sudo-free).
-func (env *Env) timed(patterns []string, sampleEnergy bool, fn func() error) (ms, ei float64, hasEI bool, err error) {
+func (env *Env) timed(match Matcher, sampleEnergy bool, fn func() error) (ms, ei float64, hasEI bool, err error) {
 	var es *energySampler
 	if sampleEnergy && env.Power {
-		es = startEnergy(patterns)
+		es = startEnergy(match)
 	}
 	t0 := time.Now()
 	err = fn()
@@ -45,12 +45,20 @@ func (env *Env) timed(patterns []string, sampleEnergy bool, fn func() error) (ms
 	return
 }
 
+// emitEnergy records both the mean energy-impact rate (EI) and the integrated
+// total over the elapsed time (EI·s) — the latter is the fair cross-engine
+// comparison when durations differ (energy = power × time).
+func emitEnergy(emit Emit, variant string, ei, ms float64) {
+	emit(variant, "energy", ei, "EI")
+	emit(variant, "energy_total", ei*ms/1000, "EIs")
+}
+
 // windowEnergy samples per-engine energy for a fixed window (steady-state).
-func (env *Env) windowEnergy(patterns []string, d time.Duration) (float64, bool) {
+func (env *Env) windowEnergy(match Matcher, d time.Duration) (float64, bool) {
 	if !env.Power {
 		return 0, false
 	}
-	es := startEnergy(patterns)
+	es := startEnergy(match)
 	if es == nil {
 		return 0, false
 	}
@@ -97,7 +105,7 @@ func (emptyBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error 
 			_ = e.WarmPrep(ctx)
 		}
 		var k Kube
-		ms, ei, hasEI, err := env.timed(e.EnergyPatterns(), true, func() error {
+		ms, ei, hasEI, err := env.timed(e.EnergyMatcher(), true, func() error {
 			var e2 error
 			if k, e2 = e.Create(ctx); e2 != nil {
 				return e2
@@ -111,7 +119,7 @@ func (emptyBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error 
 		}
 		emit(v, "time_to_ready", ms, "ms")
 		if hasEI {
-			emit(v, "energy", ei, "EI")
+			emitEnergy(emit, v, ei, ms)
 		}
 		okf("[%s] empty (%s): %.0f ms", e.Name(), v, ms)
 		_ = e.Destroy(ctx)
@@ -140,7 +148,7 @@ func (resumeBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error
 		_ = e.Destroy(ctx)
 		return err
 	}
-	ms, ei, hasEI, err := env.timed(e.EnergyPatterns(), true, func() error {
+	ms, ei, hasEI, err := env.timed(e.EnergyMatcher(), true, func() error {
 		if err := e.Resume(ctx); err != nil {
 			return err
 		}
@@ -149,7 +157,7 @@ func (resumeBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error
 	if err == nil {
 		emit("restore", "resume_time", ms, "ms")
 		if hasEI {
-			emit("restore", "energy", ei, "EI")
+			emitEnergy(emit, "restore", ei, ms)
 		}
 		okf("[%s] resume: %.0f ms", e.Name(), ms)
 	} else {
@@ -210,7 +218,7 @@ func (pullBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 			warnf("[%s] pull (%s): create: %v", e.Name(), v, err)
 			continue
 		}
-		ms, ei, hasEI, err := env.timed(e.EnergyPatterns(), true, func() error {
+		ms, ei, hasEI, err := env.timed(e.EnergyMatcher(), true, func() error {
 			// The API can briefly reject applies right after create; retry a few
 			// times and surface the real output if it keeps failing.
 			var out string
@@ -229,7 +237,7 @@ func (pullBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 		if err == nil {
 			emit(v, "pull_time", ms, "ms")
 			if hasEI {
-				emit(v, "energy", ei, "EI")
+				emitEnergy(emit, v, ei, ms)
 			}
 			okf("[%s] pull (%s): %.0f ms", e.Name(), v, ms)
 		} else {
@@ -282,14 +290,14 @@ func (edxBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 		warnf("[%s] edx: make pull issues (continuing): %v", e.Name(), err)
 	}
 	logf("[%s] edx: timing make dev.provision…", e.Name())
-	ms, ei, hasEI, err := env.timed(e.EnergyPatterns(), true, func() error {
+	ms, ei, hasEI, err := env.timed(e.EnergyMatcher(), true, func() error {
 		_, e2 := runDir(ctx, dir, denv, "make", "dev.provision")
 		return e2
 	})
 	if err == nil {
 		emit("provision", "provision_time", ms, "ms")
 		if hasEI {
-			emit("provision", "energy", ei, "EI")
+			emitEnergy(emit, "provision", ei, ms)
 		}
 		okf("[%s] edx provision: %.0f ms", e.Name(), ms)
 	} else {
@@ -340,8 +348,8 @@ func (helmBench) Run(ctx context.Context, env *Env, e Engine, emit Emit) error {
 		emit("steady", "install_to_ready", ms, "ms")
 		okf("[%s] helm install→ready: %.0f ms", e.Name(), ms)
 	}
-	if ei, ok := env.windowEnergy(e.EnergyPatterns(), env.PowerWindow); ok {
-		emit("steady", "energy", ei, "EI")
+	if ei, ok := env.windowEnergy(e.EnergyMatcher(), env.PowerWindow); ok {
+		emitEnergy(emit, "steady", ei, float64(env.PowerWindow.Milliseconds()))
 	}
 	_, _ = run(ctx, "helm", helmArgs(k, "uninstall", "grafana", "-n", "grafana")...)
 	_, _ = run(ctx, "helm", helmArgs(k, "uninstall", "traefik", "-n", "traefik")...)

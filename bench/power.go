@@ -21,17 +21,17 @@ import (
 // process — k3d and orb are not separable at the host level.
 
 type energySampler struct {
-	patterns []string
-	stopCh   chan struct{}
-	doneCh   chan [2]float64
+	match  Matcher
+	stopCh chan struct{}
+	doneCh chan [2]float64
 }
 
-// startEnergy begins polling in the background; nil if no patterns.
-func startEnergy(patterns []string) *energySampler {
-	if len(patterns) == 0 {
+// startEnergy begins polling in the background; nil if no matcher.
+func startEnergy(match Matcher) *energySampler {
+	if match == nil {
 		return nil
 	}
-	s := &energySampler{patterns: patterns, stopCh: make(chan struct{}), doneCh: make(chan [2]float64, 1)}
+	s := &energySampler{match: match, stopCh: make(chan struct{}), doneCh: make(chan [2]float64, 1)}
 	go s.loop()
 	return s
 }
@@ -40,7 +40,7 @@ func (s *energySampler) loop() {
 	var sum float64
 	var n int
 	take := func() {
-		if v, ok := energyOnce(s.patterns); ok {
+		if v, ok := energyOnce(s.match); ok {
 			sum += v
 			n++
 		}
@@ -73,7 +73,7 @@ func (s *energySampler) stop() (float64, bool) {
 }
 
 // energyOnce reads one power frame and sums the engine's matching processes.
-func energyOnce(patterns []string) (float64, bool) {
+func energyOnce(match Matcher) (float64, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	// -l 2: the first frame's POWER is 0 (no interval yet); the second is real.
@@ -85,7 +85,7 @@ func energyOnce(patterns []string) (float64, bool) {
 	if len(frame) == 0 {
 		return 0, false
 	}
-	want := classifyPids(ctx, patterns)
+	want := classifyPids(ctx, match)
 	var sum float64
 	matched := false
 	for pid, pw := range frame {
@@ -125,8 +125,8 @@ func lastTopFrame(out string) map[int]float64 {
 	return frame
 }
 
-// classifyPids returns the set of pids whose full command matches any pattern.
-func classifyPids(ctx context.Context, patterns []string) map[int]bool {
+// classifyPids returns the set of pids the matcher attributes to the engine.
+func classifyPids(ctx context.Context, match Matcher) map[int]bool {
 	out, err := runQ(ctx, "ps", "-Ao", "pid=,command=")
 	want := map[int]bool{}
 	if err != nil {
@@ -143,12 +143,8 @@ func classifyPids(ctx context.Context, patterns []string) map[int]bool {
 		if err != nil {
 			continue
 		}
-		cmd := line[sp+1:]
-		for _, p := range patterns {
-			if strings.Contains(cmd, p) {
-				want[pid] = true
-				break
-			}
+		if match(pid, line[sp+1:]) {
+			want[pid] = true
 		}
 	}
 	return want

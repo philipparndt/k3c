@@ -4,15 +4,32 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 )
+
+// pidHasOpenPath reports whether a process's open files include a path
+// containing needle (sudo-free for the user's own processes). Used to attribute
+// a generic Apple VM helper to a specific k3c cluster by its disk files.
+func pidHasOpenPath(pid int, needle string) bool {
+	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), needle)
+}
 
 // Engine is one container/cluster runtime under test. Implementations only exec
 // the engine's own CLI (k3c, orb, rdctl, k3d) so the comparison is fair and
 // auditable. Lifecycle methods are timed by the benchmarks, not here.
 type Engine interface {
-	Name() string                       // canonical label (results key + report column)
-	Addons() []string                   // kube-system deployments that gate "usable"
-	EnergyPatterns() []string           // host command substrings to attribute energy to
+	Name() string     // canonical label (results key + report column)
+	Addons() []string // kube-system deployments that gate "usable"
+	// EnergyMatcher decides whether a host pid (with its command line) belongs to
+	// this engine, for energy attribution. Called per sample; implementations
+	// cache expensive lookups (e.g. lsof) internally.
+	EnergyMatcher() Matcher
 	ColdPrep(ctx context.Context) error // prepare a cold run (caches/cluster cleared)
 	WarmPrep(ctx context.Context) error // prepare a warm run (caches/VM primed)
 	Create(ctx context.Context) (Kube, error)
@@ -69,3 +86,20 @@ func newEngine(name string) (Engine, error) {
 }
 
 const benchCluster = "bench"
+
+// Matcher reports whether a host process (pid + full command) belongs to an
+// engine, used to attribute per-process energy.
+type Matcher func(pid int, cmd string) bool
+
+// substringMatcher matches by any command substring (for engines whose VM/host
+// processes are identifiable by name).
+func substringMatcher(subs ...string) Matcher {
+	return func(_ int, cmd string) bool {
+		for _, s := range subs {
+			if strings.Contains(cmd, s) {
+				return true
+			}
+		}
+		return false
+	}
+}
