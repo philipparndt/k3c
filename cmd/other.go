@@ -69,7 +69,11 @@ var versionCmd = &cobra.Command{
 var daemonsCmd = &cobra.Command{
 	Use:   "daemons",
 	Short: "Manage the host daemons (proxy, SNI gateway, egress, webhook)",
-	Args:  cobra.NoArgs,
+	// Bare `daemons` is the internal foreground worker that cluster
+	// create/start spawn detached; users drive it via the subcommands. Hide
+	// it from help so it doesn't read as a normal command to run by hand.
+	Hidden: true,
+	Args:   cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		fail(cluster.RunDaemons(loadConfig(nil)))
 	},
