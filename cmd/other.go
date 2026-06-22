@@ -63,17 +63,21 @@ var versionCmd = &cobra.Command{
 	},
 }
 
-// daemonsCmd manages the host-side daemons (proxy, SNI gateway, webhook).
-// Invoked bare it RUNS them in the foreground — the internal mode spawned
-// detached by cluster create/start; users manage via the subcommands.
+// daemonsCmd groups the host-daemon subcommands (proxy, SNI gateway, egress,
+// webhook). Invoked bare it prints help; the foreground worker that cluster
+// create/start spawn detached lives under `daemons run`.
 var daemonsCmd = &cobra.Command{
 	Use:   "daemons",
 	Short: "Manage the host daemons (proxy, SNI gateway, egress, webhook)",
-	// Bare `daemons` is the internal foreground worker that cluster
-	// create/start spawn detached; users drive it via the subcommands. Hide
-	// it from help so it doesn't read as a normal command to run by hand.
-	Hidden: true,
-	Args:   cobra.NoArgs,
+}
+
+// daemonsRunCmd runs the host daemons in the foreground. It is the worker
+// that cluster create/start spawn detached; run by hand it serves until
+// interrupted and refuses to start a second copy over a running one.
+var daemonsRunCmd = &cobra.Command{
+	Use:   "run",
+	Short: "Run the host daemons in the foreground (used internally by cluster start)",
+	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		fail(cluster.RunDaemons(loadConfig(nil)))
 	},
@@ -109,6 +113,6 @@ var daemonsStopCmd = &cobra.Command{
 
 func init() {
 	configCmd.AddCommand(configViewCmd)
-	daemonsCmd.AddCommand(daemonsStatusCmd, daemonsRestartCmd, daemonsStopCmd)
+	daemonsCmd.AddCommand(daemonsRunCmd, daemonsStatusCmd, daemonsRestartCmd, daemonsStopCmd)
 	rootCmd.AddCommand(statusCmd, configCmd, versionCmd, daemonsCmd)
 }

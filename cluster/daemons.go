@@ -446,10 +446,10 @@ func daemonsVersion(cfg *config.Config) string {
 const daemonsManagedEnv = "K3C_DAEMONS_MANAGED"
 
 func RunDaemons(cfg *config.Config) error {
-	// A manual `k3c daemons` while the daemons are already running would just
-	// fail to bind (e.g. ":3128 address already in use"). Catch that and point
-	// the user at the right command instead. Skipped for the managed spawn,
-	// whose own pid is written to the pidfile before it reaches here.
+	// A manual `k3c daemons run` while the daemons are already running would
+	// just fail to bind (e.g. ":3128 address already in use"). Catch that and
+	// point the user at the right command instead. Skipped for the managed
+	// spawn, whose own pid is written to the pidfile before it reaches here.
 	if os.Getenv(daemonsManagedEnv) == "" && pidAlive(cfg.ProxyPidFile()) {
 		pid := "?"
 		if data, err := os.ReadFile(cfg.ProxyPidFile()); err == nil {
@@ -687,7 +687,7 @@ func SpawnDaemons(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	args := []string{"daemons"}
+	args := []string{"daemons", "run"}
 	if cfg.ConfigFile != "" {
 		args = append(args, "--config", cfg.ConfigFile)
 	}
