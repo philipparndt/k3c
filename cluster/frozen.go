@@ -1,8 +1,10 @@
 package cluster
 
 import (
+	"archive/tar"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,32 @@ import (
 
 	"k3c/config"
 )
+
+// frozenHasBootstrapCreds reports whether a frozen snapshot's certs archive
+// includes the k3s server cred/ directory. Snapshots taken before cred/ was
+// captured cannot fully boot (k3s does not regenerate cred/supervisor.kubeconfig
+// from the datastore), so a thaw should refuse them up front with a clear
+// message rather than fail cryptically mid-boot.
+func frozenHasBootstrapCreds(dir string) (bool, error) {
+	f, err := os.Open(filepath.Join(dir, frozenCertsTar))
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if h.Name == "cred" || strings.HasPrefix(h.Name, "cred/") {
+			return true, nil
+		}
+	}
+}
 
 // frozen.go implements the frozen snapshot tier: a logical, guest-side
 // extract rather than a block-level clone (macOS cannot mount the guest
@@ -360,6 +388,12 @@ func restoreFrozenSnapshot(cfg *config.Config, dir string) error {
 	if err := verifyFrozenBlobs(cfg, dir); err != nil {
 		return err
 	}
+	if ok, err := frozenHasBootstrapCreds(dir); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("frozen snapshot '%s' predates the bootstrap-credential fix (no cred/ in %s) and cannot be restored — take a fresh frozen snapshot to replace it",
+			filepath.Base(dir), frozenCertsTar)
+	}
 
 	if containerExists(cfg.ServerName, true) {
 		logger.Info("stopping cluster")
@@ -379,9 +413,22 @@ func restoreFrozenSnapshot(cfg *config.Config, dir string) error {
 	}
 	defer os.Remove(seedMarker)
 
-	_, _ = runContainer("start", cfg.RegistryName)
-	if out, err := startServerVM(cfg); err != nil {
-		return fmt.Errorf("booting cluster for thaw failed: %s", out)
+	// Recreate the server container so it boots with the CURRENT entrypoint,
+	// which honors the seed marker. `container start` reuses the entrypoint
+	// baked when the container was first created (before seed mode existed),
+	// so it would ignore the marker and launch k3s. Recreating also gives a
+	// clean rootfs, matching frozen's boot-fresh semantics; images rehydrate
+	// from the pull-cache afterward.
+	_ = loadPorts(cfg)
+	if err := startRegistry(cfg); err != nil {
+		return err
+	}
+	if err := prepareNodeConfig(cfg); err != nil {
+		return err
+	}
+	_, _ = runContainer("rm", "-f", cfg.ServerName)
+	if err := startServer(cfg); err != nil {
+		return err
 	}
 	repairVirtiofs(cfg)
 	if err := waitGuestExec(cfg); err != nil {
@@ -416,22 +463,19 @@ func restoreFrozenSnapshot(cfg *config.Config, dir string) error {
 		}
 	}
 
-	// Seed guest-side: stop any half-started k3s, drop the datastore + PVC
-	// data + certs into place, then a fresh boot picks them up.
+	// Seed guest-side into the fresh (recreated) rootfs, with k3s idle in seed
+	// mode. We restore the FULL bootstrap (tls + token + cred) from the
+	// snapshot: tar preserves the files' original mtimes, so they are
+	// consistent with the restored datastore (not "newer", which k3s rejects),
+	// and cred/ carries supervisor.kubeconfig etc. that k3s does not fully
+	// regenerate. The rootfs is fresh, so there are no stale files to clear.
 	logger.Info("frozen: seeding datastore, persistent-volume data, and certs")
-	// k3s is not running (seed mode), so we can replace its files directly.
 	seedScript := fmt.Sprintf(`set -e
 mkdir -p %[2]s %[3]s %[4]s
 rm -rf %[3]s/*
 tar -xf %[1]s/storage.tar -C %[3]s
 mkdir -p $(dirname %[5]s)
-rm -f %[5]s %[5]s-wal %[5]s-shm
 tar -xf %[1]s/state.tar -C $(dirname %[5]s)
-# Drop the live cluster's bootstrap files before restoring the snapshot's:
-# any left in place would be newer than the restored datastore and k3s would
-# refuse to boot. cred/ is regenerated from the datastore when absent; tls/ is
-# restored from the snapshot (or likewise regenerated).
-rm -rf %[4]s/cred %[4]s/tls
 tar -xf %[1]s/certs.tar -C %[4]s
 `, frozenScratch, guestServer, guestStorage, guestServer, guestStateDB)
 	if out, err := runContainer("exec", cfg.ServerName, "sh", "-c", seedScript); err != nil {
