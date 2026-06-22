@@ -669,6 +669,13 @@ func Activate(cfg *config.Config) error {
 // List prints all k3c clusters (containers named <cluster>-server) with
 // their server/registry state.
 func List(cfg *config.Config) error {
+	// Without this, a stopped container system (e.g. right after a host
+	// restart) makes `container ls` fail and we'd print an empty table —
+	// silently hiding existing clusters. Start the system first so the
+	// listing reflects real state, like every other command does.
+	if err := runtime.EnsureSystem(); err != nil {
+		return err
+	}
 	fmt.Printf("%-7s %-16s %-10s %-10s %-8s %s\n", "CURRENT", "NAME", "SERVER", "REGISTRY", "RAM", "CONTEXT")
 	for _, c := range Clusters(cfg) {
 		current := ""
