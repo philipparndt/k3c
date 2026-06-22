@@ -64,8 +64,42 @@ type askMsg struct{ c confirm }
 type nameInput struct {
 	input   textinput.Model
 	cluster string
-	cold    bool
+	mode    cluster.SnapshotMode
 	docker  bool // snapshot the docker sidecar instead of a cluster
+}
+
+// modes lists the tiers the wizard cycles through. The docker sidecar
+// supports only warm/cold — frozen drops the image store and rehydrates it
+// from the cluster pull-cache, which the sidecar does not use.
+func (in nameInput) modes() []cluster.SnapshotMode {
+	if in.docker {
+		return []cluster.SnapshotMode{cluster.ModeWarm, cluster.ModeCold}
+	}
+	return []cluster.SnapshotMode{cluster.ModeWarm, cluster.ModeCold, cluster.ModeFrozen}
+}
+
+// cycleMode advances the wizard to the next tier (wraps around).
+func (in *nameInput) cycleMode() {
+	modes := in.modes()
+	for i, md := range modes {
+		if md == in.mode {
+			in.mode = modes[(i+1)%len(modes)]
+			return
+		}
+	}
+	in.mode = modes[0]
+}
+
+// modeDesc is the one-line description shown as the user tabs through tiers.
+func modeDesc(mode cluster.SnapshotMode) string {
+	switch mode {
+	case cluster.ModeCold:
+		return "full disk; boots fresh (~30–60s)"
+	case cluster.ModeFrozen:
+		return "state + volumes only; rehydrates images on thaw (minutes)"
+	default:
+		return "memory + disk; resumes instantly (largest)"
+	}
 }
 
 // commandRun is one executed operation, kept for the whole session and shown
@@ -253,7 +287,7 @@ func (m model) dockerKey(key string) (tea.Model, tea.Cmd) {
 		in.Focus()
 		in.CharLimit = 64
 		in.Width = 24
-		m.input = &nameInput{input: in, cluster: "docker", docker: true}
+		m.input = &nameInput{input: in, cluster: "docker", docker: true, mode: cluster.ModeWarm}
 		return m, textinput.Blink
 	case "d", "x":
 		m.confirm = &confirm{
@@ -621,7 +655,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
 		case tea.KeyTab:
-			m.input.cold = !m.input.cold
+			m.input.cycleMode()
 			return m, nil
 		case tea.KeyEnter:
 			in := *m.input
@@ -637,10 +671,15 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if in.docker {
 				args = []string{"docker", "snapshot", "save", name}
 			}
-			mode := "warm"
-			if in.cold {
+			mode := in.mode
+			if mode == "" {
+				mode = cluster.ModeWarm
+			}
+			switch mode {
+			case cluster.ModeCold:
 				args = append(args, "--cold")
-				mode = "cold"
+			case cluster.ModeFrozen:
+				args = append(args, "--frozen")
 			}
 			return m.startOp(fmt.Sprintf("%s snapshot %q of %s", mode, name, in.cluster), args...)
 		}
@@ -748,7 +787,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		in.Focus()
 		in.CharLimit = 64
 		in.Width = 24
-		ni := &nameInput{input: in, cluster: name}
+		ni := &nameInput{input: in, cluster: name, mode: cluster.ModeWarm}
 		if kind == "docker" {
 			ni.cluster = "docker"
 			ni.docker = true
@@ -1161,12 +1200,16 @@ func (m model) renderRow(r treeRow, w int, selected bool) string {
 		return dimSt.Render(indent + r.placeholder)
 	}
 	if selected {
-		plain := fmt.Sprintf("%s%-24s %-5s %s", indent, r.snapName, r.snapMode, r.snapWhen)
+		plain := fmt.Sprintf("%s%-24s %-6s %s", indent, r.snapName, r.snapMode, r.snapWhen)
 		return selectSt.Render(padRight(plain, w))
 	}
-	mode := dimSt.Render(r.snapMode)
-	if r.snapMode == "warm" {
-		mode = lipgloss.NewStyle().Foreground(warn).Render(r.snapMode)
+	label := fmt.Sprintf("%-6s", r.snapMode)
+	mode := dimSt.Render(label)
+	switch r.snapMode {
+	case "warm":
+		mode = lipgloss.NewStyle().Foreground(warn).Render(label)
+	case "frozen":
+		mode = lipgloss.NewStyle().Foreground(cool).Render(label)
 	}
 	return fmt.Sprintf("%s%-24s %s %s", indent, r.snapName, mode, dimSt.Render(r.snapWhen))
 }
@@ -1205,19 +1248,22 @@ func (m model) confirmScreen() string {
 
 func (m model) inputScreen() string {
 	in := m.input
-	warmSeg, coldSeg := "warm", "cold"
 	sel := lipgloss.NewStyle().Bold(true).Foreground(accent)
-	if in.cold {
-		coldSeg = sel.Render("cold")
-	} else {
-		warmSeg = sel.Render("warm")
+	segs := make([]string, 0, 3)
+	for _, md := range in.modes() {
+		if md == in.mode {
+			segs = append(segs, sel.Render(string(md)))
+		} else {
+			segs = append(segs, string(md))
+		}
 	}
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		titleSt.Render("New snapshot of "+in.cluster), "",
 		dimSt.Render("name  ")+in.input.View(),
-		dimSt.Render("mode  ")+warmSeg+dimSt.Render(" / ")+coldSeg, "",
-		dimSt.Render("enter save · tab warm/cold · esc cancel · spaces → dashes"))
-	return m.center(dialogBox.Width(52).Render(content))
+		dimSt.Render("mode  ")+strings.Join(segs, dimSt.Render(" / ")),
+		dimSt.Render("      "+modeDesc(in.mode)), "",
+		dimSt.Render("enter save · tab cycle mode · esc cancel · spaces → dashes"))
+	return m.center(dialogBox.Width(64).Render(content))
 }
 
 func (m model) logScreen() string {
