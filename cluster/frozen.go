@@ -132,8 +132,17 @@ tar -cf %[1]s/state.tar $files`,
 
 	// 3. Tar of the k3s server TLS material + token (cluster identity).
 	logger.Info("frozen: archiving server certs and token")
-	certsScript := fmt.Sprintf(
-		"set -e; tar -cf %[1]s/certs.tar -C %[2]s tls token",
+	// Capture the full bootstrap set k3s reconciles against the datastore —
+	// token, tls/, AND cred/ (passwd, ipsec.psk). Omitting cred/ leaves the
+	// live cluster's newer cred files in place on restore, which k3s refuses
+	// to boot against ("newer than datastore"). tar preserves their mtimes, so
+	// the restored files are not seen as newer than the restored datastore.
+	certsScript := fmt.Sprintf(`set -e
+cd %[2]s
+items="token"
+[ -d tls ] && items="$items tls"
+[ -d cred ] && items="$items cred"
+tar -cf %[1]s/certs.tar $items`,
 		frozenScratch, guestServer)
 	if out, err := runContainer("exec", cfg.ServerName, "sh", "-c", certsScript); err != nil {
 		return fmt.Errorf("archiving server certs failed: %s", strings.TrimSpace(out))
@@ -412,6 +421,11 @@ tar -xf %[1]s/storage.tar -C %[3]s
 mkdir -p $(dirname %[5]s)
 rm -f %[5]s %[5]s-wal %[5]s-shm
 tar -xf %[1]s/state.tar -C $(dirname %[5]s)
+# Drop the live cluster's bootstrap files before restoring the snapshot's:
+# any left in place would be newer than the restored datastore and k3s would
+# refuse to boot. cred/ is regenerated from the datastore when absent; tls/ is
+# restored from the snapshot (or likewise regenerated).
+rm -rf %[4]s/cred %[4]s/tls
 tar -xf %[1]s/certs.tar -C %[4]s
 `, frozenScratch, guestServer, guestStorage, guestServer, guestStateDB)
 	if out, err := runContainer("exec", cfg.ServerName, "sh", "-c", seedScript); err != nil {
