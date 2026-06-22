@@ -13,13 +13,13 @@ import (
 
 // ClusterInfo describes one k3c cluster for list output and the TUI.
 type ClusterInfo struct {
-	Name     string
-	Server   string // running, stopped, paused, suspended, ...
-	Registry string
-	RAM      string
-	Context  string
-	Active   bool
-	Kind     string // "" for a cluster, "docker" for the docker sidecar
+	Name     string `json:"name"`
+	Server   string `json:"server"` // running, stopped, paused, suspended, ...
+	Registry string `json:"registry"`
+	RAM      string `json:"ram"`
+	Context  string `json:"context"`
+	Active   bool   `json:"active"`
+	Kind     string `json:"kind,omitempty"` // "" for a cluster, "docker" for the docker sidecar
 }
 
 // SnapshotInfo describes one saved snapshot.

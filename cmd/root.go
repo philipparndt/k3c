@@ -8,9 +8,13 @@ import (
 
 	"k3c/cluster"
 	"k3c/config"
+	"k3c/ui"
 )
 
-var configFile string
+var (
+	configFile string
+	jsonOutput bool
+)
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
@@ -27,6 +31,9 @@ outbound connectivity.
 Configuration is layered: built-in defaults, then ~/.config/k3c/config.yaml
 (user defaults, e.g. corporate CA and registry mirrors), then ./k3c.yaml
 (project config; override with --config or K3C_CONFIG).`,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		ui.SetJSON(jsonOutput)
+	},
 }
 
 // Execute adds all child commands to the root command and sets flags
@@ -40,6 +47,8 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "",
 		"project config file (default ./k3c.yaml, env K3C_CONFIG)")
+	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false,
+		"machine-readable JSON output (informational commands)")
 }
 
 // loadConfig resolves the layered configuration for the cluster named in

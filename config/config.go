@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 
+	"k3c/ui"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -727,25 +729,96 @@ func (c *Config) NoProxy() string {
 }
 
 // Print shows the effective configuration (k3c config view).
+// ConfigView is the curated, machine-readable form of the effective
+// configuration behind `k3c config view --json`. It mirrors the fields Print
+// shows rather than dumping the full internal Config.
+type ConfigView struct {
+	Cluster         string   `json:"cluster"`
+	Context         string   `json:"context"`
+	Image           string   `json:"image"`
+	APIHost         string   `json:"apiHost"`
+	ClusterCIDR     string   `json:"clusterCIDR"`
+	ServiceCIDR     string   `json:"serviceCIDR"`
+	CPUs            string   `json:"cpus"`
+	Memory          string   `json:"memory"`
+	IngressPort     string   `json:"ingressPort"`
+	ProxyPort       string   `json:"proxyPort"`
+	RegistryEnabled bool     `json:"registryEnabled"`
+	RegistryPort    string   `json:"registryPort"`
+	CACertGlobs     []string `json:"caCertGlobs"`
+	EgressDomains   []string `json:"egressDomains"`
+	IngressDomains  []string `json:"ingressDomains"`
+	StateDir        string   `json:"stateDir"`
+	ProjectConfig   string   `json:"projectConfig"`
+	ContainerBinary string   `json:"containerBinary"`
+}
+
+// View returns the curated configuration for JSON output.
+func (c *Config) View() ConfigView {
+	return ConfigView{
+		Cluster:         c.Cluster,
+		Context:         c.KubeContext,
+		Image:           c.Image,
+		APIHost:         c.APIHost,
+		ClusterCIDR:     c.ClusterCIDR,
+		ServiceCIDR:     c.ServiceCIDR,
+		CPUs:            c.CPUs,
+		Memory:          c.Memory,
+		IngressPort:     c.IngressPort,
+		ProxyPort:       c.ProxyPort,
+		RegistryEnabled: c.RegistryEnabled,
+		RegistryPort:    c.RegistryPort,
+		CACertGlobs:     c.CACertGlobs,
+		EgressDomains:   c.EgressDomains,
+		IngressDomains:  c.IngressDomains,
+		StateDir:        c.BaseDir,
+		ProjectConfig:   c.ConfigFile,
+		ContainerBinary: c.ContainerBinary,
+	}
+}
+
 func (c *Config) Print() {
-	fmt.Printf(`cluster:         %s (context: %s)
-image:           %s
-api host:        %s
-cidrs:           cluster %s, service %s
-resources:       %s cpus, %s memory
-ports:           ingress %s, proxy %s
-local registry:  enabled=%v port=%s
-ca certs:        %s
-egress domains:  %s
-ingress domains: %s
-registries:      %d bytes configured
-state dir:       %s
-project config:  %s
-`, c.Cluster, c.KubeContext, c.Image, c.APIHost, c.ClusterCIDR, c.ServiceCIDR,
-		c.CPUs, c.Memory, c.IngressPort, c.ProxyPort,
-		c.RegistryEnabled, c.RegistryPort,
-		strings.Join(c.CACertGlobs, ", "),
-		strings.Join(c.EgressDomains, ", "),
-		strings.Join(c.IngressDomains, ", "),
-		len(c.Registries), c.BaseDir, c.ConfigFile)
+	const w = 9
+	orNone := func(s string) string {
+		if strings.TrimSpace(s) == "" {
+			return ui.Muted("none")
+		}
+		return s
+	}
+	list := func(items []string) string {
+		if len(items) == 0 {
+			return ui.Muted("none")
+		}
+		return strings.Join(items, ", ")
+	}
+
+	ui.Section("cluster")
+	ui.KV("name", c.Cluster, w)
+	ui.KV("context", c.KubeContext, w)
+	ui.KV("image", c.Image, w)
+	ui.KV("api host", c.APIHost, w)
+	ui.KV("resources", fmt.Sprintf("%s cpus, %s memory", c.CPUs, c.Memory), w)
+
+	ui.Section("network")
+	ui.KV("cidrs", fmt.Sprintf("cluster %s, service %s", c.ClusterCIDR, c.ServiceCIDR), w)
+	ui.KV("ports", fmt.Sprintf("ingress %s, proxy %s", c.IngressPort, c.ProxyPort), w)
+	ui.KV("egress", list(c.EgressDomains), w)
+	ui.KV("ingress", list(c.IngressDomains), w)
+
+	ui.Section("registry")
+	ui.KV("local", ui.State(boolWord(c.RegistryEnabled))+" (port "+c.RegistryPort+")", w)
+	ui.KV("mirrors", fmt.Sprintf("%d bytes configured", len(c.Registries)), w)
+
+	ui.Section("tls / paths")
+	ui.KV("ca certs", list(c.CACertGlobs), w)
+	ui.KV("state", c.BaseDir, w)
+	ui.KV("project", orNone(c.ConfigFile), w)
+}
+
+// boolWord renders a bool as enabled/disabled for State colorization.
+func boolWord(b bool) string {
+	if b {
+		return "enabled"
+	}
+	return "disabled"
 }

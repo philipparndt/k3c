@@ -19,6 +19,7 @@ import (
 	"github.com/philipparndt/go-logger"
 
 	"k3c/config"
+	"k3c/ui"
 	"k3c/version"
 )
 
@@ -440,7 +441,23 @@ func daemonsVersion(cfg *config.Config) string {
 		cfg.PullCacheEnabled, cfg.PullCachePort)
 }
 
+// daemonsManagedEnv is set on the daemons process spawned by cluster
+// create/start, so RunDaemons can tell a managed launch from a manual one.
+const daemonsManagedEnv = "K3C_DAEMONS_MANAGED"
+
 func RunDaemons(cfg *config.Config) error {
+	// A manual `k3c daemons` while the daemons are already running would just
+	// fail to bind (e.g. ":3128 address already in use"). Catch that and point
+	// the user at the right command instead. Skipped for the managed spawn,
+	// whose own pid is written to the pidfile before it reaches here.
+	if os.Getenv(daemonsManagedEnv) == "" && pidAlive(cfg.ProxyPidFile()) {
+		pid := "?"
+		if data, err := os.ReadFile(cfg.ProxyPidFile()); err == nil {
+			pid = strings.TrimSpace(string(data))
+		}
+		return fmt.Errorf("host daemons already running (pid %s); "+
+			"use `k3c daemons restart` to apply config changes, or `k3c daemons stop`", pid)
+	}
 	_ = os.WriteFile(daemonsVersionFile(cfg), []byte(daemonsVersion(cfg)+"\n"), 0o644)
 	startAutoReclaim(cfg)
 	errCh := make(chan error, 3)
@@ -534,19 +551,19 @@ func pidAlive(pidFile string) bool {
 // ListenerState is one host-daemon listener's name, port, optional detail, and
 // whether it is currently accepting connections.
 type ListenerState struct {
-	Name   string
-	Port   string
-	Detail string
-	Up     bool
+	Name   string `json:"name"`
+	Port   string `json:"port"`
+	Detail string `json:"detail,omitempty"`
+	Up     bool   `json:"up"`
 }
 
 // DaemonsInfo is the host daemons' process and listener state, the structured
 // form behind `k3c daemons status` (consumed by the TUI too).
 type DaemonsInfo struct {
-	State     string // "running" or "stopped"
-	Pid       string // pid string, or "-" when none recorded
-	Spawned   string // recorded spawn version, or "" when unknown
-	Listeners []ListenerState
+	State     string          `json:"state"`             // "running" or "stopped"
+	Pid       string          `json:"pid"`               // pid string, or "-" when none recorded
+	Spawned   string          `json:"spawned,omitempty"` // recorded spawn version, or "" when unknown
+	Listeners []ListenerState `json:"listeners"`
 }
 
 // DaemonsState builds the host daemons' process and listener state. The
@@ -604,17 +621,30 @@ func DaemonsState(cfg *config.Config) DaemonsInfo {
 // DaemonsStatus prints the host daemons' process and listener state.
 func DaemonsStatus(cfg *config.Config) error {
 	info := DaemonsState(cfg)
-	fmt.Printf("daemons: %s (pid %s)\n", info.State, info.Pid)
-	if info.Spawned != "" {
-		fmt.Printf("spawned: %s\n", info.Spawned)
+	if ui.JSON() {
+		return ui.EmitJSON(info)
 	}
+	ui.Section("host daemons")
+	ui.KV("state", ui.State(info.State), 8)
+	ui.KV("pid", info.Pid, 8)
+	if info.Spawned != "" {
+		ui.KV("spawned", info.Spawned, 8)
+	}
+	ui.Section("listeners")
+	rows := make([][]string, 0, len(info.Listeners))
 	for _, l := range info.Listeners {
 		st := "down"
 		if l.Up {
 			st = "up"
 		}
-		fmt.Printf("%-12s :%-6s %-5s %s\n", l.Name, l.Port, st, l.Detail)
+		rows = append(rows, []string{l.Name, ":" + l.Port, st, l.Detail})
 	}
+	ui.Table([]string{"NAME", "PORT", "STATE", "DETAIL"}, rows, func(col int, val string) string {
+		if col == 2 {
+			return ui.State(val)
+		}
+		return val
+	})
 	return nil
 }
 
@@ -664,7 +694,9 @@ func SpawnDaemons(cfg *config.Config) error {
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = os.Environ()
+	// mark this as the managed spawn so RunDaemons skips its
+	// already-running guard (which is meant for manual invocations).
+	cmd.Env = append(os.Environ(), daemonsManagedEnv+"=1")
 	if err := cmd.Start(); err != nil {
 		return err
 	}

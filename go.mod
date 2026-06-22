@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/containers/gvisor-tap-vsock v0.8.9
 	github.com/klauspost/compress v1.18.6
+	github.com/mattn/go-isatty v0.0.20
 	github.com/philipparndt/go-logger v1.10.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.46.0
@@ -35,7 +36,6 @@ require (
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9 // indirect
 	github.com/linuxkit/virtsock v0.0.0-20220523201153-1a23e78aa7a2 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mdlayher/socket v0.4.1 // indirect

@@ -16,6 +16,7 @@ import (
 
 	"k3c/config"
 	"k3c/runtime"
+	"k3c/ui"
 )
 
 // SetContainerBinary records the Apple `container` CLI from the k3c config.
@@ -669,14 +670,39 @@ func Activate(cfg *config.Config) error {
 // List prints all k3c clusters (containers named <cluster>-server) with
 // their server/registry state.
 func List(cfg *config.Config) error {
-	fmt.Printf("%-7s %-16s %-10s %-10s %-8s %s\n", "CURRENT", "NAME", "SERVER", "REGISTRY", "RAM", "CONTEXT")
-	for _, c := range Clusters(cfg) {
+	// Without this, a stopped container system (e.g. right after a host
+	// restart) makes `container ls` fail and we'd print an empty table —
+	// silently hiding existing clusters. Start the system first so the
+	// listing reflects real state, like every other command does.
+	if err := runtime.EnsureSystem(); err != nil {
+		return err
+	}
+	clusters := Clusters(cfg)
+	if ui.JSON() {
+		return ui.EmitJSON(clusters)
+	}
+	rows := make([][]string, 0, len(clusters))
+	for _, c := range clusters {
 		current := ""
 		if c.Active {
 			current = "*"
 		}
-		fmt.Printf("%-7s %-16s %-10s %-10s %-8s %s\n", current, c.Name, c.Server, c.Registry, c.RAM, c.Context)
+		rows = append(rows, []string{current, c.Name, c.Server, c.Registry, c.RAM, c.Context})
 	}
+	ui.Table(
+		[]string{"", "NAME", "SERVER", "REGISTRY", "RAM", "CONTEXT"},
+		rows,
+		func(col int, val string) string {
+			switch col {
+			case 0:
+				return ui.OK(val) // the * marker for the active cluster
+			case 2, 3: // SERVER, REGISTRY states
+				return ui.State(val)
+			default:
+				return val
+			}
+		},
+	)
 	return nil
 }
 
@@ -712,28 +738,118 @@ func vmRAM(vmName string) string {
 }
 
 // Status prints daemon, container, and node state for a cluster.
+// StatusInfo is the structured form behind `k3c status`.
+type StatusInfo struct {
+	Daemons    []NameState         `json:"daemons"`
+	Paused     bool                `json:"paused"`
+	Containers []map[string]string `json:"containers"`
+	Nodes      []map[string]string `json:"nodes"`
+}
+
+// NameState pairs a daemon name with its running/stopped state.
+type NameState struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
 func Status(cfg *config.Config) error {
-	fmt.Println("--- host daemons ---")
-	for name, pidFile := range map[string]string{"proxy": cfg.ProxyPidFile(), "sni-gateway": cfg.SNIPidFile()} {
-		if pidAlive(pidFile) {
-			fmt.Printf("%s: running\n", name)
-		} else {
-			fmt.Printf("%s: stopped\n", name)
-		}
+	daemons := []NameState{
+		{"proxy", pidState(cfg.ProxyPidFile())},
+		{"sni-gateway", pidState(cfg.SNIPidFile())},
+	}
+
+	cOut, _ := runContainer("ls", "-a")
+	cHead, cRows := parseColumns(cOut, func(fields []string) bool {
+		return len(fields) > 0 && (fields[0] == cfg.ServerName || fields[0] == cfg.RegistryName)
+	})
+	nOut, _ := kubectl(cfg, "get", "nodes")
+	nHead, nRows := parseColumns(nOut, nil)
+
+	if ui.JSON() {
+		return ui.EmitJSON(StatusInfo{
+			Daemons:    daemons,
+			Paused:     isPaused(cfg),
+			Containers: rowMaps(cHead, cRows),
+			Nodes:      rowMaps(nHead, nRows),
+		})
+	}
+
+	ui.Section("host daemons")
+	for _, d := range daemons {
+		ui.KV(d.Name, ui.State(d.State), 12)
 	}
 	if isPaused(cfg) {
-		fmt.Println("--- cluster is PAUSED (in memory; k3c cluster resume) ---")
+		fmt.Println("  " + ui.Warn("cluster is PAUSED (in memory; k3c cluster resume)"))
 	}
-	fmt.Println("--- containers ---")
-	out, _ := runContainer("ls", "-a")
-	for i, line := range strings.Split(out, "\n") {
+	// STATE is column index 4 in `container ls` output.
+	ui.Section("containers")
+	renderColumns(cHead, cRows, map[int]bool{4: true})
+	ui.Section("nodes")
+	// STATUS is column index 1 in `kubectl get nodes` output.
+	renderColumns(nHead, nRows, map[int]bool{1: true})
+	return nil
+}
+
+// pidState maps a pidfile to "running"/"stopped".
+func pidState(pidFile string) string {
+	if pidAlive(pidFile) {
+		return "running"
+	}
+	return "stopped"
+}
+
+// parseColumns splits whitespace-delimited command table output into its
+// header fields and data rows. When keep is non-nil, only rows whose fields
+// satisfy it are returned. Empty input yields nil, nil.
+func parseColumns(out string, keep func(fields []string) bool) ([]string, [][]string) {
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		return nil, nil
+	}
+	header := strings.Fields(lines[0])
+	var rows [][]string
+	for _, line := range lines[1:] {
 		fields := strings.Fields(line)
-		if i == 0 || (len(fields) > 0 && (fields[0] == cfg.ServerName || fields[0] == cfg.RegistryName)) {
-			fmt.Println(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if keep == nil || keep(fields) {
+			rows = append(rows, fields)
 		}
 	}
-	fmt.Println("--- nodes ---")
-	nodes, _ := kubectl(cfg, "get", "nodes")
-	fmt.Println(nodes)
-	return nil
+	return header, rows
+}
+
+// renderColumns prints a parsed table, colorizing the state columns flagged in
+// stateCols. An empty body prints a muted placeholder.
+func renderColumns(header []string, rows [][]string, stateCols map[int]bool) {
+	if len(header) == 0 {
+		fmt.Println("  " + ui.Muted("(unavailable)"))
+		return
+	}
+	if len(rows) == 0 {
+		fmt.Println("  " + ui.Muted("(none)"))
+		return
+	}
+	ui.Table(header, rows, func(col int, val string) string {
+		if stateCols[col] {
+			return ui.State(val)
+		}
+		return val
+	})
+}
+
+// rowMaps zips each row against the header into a name->value map for JSON.
+func rowMaps(header []string, rows [][]string) []map[string]string {
+	out := make([]map[string]string, 0, len(rows))
+	for _, r := range rows {
+		m := map[string]string{}
+		for i, h := range header {
+			if i < len(r) {
+				m[h] = r[i]
+			}
+		}
+		out = append(out, m)
+	}
+	return out
 }
