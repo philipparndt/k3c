@@ -572,11 +572,21 @@ K3C_NODE_IP=$(ip -4 -o addr show | awk '/192[.]168[.]64[.]/{split($4,a,"/"); pri
 	// flag and the node never goes Ready).
 	args = append(args, "--kubelet-arg=registry-qps=0", "--kubelet-arg=registry-burst=0")
 	args = append(args, c.ExtraK3sArgs...)
-	return `for b in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
+	// Seed mode: when the host drops a marker into the (bind-mounted)
+	// /etc/rancher/k3s, boot the VM WITHOUT starting k3s and just idle. A
+	// frozen restore uses this to inject the datastore/PVC/creds into the
+	// rootfs while k3s is not holding them — exec into a running k3s hangs, and
+	// k3s is PID 1 so it cannot be stopped from inside without killing the VM.
+	return `if [ -f /etc/rancher/k3s/` + SeedModeMarker + ` ]; then echo "k3c: seed mode — k3s not started"; exec sleep infinity; fi
+for b in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
 	ln -sf xtables-legacy-multi /bin/aux/$b
 done
 ` + prefix + c.sysctlCommands() + `exec k3s server ` + strings.Join(args, " ") + "\n"
 }
+
+// SeedModeMarker is the filename (under the bind-mounted /etc/rancher/k3s) that
+// tells the server entrypoint to idle instead of starting k3s. See K3sCommand.
+const SeedModeMarker = ".seed-mode"
 
 // sysctlCommands renders the node kernel parameter setup.
 func (c *Config) sysctlCommands() string {

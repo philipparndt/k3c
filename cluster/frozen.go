@@ -367,10 +367,18 @@ func restoreFrozenSnapshot(cfg *config.Config, dir string) error {
 		_, _ = runContainer("stop", cfg.RegistryName)
 	}
 
-	// The guest ext4 is not host-mountable, so seed the extract guest-side:
-	// boot a bare server, push state.db + PVC data + certs into place over
-	// the shared scratch, then let the normal boot path bring k3s up. We
-	// start the registry + server VM, wait for exec to work, then seed.
+	// The guest ext4 is not host-mountable, so seed the extract guest-side.
+	// Boot the server in SEED MODE (config.SeedModeMarker in the host-writable
+	// /etc/rancher/k3s bind mount): the entrypoint idles instead of starting
+	// k3s, so we can replace the datastore/PVC/creds while nothing holds them
+	// (exec into a running k3s hangs, and k3s is PID 1 so it can't be stopped
+	// from inside without killing the VM). Removed before the real boot.
+	seedMarker := filepath.Join(cfg.K3sEtcDir(), config.SeedModeMarker)
+	if err := os.WriteFile(seedMarker, nil, 0o644); err != nil {
+		return err
+	}
+	defer os.Remove(seedMarker)
+
 	_, _ = runContainer("start", cfg.RegistryName)
 	if out, err := startServerVM(cfg); err != nil {
 		return fmt.Errorf("booting cluster for thaw failed: %s", out)
@@ -411,10 +419,8 @@ func restoreFrozenSnapshot(cfg *config.Config, dir string) error {
 	// Seed guest-side: stop any half-started k3s, drop the datastore + PVC
 	// data + certs into place, then a fresh boot picks them up.
 	logger.Info("frozen: seeding datastore, persistent-volume data, and certs")
+	// k3s is not running (seed mode), so we can replace its files directly.
 	seedScript := fmt.Sprintf(`set -e
-# stop k3s if the boot already started it; we are replacing its datastore
-(systemctl stop k3s 2>/dev/null || rc-service k3s stop 2>/dev/null || pkill -x k3s 2>/dev/null) || true
-sleep 1
 mkdir -p %[2]s %[3]s %[4]s
 rm -rf %[3]s/*
 tar -xf %[1]s/storage.tar -C %[3]s
@@ -436,6 +442,8 @@ tar -xf %[1]s/certs.tar -C %[4]s
 	// datastore; the kubelet then asks containerd for the workloads' images,
 	// which containerd pulls from the pull-cache mirror and unpacks.
 	logger.Info("frozen: rebooting cluster to rehydrate from the seeded state")
+	// Leave seed mode so the real boot starts k3s against the seeded datastore.
+	_ = os.Remove(seedMarker)
 	if containerExists(cfg.ServerName, true) {
 		_, _ = runContainer("stop", cfg.ServerName)
 	}
