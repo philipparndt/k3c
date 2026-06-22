@@ -91,6 +91,30 @@ and any bundled local-only images SHALL be imported into containerd on restore.
 
 ## ADDED Requirements
 
+### Requirement: Create and restore a cluster from an archive in one step
+
+`k3c cluster import-run FILE [NAME]` SHALL create a cluster from an exported
+snapshot archive and restore it in a single step. It SHALL read the archive's
+recorded cluster name (used as the default when NAME is omitted) and its CIDRs,
+SHALL create the cluster using those CIDRs (so the restore is not refused on a
+CIDR mismatch), then SHALL import and restore the archive. It SHALL refuse to
+run when a cluster of the target name already exists.
+
+#### Scenario: Bring up a cluster from an archive on a fresh machine
+
+- **WHEN** the user runs `k3c cluster import-run vehub-clean.k3csnap` on a
+  machine that does not yet have the cluster
+- **THEN** a cluster is created with the archive's CIDRs, the archive is
+  imported, and the cluster is restored — without a separate `cluster create`,
+  `snapshot import`, and `snapshot restore`
+
+#### Scenario: Refuse to overwrite an existing cluster
+
+- **WHEN** the user runs `k3c cluster import-run` for a cluster name that
+  already exists
+- **THEN** the command refuses and directs the user to import + restore into it
+  or delete it first
+
 ### Requirement: Snapshot tiers preserve all non-reconstructable data
 
 Every snapshot tier SHALL capture all cluster data that cannot be reconstructed

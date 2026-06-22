@@ -498,6 +498,103 @@ func (p *progress) add(n int64) {
 	}
 }
 
+// ArchiveInfo is the metadata read from an export archive without unpacking
+// it: enough to create a matching cluster and locate the snapshot to restore.
+type ArchiveInfo struct {
+	Cluster     string
+	Snapshot    string
+	Mode        string
+	ClusterCIDR string
+	ServiceCIDR string
+}
+
+// SnapshotArchiveInfo peeks an export archive for its export.yaml + meta.yaml
+// (written first, so it stops before streaming the large blobs) and returns
+// the originating cluster name, snapshot name, tier, and CIDRs.
+func SnapshotArchiveInfo(file string) (ArchiveInfo, error) {
+	var info ArchiveInfo
+	f, err := os.Open(file)
+	if err != nil {
+		return info, err
+	}
+	defer f.Close()
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		return info, fmt.Errorf("%s is not a k3c snapshot export: %w", file, err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	gotExport, gotMeta := false, false
+	for !(gotExport && gotMeta) {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return info, err
+		}
+		switch hdr.Name {
+		case exportManifest:
+			data, _ := io.ReadAll(io.LimitReader(tr, 1<<16))
+			for _, line := range strings.Split(string(data), "\n") {
+				if v, ok := strings.CutPrefix(line, "cluster: "); ok {
+					info.Cluster = strings.TrimSpace(v)
+				}
+				if v, ok := strings.CutPrefix(line, "snapshot: "); ok {
+					info.Snapshot = strings.TrimSpace(v)
+				}
+			}
+			gotExport = true
+		case "meta.yaml":
+			data, _ := io.ReadAll(io.LimitReader(tr, 1<<16))
+			for _, line := range strings.Split(string(data), "\n") {
+				if v, ok := strings.CutPrefix(line, "mode: "); ok {
+					info.Mode = strings.TrimSpace(v)
+				}
+				if v, ok := strings.CutPrefix(line, "clusterCidr: "); ok {
+					info.ClusterCIDR = strings.TrimSpace(v)
+				}
+				if v, ok := strings.CutPrefix(line, "serviceCidr: "); ok {
+					info.ServiceCIDR = strings.TrimSpace(v)
+				}
+			}
+			gotMeta = true
+		}
+	}
+	return info, nil
+}
+
+// ClusterImportRun creates a fresh cluster sized to the archive (CIDRs already
+// applied to cfg by the caller), imports the archive into it, and restores it —
+// the one-step path to bring up a cluster from an exported snapshot on a
+// machine that does not have it yet.
+func ClusterImportRun(cfg *config.Config, file string) error {
+	if containerExists(cfg.ServerName, false) {
+		return fmt.Errorf("cluster '%s' already exists; import into it with 'k3c snapshot import' + 'restore', or delete it first", cfg.Cluster)
+	}
+	info, err := SnapshotArchiveInfo(file)
+	if err != nil {
+		return err
+	}
+	snap := info.Snapshot
+	if snap == "" {
+		snap = strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+	}
+	if err := validSnapshotName(snap); err != nil {
+		return err
+	}
+	logger.Info(fmt.Sprintf("creating cluster '%s' (cidrs %s / %s) to import %s",
+		cfg.Cluster, cfg.ClusterCIDR, cfg.ServiceCIDR, filepath.Base(file)))
+	if err := Create(cfg); err != nil {
+		return err
+	}
+	if err := SnapshotImport(cfg, file, snap); err != nil {
+		return err
+	}
+	logger.Info("restoring imported snapshot '" + snap + "'")
+	return SnapshotRestore(cfg, snap, false)
+}
+
 // SnapshotImport unpacks an exported snapshot archive for the cluster.
 // The snapshot's host-side share content (registries, CA bundle) is taken
 // from the importing cluster's configuration, not from the archive; the
