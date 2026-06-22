@@ -343,9 +343,24 @@ tar -xf %[1]s/certs.tar -C %[4]s
 	return nil
 }
 
+// cachedContentPath resolves a content digest to its on-disk path in the host
+// pull-cache, reporting whether it exists. A frozen manifest enumerates every
+// content-store digest (layers and configs AND image manifests), and the
+// pull-cache stores manifests by digest under "types" while layer/config blobs
+// live under "blobs" — so a digest must be looked up in both stores.
+func cachedContentPath(cfg *config.Config, digest string) (string, bool) {
+	for _, sub := range []string{"blobs", "types"} {
+		p := filepath.Join(pullCacheDir(cfg), sub, digest)
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+	return "", false
+}
+
 // verifyFrozenBlobs checks that every digest the manifest pins is present in
-// the host pull-cache blob store, so a thaw never silently starts an
-// incomplete cluster. Missing digests are reported by name.
+// the host pull-cache (blob or manifest store), so a thaw never silently
+// starts an incomplete cluster. Missing digests are reported by name.
 func verifyFrozenBlobs(cfg *config.Config, dir string) error {
 	m, err := readFrozenManifest(filepath.Join(dir, frozenManifestF))
 	if err != nil {
@@ -353,10 +368,9 @@ func verifyFrozenBlobs(cfg *config.Config, dir string) error {
 		// Nothing to verify; the normal pull path applies.
 		return nil
 	}
-	blobs := filepath.Join(pullCacheDir(cfg), "blobs")
 	var missing []string
 	for _, d := range m.Digests {
-		if _, err := os.Stat(filepath.Join(blobs, d)); err != nil {
+		if _, ok := cachedContentPath(cfg, d); !ok {
 			missing = append(missing, d)
 		}
 	}
