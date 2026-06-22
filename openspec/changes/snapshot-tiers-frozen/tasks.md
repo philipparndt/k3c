@@ -43,6 +43,7 @@
 - [x] 6.3 Import fat: seed the target pull-cache with missing blobs (content-addressed), then thaw
 - [x] 6.4 Import thin: thaw, re-pulling referenced images from the target's registries
 - [x] 6.5 Round-trip test: export on one cache state, import into a cache missing the blobs, confirm seed + thaw
+- [x] 6.6 Slim mode (`--slim`): capture local-only images (OCI archive) at save; bundle them but omit recoverable blobs; import imports them into containerd; remote images re-pull. Round-trip test.
 
 ## 7. CLI wiring
 

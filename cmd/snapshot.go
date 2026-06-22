@@ -8,6 +8,19 @@ import (
 	"k3c/cluster"
 )
 
+// exportMode maps the export flags to a frozen export tier (default fat).
+// --slim and --thin are mutually exclusive (enforced on the command).
+func exportMode() cluster.FrozenExportMode {
+	switch {
+	case snapshotExportThin:
+		return cluster.FrozenThin
+	case snapshotExportSlim:
+		return cluster.FrozenSlim
+	default:
+		return cluster.FrozenFat
+	}
+}
+
 // snapshotArgs splits [CLUSTER] [SNAPSHOT] arguments.
 func snapshotArgs(args []string) (clusterArgs []string, snapshot string) {
 	if len(args) > 0 {
@@ -25,6 +38,7 @@ var (
 	snapshotRestoreCold bool
 	snapshotExportOut   string
 	snapshotExportThin  bool
+	snapshotExportSlim  bool
 )
 
 // saveMode resolves the tier flags into a SnapshotMode, rejecting the
@@ -127,17 +141,20 @@ func newSnapshotCmd() *cobra.Command {
 		Args:  cobra.RangeArgs(1, 2),
 		Run: func(cmd *cobra.Command, args []string) {
 			if len(args) == 1 {
-				fail(cluster.SnapshotExport(loadConfigDefault(nil), args[0], snapshotExportOut, snapshotExportThin))
+				fail(cluster.SnapshotExport(loadConfigDefault(nil), args[0], snapshotExportOut, exportMode()))
 				return
 			}
 			clusterArgs, name := snapshotArgs(args)
-			fail(cluster.SnapshotExport(loadConfigDefault(clusterArgs), name, snapshotExportOut, snapshotExportThin))
+			fail(cluster.SnapshotExport(loadConfigDefault(clusterArgs), name, snapshotExportOut, exportMode()))
 		},
 	}
 	exportCmd.Flags().StringVarP(&snapshotExportOut, "output", "o", "",
 		"output file (default <cluster>-<name>.k3csnap)")
+	exportCmd.Flags().BoolVar(&snapshotExportSlim, "slim", false,
+		"frozen only: bundle local-only images; re-pull remote-registry images on import")
 	exportCmd.Flags().BoolVar(&snapshotExportThin, "thin", false,
-		"frozen only: omit the image-blob closure; re-pull from the target's registries on import")
+		"frozen only: bundle no images at all (only safe when the cluster has no local-only images)")
+	exportCmd.MarkFlagsMutuallyExclusive("slim", "thin")
 
 	importCmd := &cobra.Command{
 		Use:   "import FILE [NAME]",

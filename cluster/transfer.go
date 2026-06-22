@@ -39,24 +39,40 @@ func exportable(dir string) []string {
 	return files
 }
 
+// FrozenExportMode selects how much of a frozen snapshot's images travel in
+// its export archive — a size vs. self-containment dial:
+//
+//   - fat:  self-contained — bundles the local-only images AND the recoverable
+//     image-blob closure (loose files from the host pull-cache). Imports offline.
+//   - slim: bundles only the local-only images (pushed to the local registry or
+//     `image import`ed); recoverable images re-pull from the target's registries.
+//   - thin: bundles no images at all; only safe when the cluster has no
+//     local-only images (every image re-pulls on import).
+type FrozenExportMode string
+
+const (
+	FrozenFat  FrozenExportMode = "fat"
+	FrozenSlim FrozenExportMode = "slim"
+	FrozenThin FrozenExportMode = "thin"
+)
+
 // SnapshotExport writes a snapshot to a portable archive (tar+zstd). A warm
 // or cold snapshot exports its disk image (always restoring cold). A frozen
-// snapshot exports as a logical bundle: fat (default; self-contained,
-// bundling the pinned image-blob closure as loose files from the host
-// pull-cache) or thin (re-pulls from the target's registries on import).
-func SnapshotExport(cfg *config.Config, name, out string, thin bool) error {
+// snapshot exports as a logical bundle in the requested FrozenExportMode
+// (default fat).
+func SnapshotExport(cfg *config.Config, name, out string, mode FrozenExportMode) error {
 	if err := validSnapshotName(name); err != nil {
 		return err
 	}
 	dir := snapshotDir(cfg, name)
 	if snapshotModeOf(dir) == ModeFrozen {
-		return exportFrozen(cfg, name, out, thin)
+		return exportFrozen(cfg, name, out, mode)
 	}
 	if _, err := os.Stat(filepath.Join(dir, serverRootfs)); err != nil {
 		return fmt.Errorf("snapshot '%s' not found for cluster '%s'", name, cfg.Cluster)
 	}
-	if thin {
-		logger.Info("--thin only applies to frozen snapshots; ignoring for this disk-image export")
+	if mode == FrozenThin || mode == FrozenSlim {
+		logger.Info("--thin/--slim only apply to frozen snapshots; ignoring for this disk-image export")
 	}
 	if out == "" {
 		out = cfg.Cluster + "-" + name + ".k3csnap"
@@ -129,12 +145,15 @@ func snapshotIsWarm(dir string) bool {
 // export. On import they are content-addressed into the target pull-cache.
 const frozenBlobPrefix = "blobs/"
 
-// exportFrozen writes a frozen snapshot as a portable logical bundle. Fat
-// (default) bundles the datastore + PVC data + certs + manifest plus the
-// pinned image-blob closure read as loose files from the host pull-cache
-// (already compressed; added as plain tar entries). Thin omits the blob
-// closure and relies on the target's registries at import.
-func exportFrozen(cfg *config.Config, name, out string, thin bool) error {
+// exportFrozen writes a frozen snapshot as a portable logical bundle in the
+// requested mode. All modes ship the datastore + PVC data + certs + manifest.
+// Fat and slim additionally bundle the local-only image archive (images not
+// recoverable from a remote registry); fat also bundles the recoverable
+// blob closure as loose files from the host pull-cache. Thin ships no images.
+func exportFrozen(cfg *config.Config, name, out string, mode FrozenExportMode) error {
+	if mode == "" {
+		mode = FrozenFat
+	}
 	dir := snapshotDir(cfg, name)
 	if _, err := os.Stat(filepath.Join(dir, frozenStateTar)); err != nil {
 		return fmt.Errorf("frozen snapshot '%s' is incomplete (no datastore) for cluster '%s'", name, cfg.Cluster)
@@ -146,10 +165,16 @@ func exportFrozen(cfg *config.Config, name, out string, thin bool) error {
 	if err != nil {
 		return fmt.Errorf("reading frozen image manifest: %w", err)
 	}
-	if thin {
-		logger.Info("exporting thin frozen bundle (no image blobs; re-pulls on import)")
-	} else {
-		logger.Info(fmt.Sprintf("exporting fat frozen bundle (%d image blobs from the pull-cache)", len(manifest.Digests)))
+	switch mode {
+	case FrozenThin:
+		logger.Info("exporting thin frozen bundle (no images; everything re-pulls on import)")
+		if len(manifest.LocalImages) > 0 {
+			logger.Warn(fmt.Sprintf("thin bundle omits %d local-only image(s) that cannot be re-pulled; use --slim to include them", len(manifest.LocalImages)))
+		}
+	case FrozenSlim:
+		logger.Info(fmt.Sprintf("exporting slim frozen bundle (%d local-only image(s); remote images re-pull on import)", len(manifest.LocalImages)))
+	default:
+		logger.Info(fmt.Sprintf("exporting fat frozen bundle (%d local-only image(s) + %d recoverable blob(s) from the pull-cache)", len(manifest.LocalImages), len(manifest.Digests)))
 	}
 
 	f, err := os.Create(out)
@@ -163,12 +188,8 @@ func exportFrozen(cfg *config.Config, name, out string, thin bool) error {
 	}
 	tw := tar.NewWriter(zw)
 
-	tier := "frozen-fat"
-	if thin {
-		tier = "frozen-thin"
-	}
 	mfst := fmt.Sprintf("cluster: %s\nsnapshot: %s\nexported: %s\ntier: %s\n",
-		cfg.Cluster, name, time.Now().Format(time.RFC3339), tier)
+		cfg.Cluster, name, time.Now().Format(time.RFC3339), "frozen-"+string(mode))
 	if err := writeTarBytes(tw, exportManifest, []byte(mfst)); err != nil {
 		return err
 	}
@@ -184,8 +205,22 @@ func exportFrozen(cfg *config.Config, name, out string, thin bool) error {
 		}
 	}
 
-	// Fat: ship the pinned blob closure as loose files from the pull-cache.
-	if !thin {
+	// Fat and slim ship the local-only images (not recoverable from any
+	// remote registry); only thin omits them.
+	localBundled := false
+	if mode != FrozenThin {
+		localPath := filepath.Join(dir, frozenLocalImagesTar)
+		if _, err := os.Stat(localPath); err == nil {
+			if err := writeTarFile(tw, frozenLocalImagesTar, localPath); err != nil {
+				return err
+			}
+			localBundled = true
+		}
+	}
+
+	// Fat additionally ships the recoverable blob closure as loose files from
+	// the pull-cache, so the bundle imports fully offline.
+	if mode == FrozenFat {
 		blobs := filepath.Join(pullCacheDir(cfg), "blobs")
 		var missing []string
 		for _, d := range manifest.Digests {
@@ -199,12 +234,18 @@ func exportFrozen(cfg *config.Config, name, out string, thin bool) error {
 			}
 		}
 		if len(missing) > 0 {
-			preview := missing
-			if len(preview) > 5 {
-				preview = preview[:5]
+			// Digests carried in the bundled local-images archive are
+			// intentionally absent from the pull-cache — not an error.
+			if localBundled {
+				logger.Warn(fmt.Sprintf("fat export: %d digest(s) not in the pull-cache; assuming they belong to the bundled local images", len(missing)))
+			} else {
+				preview := missing
+				if len(preview) > 5 {
+					preview = preview[:5]
+				}
+				return fmt.Errorf("fat export incomplete: %d pinned blob(s) are missing from the pull-cache (e.g. %s); the pin should keep them — re-pull, or export --slim",
+					len(missing), strings.Join(preview, ", "))
 			}
-			return fmt.Errorf("fat export incomplete: %d pinned blob(s) are missing from the pull-cache (e.g. %s); the pin should keep them — re-pull, or export --thin",
-				len(missing), strings.Join(preview, ", "))
 		}
 	}
 
@@ -530,7 +571,7 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 					}
 				}
 			}
-		case frozenStateTar, frozenStorageTar, frozenCertsTar, frozenManifestF:
+		case frozenStateTar, frozenStorageTar, frozenCertsTar, frozenManifestF, frozenLocalImagesTar:
 			frozen = true
 			logger.Info(fmt.Sprintf("unpacking %s (%.2f GB)", hdr.Name, float64(hdr.Size)/1e9))
 			if err := writeRegularFile(filepath.Join(tmp, hdr.Name), tr); err != nil {

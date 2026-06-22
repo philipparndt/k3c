@@ -40,13 +40,24 @@ snapshot's tier.
 
 `k3c snapshot export [CLUSTER] NAME` SHALL export a snapshot to a portable
 archive. A warm or cold snapshot SHALL export its disk image (always restoring
-cold). A frozen snapshot SHALL export as a logical bundle in one of two modes —
-**fat** (default; self-contained, bundling the pinned image-blob closure read as
-loose files from the host pull-cache) or **thin** (`--thin`; datastore and
-persistent-volume data only, relying on the target's registries at import).
-`k3c snapshot import FILE [NAME]` SHALL import an exported archive into an
-already-created cluster; importing a fat frozen bundle SHALL seed the target
-pull-cache with its blob closure before rehydrating.
+cold). A frozen snapshot SHALL export as a logical bundle in one of three modes:
+
+- **fat** (default): self-contained — the datastore, persistent-volume data,
+  the local-only images, AND the recoverable image-blob closure (loose files
+  from the host pull-cache). Imports and restores fully offline.
+- **slim** (`--slim`): the datastore, persistent-volume data, and the
+  **local-only** images (those not recoverable from a remote registry —
+  pushed to the local registry or `image import`ed); recoverable images
+  re-pull from the target's registries on restore.
+- **thin** (`--thin`): the datastore and persistent-volume data only, no
+  images; only safe when the cluster has no local-only images.
+
+`--slim` and `--thin` SHALL be mutually exclusive. A frozen snapshot SHALL
+capture its local-only images (as an OCI archive) at save time, so slim and fat
+exports — and local thaws — can restore them without a re-pull. `k3c snapshot
+import FILE [NAME]` SHALL import an exported archive into an already-created
+cluster; a fat bundle SHALL seed the target pull-cache with its blob closure,
+and any bundled local-only images SHALL be imported into containerd on restore.
 
 #### Scenario: Move a snapshot between machines
 
@@ -55,19 +66,28 @@ pull-cache with its blob closure before rehydrating.
 - **THEN** the snapshot is packaged as a portable archive and imported on the
   second machine
 
-#### Scenario: Export a frozen snapshot self-contained
+#### Scenario: Export a frozen snapshot self-contained (fat)
 
-- **WHEN** the user runs `k3c snapshot export --frozen-bundle mysnap` on a frozen
-  snapshot (default fat mode)
-- **THEN** the archive bundles the datastore, persistent-volume data, and the
-  pinned image-blob closure, and imports without internet access by seeding the
-  target pull-cache and rehydrating
+- **WHEN** the user runs `k3c snapshot export mysnap` on a frozen snapshot
+  (default fat mode)
+- **THEN** the archive bundles the datastore, persistent-volume data, the
+  local-only images, and the recoverable image-blob closure, and imports
+  without internet access by seeding the target pull-cache and rehydrating
+
+#### Scenario: Export a frozen snapshot slim
+
+- **WHEN** the user runs `k3c snapshot export --slim mysnap` on a frozen snapshot
+  that references both remote-registry images and locally pushed images
+- **THEN** the archive bundles only the local-only images (omitting the
+  remote-registry blob closure), and on import the local images are restored
+  from the archive while the remote images re-pull from the target's registries
 
 #### Scenario: Export a frozen snapshot thin
 
 - **WHEN** the user runs `k3c snapshot export --thin mysnap` on a frozen snapshot
-- **THEN** the archive omits image blobs and import re-pulls the referenced
-  images from the target's configured registries
+- **THEN** the archive omits all images and import re-pulls every referenced
+  image from the target's configured registries (which fails to recover any
+  local-only image)
 
 ## ADDED Requirements
 

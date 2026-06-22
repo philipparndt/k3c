@@ -187,7 +187,7 @@ func TestExportImportFrozenRoundTrip(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "snap1.k3csnap")
-	if err := exportFrozen(srcCfg, "snap1", out, false); err != nil {
+	if err := exportFrozen(srcCfg, "snap1", out, FrozenFat); err != nil {
 		t.Fatalf("exportFrozen (fat): %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestExportImportFrozenThinSkipsBlobs(t *testing.T) {
 
 	out := filepath.Join(t.TempDir(), "thin.k3csnap")
 	// thin export must succeed even though the blob is NOT in the pull-cache
-	if err := exportFrozen(srcCfg, "snap1", out, true); err != nil {
+	if err := exportFrozen(srcCfg, "snap1", out, FrozenThin); err != nil {
 		t.Fatalf("exportFrozen (thin): %v", err)
 	}
 
@@ -266,6 +266,65 @@ func TestExportImportFrozenThinSkipsBlobs(t *testing.T) {
 	tgtBlobs := filepath.Join(pullCacheDir(tgtCfg), "blobs")
 	if entries, _ := os.ReadDir(tgtBlobs); len(entries) != 0 {
 		t.Fatalf("thin import should seed no blobs, found %d", len(entries))
+	}
+}
+
+// TestExportImportFrozenSlimBundlesLocalOnly verifies a slim export carries
+// the local-only image archive but NOT the recoverable pull-cache blobs, and
+// that import restores the local archive without seeding the cache.
+func TestExportImportFrozenSlimBundlesLocalOnly(t *testing.T) {
+	srcCfg := &config.Config{
+		BaseDir: t.TempDir(), Cluster: "src",
+		ClusterCIDR: "10.42.0.0/16", ServiceCIDR: "10.43.0.0/16",
+	}
+	// a recoverable blob sits in the source pull-cache; slim must NOT ship it
+	srcBlobs := filepath.Join(pullCacheDir(srcCfg), "blobs")
+	if err := os.MkdirAll(srcBlobs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	remote := []byte("remote-layer")
+	remoteDigest := sha256Digest(remote)
+	writeFile(t, filepath.Join(srcBlobs, remoteDigest), remote)
+
+	snapDir := snapshotDir(srcCfg, "snap1")
+	if err := os.MkdirAll(snapDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(snapDir, frozenStateTar), []byte("db"))
+	writeFile(t, filepath.Join(snapDir, frozenStorageTar), []byte("pvc"))
+	writeFile(t, filepath.Join(snapDir, frozenCertsTar), []byte("certs"))
+	writeFile(t, filepath.Join(snapDir, frozenLocalImagesTar), []byte("fake-oci-archive"))
+	writeFile(t, filepath.Join(snapDir, "meta.yaml"), []byte("cluster: src\nmode: frozen\n"))
+	if err := writeFrozenManifest(filepath.Join(snapDir, frozenManifestF),
+		frozenManifest{
+			Images:      []string{"localhost:5001/app:dev", "nginx:1"},
+			Digests:     []string{remoteDigest},
+			LocalImages: []string{"localhost:5001/app:dev"},
+		}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "slim.k3csnap")
+	if err := exportFrozen(srcCfg, "snap1", out, FrozenSlim); err != nil {
+		t.Fatalf("exportFrozen (slim): %v", err)
+	}
+
+	tgtCfg := &config.Config{BaseDir: t.TempDir(), Cluster: "tgt"}
+	if err := os.MkdirAll(tgtCfg.K3sEtcDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SnapshotImport(tgtCfg, out, "imp"); err != nil {
+		t.Fatalf("SnapshotImport (slim): %v", err)
+	}
+	// the local-only image archive must be present in the imported snapshot
+	impDir := snapshotDir(tgtCfg, "imp")
+	if _, err := os.Stat(filepath.Join(impDir, frozenLocalImagesTar)); err != nil {
+		t.Fatalf("slim import dropped the local-images archive: %v", err)
+	}
+	// the recoverable blob must NOT have been bundled/seeded (it re-pulls)
+	tgtBlobs := filepath.Join(pullCacheDir(tgtCfg), "blobs")
+	if entries, _ := os.ReadDir(tgtBlobs); len(entries) != 0 {
+		t.Fatalf("slim import should seed no recoverable blobs, found %d", len(entries))
 	}
 }
 

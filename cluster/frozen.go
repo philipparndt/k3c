@@ -22,10 +22,11 @@ import (
 
 // Frozen snapshot layout (under the snapshot dir):
 const (
-	frozenStateTar   = "frozen-state.tar"   // kine SQLite datastore: db + WAL/SHM, crash-consistent
-	frozenStorageTar = "frozen-storage.tar" // /var/lib/rancher/k3s/storage (PVC data)
-	frozenCertsTar   = "frozen-certs.tar"   // k3s server TLS + token
-	frozenManifestF  = "frozen-images.yaml" // image-digest closure manifest
+	frozenStateTar       = "frozen-state.tar"        // kine SQLite datastore: db + WAL/SHM, crash-consistent
+	frozenStorageTar     = "frozen-storage.tar"      // /var/lib/rancher/k3s/storage (PVC data)
+	frozenCertsTar       = "frozen-certs.tar"        // k3s server TLS + token
+	frozenManifestF      = "frozen-images.yaml"      // image-digest closure manifest
+	frozenLocalImagesTar = "frozen-local-images.tar" // OCI archive of local-only images (not in any remote registry)
 )
 
 // guest paths the logical extract operates on.
@@ -45,6 +46,34 @@ const frozenScratch = "/etc/rancher/k3s/.frozen"
 type frozenManifest struct {
 	Images  []string // image references referenced by the cluster's workloads
 	Digests []string // the full closure: manifest + config + layer digests (pinned)
+	// LocalImages are the references whose blobs are not recoverable from a
+	// remote registry (pushed to the local registry or `k3c image import`ed).
+	// They are captured into frozenLocalImagesTar at save time so a slim/fat
+	// bundle and a local thaw can restore them; recoverable images are re-pulled.
+	LocalImages []string
+}
+
+// isLocalRegistryRef reports whether an image reference points at the local
+// registry rather than a remote one. Locally pushed images use a localhost
+// reference (k3c forwards `localhost:<registry-port>/…` into the cluster), so
+// their blobs live only on this machine and must be bundled, never re-pulled.
+//
+// Limitation: an image `k3c image import`ed under a remote-looking tag (e.g.
+// docker.io/me/app:dev that was never pushed) is not detected here and would be
+// treated as recoverable — export such clusters fat, or push to the local
+// registry.
+func isLocalRegistryRef(ref string) bool {
+	host := ref
+	if i := strings.IndexByte(ref, '/'); i >= 0 {
+		host = ref[:i]
+	} else {
+		return false // bare name → normalizes to docker.io (remote)
+	}
+	h := host
+	if i := strings.IndexByte(h, ':'); i >= 0 {
+		h = h[:i]
+	}
+	return h == "localhost" || h == "127.0.0.1"
 }
 
 // writeFrozenSnapshot performs the guest-side logical extract into dir:
@@ -116,13 +145,25 @@ tar -cf %[1]s/state.tar $files`,
 		return err
 	}
 
+	// 4b. Capture local-only images (not recoverable from a remote registry)
+	// as an OCI archive while the cluster is still running, so a thaw and a
+	// slim/fat export can restore them without a re-pull.
+	localTar, err := captureLocalImages(cfg, &manifest)
+	if err != nil {
+		return err
+	}
+
 	// Move the guest-written extract from the shared scratch into the
 	// snapshot dir on the host.
-	for _, m := range []struct{ src, dst string }{
+	moves := []struct{ src, dst string }{
 		{"state.tar", frozenStateTar},
 		{"storage.tar", frozenStorageTar},
 		{"certs.tar", frozenCertsTar},
-	} {
+	}
+	if localTar {
+		moves = append(moves, struct{ src, dst string }{"local-images.tar", frozenLocalImagesTar})
+	}
+	for _, m := range moves {
 		if err := os.Rename(filepath.Join(hostScratch, m.src), filepath.Join(dir, m.dst)); err != nil {
 			return fmt.Errorf("collecting %s from guest: %w", m.src, err)
 		}
@@ -203,6 +244,32 @@ func enumerateFrozenImages(cfg *config.Config) (frozenManifest, error) {
 	return m, nil
 }
 
+// captureLocalImages exports the references in m.Images that point at the
+// local registry into an OCI archive (scratch/local-images.tar) inside the
+// guest and records them in m.LocalImages. It reports whether a tar was
+// written. These images are not recoverable from a remote registry, so they
+// travel in every non-thin bundle and are re-imported on thaw.
+func captureLocalImages(cfg *config.Config, m *frozenManifest) (bool, error) {
+	var local []string
+	for _, ref := range m.Images {
+		if isLocalRegistryRef(ref) {
+			local = append(local, ref)
+		}
+	}
+	if len(local) == 0 {
+		return false, nil
+	}
+	logger.Info(fmt.Sprintf("frozen: archiving %d local-only image(s) not in any remote registry", len(local)))
+	// Image references contain no shell metacharacters, so a plain join is safe.
+	script := fmt.Sprintf("set -e; ctr -n k8s.io images export %s/local-images.tar %s",
+		frozenScratch, strings.Join(local, " "))
+	if out, err := runContainer("exec", cfg.ServerName, "sh", "-c", script); err != nil {
+		return false, fmt.Errorf("exporting local-only images failed: %s", strings.TrimSpace(out))
+	}
+	m.LocalImages = local
+	return true, nil
+}
+
 // writeFrozenManifest serializes the image manifest as YAML (a flat list
 // schema kept deliberately simple and human-readable).
 func writeFrozenManifest(path string, m frozenManifest) error {
@@ -215,6 +282,10 @@ func writeFrozenManifest(path string, m frozenManifest) error {
 	b.WriteString("digests:\n")
 	for _, d := range m.Digests {
 		b.WriteString("  - " + d + "\n")
+	}
+	b.WriteString("localImages:\n")
+	for _, img := range m.LocalImages {
+		b.WriteString("  - " + img + "\n")
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
@@ -237,12 +308,17 @@ func readFrozenManifest(path string) (frozenManifest, error) {
 			section = "images"
 		case trimmed == "digests:":
 			section = "digests"
+		case trimmed == "localImages:":
+			section = "localImages"
 		case strings.HasPrefix(trimmed, "- "):
 			v := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
-			if section == "images" {
+			switch section {
+			case "images":
 				m.Images = append(m.Images, v)
-			} else if section == "digests" {
+			case "digests":
 				m.Digests = append(m.Digests, v)
+			case "localImages":
+				m.LocalImages = append(m.LocalImages, v)
 			}
 		}
 	}
@@ -301,11 +377,16 @@ func restoreFrozenSnapshot(cfg *config.Config, dir string) error {
 		return err
 	}
 	defer os.RemoveAll(hostScratch)
-	for _, m := range []struct{ src, dst string }{
+	seeds := []struct{ src, dst string }{
 		{frozenStateTar, "state.tar"},
 		{frozenStorageTar, "storage.tar"},
 		{frozenCertsTar, "certs.tar"},
-	} {
+	}
+	_, hasLocal := os.Stat(filepath.Join(dir, frozenLocalImagesTar))
+	if hasLocal == nil {
+		seeds = append(seeds, struct{ src, dst string }{frozenLocalImagesTar, "local-images.tar"})
+	}
+	for _, m := range seeds {
 		if err := cloneFile(filepath.Join(dir, m.src), filepath.Join(hostScratch, m.dst)); err != nil {
 			// cloneFile needs the same APFS volume; fall back to a copy.
 			data, rerr := os.ReadFile(filepath.Join(dir, m.src))
@@ -348,6 +429,19 @@ tar -xf %[1]s/certs.tar -C %[4]s
 	if err := Start(cfg); err != nil {
 		return err
 	}
+
+	// Local-only images are not in any registry to re-pull from, so import the
+	// bundled OCI archive straight into containerd once it is back up.
+	if hasLocal == nil {
+		if err := waitGuestExec(cfg); err != nil {
+			return err
+		}
+		logger.Info("frozen: importing local-only images into containerd")
+		script := fmt.Sprintf("set -e; ctr -n k8s.io images import %s/local-images.tar", frozenScratch)
+		if out, err := runContainer("exec", cfg.ServerName, "sh", "-c", script); err != nil {
+			return fmt.Errorf("importing local-only images failed: %s", strings.TrimSpace(out))
+		}
+	}
 	return nil
 }
 
@@ -383,6 +477,13 @@ func verifyFrozenBlobs(cfg *config.Config, dir string) error {
 		}
 	}
 	if len(missing) > 0 {
+		// A bundled local-images archive carries images that are intentionally
+		// absent from the pull-cache (locally pushed / imported); remote images
+		// re-pull on boot. So missing digests are not fatal when it is present.
+		if _, err := os.Stat(filepath.Join(dir, frozenLocalImagesTar)); err == nil {
+			logger.Warn(fmt.Sprintf("frozen thaw: %d image digest(s) not in the pull-cache; relying on the bundled local images and a re-pull for the rest", len(missing)))
+			return nil
+		}
 		preview := missing
 		if len(preview) > 5 {
 			preview = preview[:5]
