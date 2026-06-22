@@ -19,6 +19,7 @@ import (
 	"github.com/philipparndt/go-logger"
 
 	"k3c/config"
+	"k3c/ui"
 	"k3c/version"
 )
 
@@ -534,19 +535,19 @@ func pidAlive(pidFile string) bool {
 // ListenerState is one host-daemon listener's name, port, optional detail, and
 // whether it is currently accepting connections.
 type ListenerState struct {
-	Name   string
-	Port   string
-	Detail string
-	Up     bool
+	Name   string `json:"name"`
+	Port   string `json:"port"`
+	Detail string `json:"detail,omitempty"`
+	Up     bool   `json:"up"`
 }
 
 // DaemonsInfo is the host daemons' process and listener state, the structured
 // form behind `k3c daemons status` (consumed by the TUI too).
 type DaemonsInfo struct {
-	State     string // "running" or "stopped"
-	Pid       string // pid string, or "-" when none recorded
-	Spawned   string // recorded spawn version, or "" when unknown
-	Listeners []ListenerState
+	State     string          `json:"state"`             // "running" or "stopped"
+	Pid       string          `json:"pid"`               // pid string, or "-" when none recorded
+	Spawned   string          `json:"spawned,omitempty"` // recorded spawn version, or "" when unknown
+	Listeners []ListenerState `json:"listeners"`
 }
 
 // DaemonsState builds the host daemons' process and listener state. The
@@ -604,17 +605,30 @@ func DaemonsState(cfg *config.Config) DaemonsInfo {
 // DaemonsStatus prints the host daemons' process and listener state.
 func DaemonsStatus(cfg *config.Config) error {
 	info := DaemonsState(cfg)
-	fmt.Printf("daemons: %s (pid %s)\n", info.State, info.Pid)
-	if info.Spawned != "" {
-		fmt.Printf("spawned: %s\n", info.Spawned)
+	if ui.JSON() {
+		return ui.EmitJSON(info)
 	}
+	ui.Section("host daemons")
+	ui.KV("state", ui.State(info.State), 8)
+	ui.KV("pid", info.Pid, 8)
+	if info.Spawned != "" {
+		ui.KV("spawned", info.Spawned, 8)
+	}
+	ui.Section("listeners")
+	rows := make([][]string, 0, len(info.Listeners))
 	for _, l := range info.Listeners {
 		st := "down"
 		if l.Up {
 			st = "up"
 		}
-		fmt.Printf("%-12s :%-6s %-5s %s\n", l.Name, l.Port, st, l.Detail)
+		rows = append(rows, []string{l.Name, ":" + l.Port, st, l.Detail})
 	}
+	ui.Table([]string{"NAME", "PORT", "STATE", "DETAIL"}, rows, func(col int, val string) string {
+		if col == 2 {
+			return ui.State(val)
+		}
+		return val
+	})
 	return nil
 }
 

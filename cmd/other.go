@@ -1,12 +1,11 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"k3c/cluster"
 	"k3c/runtime"
+	"k3c/ui"
 	"k3c/version"
 )
 
@@ -29,7 +28,12 @@ var configViewCmd = &cobra.Command{
 	Short: "Show the effective configuration",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		loadConfig(args).Print()
+		cfg := loadConfig(args)
+		if ui.JSON() {
+			fail(ui.EmitJSON(cfg.View()))
+			return
+		}
+		cfg.Print()
 	},
 }
 
@@ -38,9 +42,23 @@ var versionCmd = &cobra.Command{
 	Short: "Show version information",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println(version.Get().String())
-		if v := runtime.BundledContainerVersion(); v != "" {
-			fmt.Println("bundled container: " + v)
+		info := version.Get()
+		bundled := runtime.BundledContainerVersion()
+		if ui.JSON() {
+			fail(ui.EmitJSON(struct {
+				version.Info
+				BundledContainer string `json:"bundledContainer,omitempty"`
+			}{info, bundled}))
+			return
+		}
+		ui.Section("k3c")
+		ui.KV("version", info.Version, 10)
+		ui.KV("commit", info.GitCommit, 10)
+		ui.KV("built", info.BuildDate, 10)
+		ui.KV("go", info.GoVersion, 10)
+		ui.KV("platform", info.Platform, 10)
+		if bundled != "" {
+			ui.KV("bundled", bundled, 10)
 		}
 	},
 }
