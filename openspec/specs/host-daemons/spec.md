@@ -13,11 +13,14 @@ current binary.
 
 ### Requirement: Daemon process lifecycle
 
-`k3c daemons` invoked bare SHALL run the daemons in the foreground (the internal
-mode that lifecycle commands spawn detached). `k3c cluster` and `k3c docker`
-lifecycle commands SHALL (re)spawn the daemons as needed. The daemons SHALL host
-the CONNECT proxy (:3128), SNI gateway (:443), pull-cache (:5011), registry
-forward, sidecar port-forward, and admission webhook.
+`k3c daemons run` SHALL run the daemons in the foreground (the internal mode that
+lifecycle commands spawn detached); `k3c daemons` invoked bare SHALL print help.
+Running `k3c daemons run` while the daemons are already running SHALL fail with a
+message pointing at `daemons restart`/`stop` rather than a raw port-bind error.
+`k3c cluster` and `k3c docker` lifecycle commands SHALL (re)spawn the daemons as
+needed. The daemons SHALL host the CONNECT proxy (:3128), SNI gateway (:443),
+pull-cache (:5011), registry forward, sidecar port-forward, and admission
+webhook.
 
 #### Scenario: Daemons spawned on cluster start
 
