@@ -3,7 +3,9 @@ package cluster
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -37,14 +39,24 @@ func exportable(dir string) []string {
 	return files
 }
 
-// SnapshotExport writes a snapshot to a portable archive (tar+zstd).
-func SnapshotExport(cfg *config.Config, name, out string) error {
+// SnapshotExport writes a snapshot to a portable archive (tar+zstd). A warm
+// or cold snapshot exports its disk image (always restoring cold). A frozen
+// snapshot exports as a logical bundle: fat (default; self-contained,
+// bundling the pinned image-blob closure as loose files from the host
+// pull-cache) or thin (re-pulls from the target's registries on import).
+func SnapshotExport(cfg *config.Config, name, out string, thin bool) error {
 	if err := validSnapshotName(name); err != nil {
 		return err
 	}
 	dir := snapshotDir(cfg, name)
+	if snapshotModeOf(dir) == ModeFrozen {
+		return exportFrozen(cfg, name, out, thin)
+	}
 	if _, err := os.Stat(filepath.Join(dir, serverRootfs)); err != nil {
 		return fmt.Errorf("snapshot '%s' not found for cluster '%s'", name, cfg.Cluster)
+	}
+	if thin {
+		logger.Info("--thin only applies to frozen snapshots; ignoring for this disk-image export")
 	}
 	if out == "" {
 		out = cfg.Cluster + "-" + name + ".k3csnap"
@@ -111,6 +123,122 @@ func SnapshotExport(cfg *config.Config, name, out string) error {
 func snapshotIsWarm(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, "server-"+vmstateFile))
 	return err == nil
+}
+
+// frozenBlobPrefix names the loose pull-cache blobs bundled in a fat frozen
+// export. On import they are content-addressed into the target pull-cache.
+const frozenBlobPrefix = "blobs/"
+
+// exportFrozen writes a frozen snapshot as a portable logical bundle. Fat
+// (default) bundles the datastore + PVC data + certs + manifest plus the
+// pinned image-blob closure read as loose files from the host pull-cache
+// (already compressed; added as plain tar entries). Thin omits the blob
+// closure and relies on the target's registries at import.
+func exportFrozen(cfg *config.Config, name, out string, thin bool) error {
+	dir := snapshotDir(cfg, name)
+	if _, err := os.Stat(filepath.Join(dir, frozenStateDB)); err != nil {
+		return fmt.Errorf("frozen snapshot '%s' is incomplete (no datastore) for cluster '%s'", name, cfg.Cluster)
+	}
+	if out == "" {
+		out = cfg.Cluster + "-" + name + ".k3csnap"
+	}
+	manifest, err := readFrozenManifest(filepath.Join(dir, frozenManifestF))
+	if err != nil {
+		return fmt.Errorf("reading frozen image manifest: %w", err)
+	}
+	if thin {
+		logger.Info("exporting thin frozen bundle (no image blobs; re-pulls on import)")
+	} else {
+		logger.Info(fmt.Sprintf("exporting fat frozen bundle (%d image blobs from the pull-cache)", len(manifest.Digests)))
+	}
+
+	f, err := os.Create(out)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	zw, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
+	if err != nil {
+		return err
+	}
+	tw := tar.NewWriter(zw)
+
+	tier := "frozen-fat"
+	if thin {
+		tier = "frozen-thin"
+	}
+	mfst := fmt.Sprintf("cluster: %s\nsnapshot: %s\nexported: %s\ntier: %s\n",
+		cfg.Cluster, name, time.Now().Format(time.RFC3339), tier)
+	if err := writeTarBytes(tw, exportManifest, []byte(mfst)); err != nil {
+		return err
+	}
+
+	// The logical extract files (small relative to the blobs).
+	for _, fileName := range []string{"meta.yaml", frozenStateDB, frozenStorageTar, frozenCertsTar, frozenManifestF} {
+		data, err := os.ReadFile(filepath.Join(dir, fileName))
+		if err != nil {
+			return fmt.Errorf("reading %s for export: %w", fileName, err)
+		}
+		if err := writeTarBytes(tw, fileName, data); err != nil {
+			return err
+		}
+	}
+
+	// Fat: ship the pinned blob closure as loose files from the pull-cache.
+	if !thin {
+		blobs := filepath.Join(pullCacheDir(cfg), "blobs")
+		var missing []string
+		for _, d := range manifest.Digests {
+			path := filepath.Join(blobs, d)
+			if _, err := os.Stat(path); err != nil {
+				missing = append(missing, d)
+				continue
+			}
+			if err := writeTarFile(tw, frozenBlobPrefix+d, path); err != nil {
+				return err
+			}
+		}
+		if len(missing) > 0 {
+			preview := missing
+			if len(preview) > 5 {
+				preview = preview[:5]
+			}
+			return fmt.Errorf("fat export incomplete: %d pinned blob(s) are missing from the pull-cache (e.g. %s); the pin should keep them — re-pull, or export --thin",
+				len(missing), strings.Join(preview, ", "))
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if info, err := os.Stat(out); err == nil {
+		logger.Info(fmt.Sprintf("snapshot '%s' exported to %s (%.2f GB)", name, out, float64(info.Size())/1e9))
+	}
+	return nil
+}
+
+// writeTarFile streams a regular file into the tar as a plain entry.
+func writeTarFile(tw *tar.Writer, name, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: info.Size()}); err != nil {
+		return err
+	}
+	_, err = io.Copy(tw, f)
+	return err
 }
 
 func writeTarBytes(tw *tar.Writer, name string, data []byte) error {
@@ -349,13 +477,19 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 	}
 	defer zr.Close()
 
-	tmp, err := os.MkdirTemp(filepath.Join(cfg.BaseDir, "snapshots"), ".import-*")
+	snapBase := filepath.Join(cfg.BaseDir, "snapshots")
+	if err := os.MkdirAll(snapBase, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp(snapBase, ".import-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmp)
 
 	manifestName := ""
+	frozen := false
+	seededBlobs := 0
 	tr := tar.NewReader(zr)
 	for {
 		hdr, err := tr.Next()
@@ -364,6 +498,21 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 		}
 		if err != nil {
 			return err
+		}
+		// Fat frozen bundles ship the image-blob closure as loose,
+		// content-addressed files; seed them straight into the target
+		// pull-cache, skipping any the cache already has (dedup).
+		if strings.HasPrefix(hdr.Name, frozenBlobPrefix) {
+			frozen = true
+			digest := strings.TrimPrefix(hdr.Name, frozenBlobPrefix)
+			seeded, err := seedPullCacheBlob(cfg, digest, tr, hdr.Size)
+			if err != nil {
+				return err
+			}
+			if seeded {
+				seededBlobs++
+			}
+			continue
 		}
 		switch hdr.Name {
 		case exportManifest:
@@ -375,8 +524,23 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 				if v, ok := strings.CutPrefix(line, "snapshot: "); ok {
 					manifestName = strings.TrimSpace(v)
 				}
+				if v, ok := strings.CutPrefix(line, "tier: "); ok {
+					if strings.HasPrefix(strings.TrimSpace(v), "frozen") {
+						frozen = true
+					}
+				}
 			}
-		case "meta.yaml", serverRootfs, registryRootfs:
+		case frozenStateDB, frozenStorageTar, frozenCertsTar, frozenManifestF:
+			frozen = true
+			logger.Info(fmt.Sprintf("unpacking %s (%.2f GB)", hdr.Name, float64(hdr.Size)/1e9))
+			if err := writeRegularFile(filepath.Join(tmp, hdr.Name), tr); err != nil {
+				return err
+			}
+		case "meta.yaml":
+			if err := writeRegularFile(filepath.Join(tmp, hdr.Name), tr); err != nil {
+				return err
+			}
+		case serverRootfs, registryRootfs:
 			logger.Info(fmt.Sprintf("unpacking %s (%.1f GB)", hdr.Name, float64(hdr.Size)/1e9))
 			if err := writeSparseFile(filepath.Join(tmp, hdr.Name), tr, hdr.Size); err != nil {
 				return err
@@ -391,7 +555,14 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 			return fmt.Errorf("unexpected entry in archive: %s", hdr.Name)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(tmp, serverRootfs)); err != nil {
+	if frozen {
+		if _, err := os.Stat(filepath.Join(tmp, frozenStateDB)); err != nil {
+			return fmt.Errorf("%s is a frozen bundle but contains no datastore", file)
+		}
+		if seededBlobs > 0 {
+			logger.Info(fmt.Sprintf("seeded %d new image blob(s) into the pull-cache", seededBlobs))
+		}
+	} else if _, err := os.Stat(filepath.Join(tmp, serverRootfs)); err != nil {
 		return fmt.Errorf("%s contains no server root filesystem", file)
 	}
 
@@ -409,13 +580,17 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 		return fmt.Errorf("snapshot '%s' already exists for cluster '%s'", name, cfg.Cluster)
 	}
 
-	// the restore copies k3s-etc onto the share: use this cluster's own
-	// node config; k3s.yaml is omitted so k3s writes a fresh kubeconfig
-	// matching the restored cluster's CA on the first boot
-	if err := copyDir(cfg.K3sEtcDir(), filepath.Join(tmp, "k3s-etc")); err != nil {
-		return err
+	// A frozen bundle carries no rootfs and seeds k3s-etc from the importing
+	// cluster on restore (thaw), so the import only stages the logical files.
+	if !frozen {
+		// the restore copies k3s-etc onto the share: use this cluster's own
+		// node config; k3s.yaml is omitted so k3s writes a fresh kubeconfig
+		// matching the restored cluster's CA on the first boot
+		if err := copyDir(cfg.K3sEtcDir(), filepath.Join(tmp, "k3s-etc")); err != nil {
+			return err
+		}
+		_ = os.Remove(filepath.Join(tmp, "k3s-etc", "k3s.yaml"))
 	}
-	_ = os.Remove(filepath.Join(tmp, "k3s-etc", "k3s.yaml"))
 
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
@@ -425,6 +600,63 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 	}
 	logger.Info("snapshot '" + name + "' imported for cluster '" + cfg.Cluster + "' (restore with: k3c snapshot restore " + name + ")")
 	return nil
+}
+
+// writeRegularFile writes r verbatim to path (used for the small frozen
+// logical files, which are not sparse).
+func writeRegularFile(path string, r io.Reader) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// seedPullCacheBlob writes one fat-bundle blob into the target pull-cache,
+// content-addressed: it verifies the bytes hash to the claimed digest and
+// skips a blob the cache already holds (dedup). Returns whether it seeded a
+// new blob.
+func seedPullCacheBlob(cfg *config.Config, digest string, r io.Reader, size int64) (bool, error) {
+	if !strings.HasPrefix(digest, "sha256:") {
+		return false, fmt.Errorf("bundle blob has a non-sha256 digest: %q", digest)
+	}
+	blobs := filepath.Join(pullCacheDir(cfg), "blobs")
+	if err := os.MkdirAll(blobs, 0o755); err != nil {
+		return false, err
+	}
+	dst := filepath.Join(blobs, digest)
+	if _, err := os.Stat(dst); err == nil {
+		// already present (content-addressed): drain and skip
+		if _, err := io.Copy(io.Discard, r); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	tmp, err := os.CreateTemp(blobs, ".seed-*")
+	if err != nil {
+		return false, err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tmp, hasher), r); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if got := "sha256:" + hex.EncodeToString(hasher.Sum(nil)); got != digest {
+		return false, fmt.Errorf("bundle blob %s is corrupt (hashes to %s)", digest, got)
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // writeSparseFile writes r to path, seeking over zero blocks so large

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/philipparndt/go-logger"
@@ -123,12 +124,20 @@ func validSnapshotName(name string) error {
 	return nil
 }
 
-// SnapshotSave snapshots a cluster. By default a running cluster on a
-// suspend-capable container build is suspended for the (sub-second) clone
-// and resumed afterwards — a warm snapshot that restores to a running
-// cluster. With cold (or without suspend support) the cluster is stopped
-// for a clean-shutdown snapshot and started again.
-func SnapshotSave(cfg *config.Config, name string, cold bool) error {
+// SnapshotSave snapshots a cluster at the requested tier (mode). By default
+// (ModeWarm) a running cluster on a suspend-capable container build is
+// suspended for the (sub-second) clone and resumed afterwards — a warm
+// snapshot that restores to a running cluster. ModeCold stops the cluster
+// for a clean-shutdown disk image that boots fresh. ModeFrozen takes a
+// logical extract (datastore + all PVC data + certs + image manifest) of the
+// running cluster and drops the reconstructable image store.
+//
+// Two-phase save: the freeze/quiesce window covers only the consistent
+// capture plus the instant clone/extract; all size-reduction work
+// (pull-cache pinning, then rootfs re-sparsify) is dispatched detached after
+// the cluster resumes. The snapshot is valid and restorable the instant
+// phase 1 completes — see reduceSnapshot.
+func SnapshotSave(cfg *config.Config, name string, mode SnapshotMode) error {
 	if name == "" {
 		name = time.Now().Format("20060102-150405")
 	}
@@ -147,6 +156,10 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 	}
 
 	resumeIfPaused(cfg)
+	if mode == ModeFrozen {
+		return saveFrozen(cfg, name, dir)
+	}
+	cold := mode == ModeCold
 	wasRunning := containerExists(cfg.ServerName, true)
 	// captured before the suspend: a warm snapshot only resumes correctly
 	// into a container with this address
@@ -205,12 +218,109 @@ func SnapshotSave(cfg *config.Config, name string, cold bool) error {
 		// image pull fails on the unreadable registry CA bundle
 		repairVirtiofs(cfg)
 	}
-	mode := "cold"
+	modeStr := "cold"
 	if warm {
-		mode = "warm"
+		modeStr = "warm"
 	}
-	logger.Info("snapshot '" + name + "' (" + mode + ") saved for cluster '" + cfg.Cluster + "'")
+	logger.Info("snapshot '" + name + "' (" + modeStr + ") saved for cluster '" + cfg.Cluster + "'")
+
+	// Phase 2: the snapshot is already valid and restorable. Dispatch the
+	// size-reduction detached so it runs without re-pausing the resumed
+	// cluster. warm/cold have no image manifest to pin; they only sparsify.
+	reduceSnapshot(cfg, name, dir, nil)
 	return nil
+}
+
+// saveFrozen takes a frozen snapshot of the running cluster: a logical
+// guest-side extract with no stop/suspend (the freeze window is the
+// crash-consistent sqlite/tar capture). The cluster keeps running
+// throughout; phase 2 then pins the image closure and is idempotent.
+func saveFrozen(cfg *config.Config, name, dir string) error {
+	if !containerExists(cfg.ServerName, true) {
+		return fmt.Errorf("a frozen snapshot needs the cluster running to extract its state; start it first")
+	}
+	serverIP := containerIP(cfg.ServerName)
+	if err := writeFrozenSnapshot(cfg, dir, serverIP); err != nil {
+		_ = os.RemoveAll(dir)
+		return err
+	}
+	logger.Info("snapshot '" + name + "' (frozen) saved for cluster '" + cfg.Cluster + "'")
+
+	// Phase 2: read the manifest we just wrote and hand its digest closure
+	// to the background reduction so the pin commits durably before any
+	// cosmetic step (frozen has no rootfs to sparsify, only the pin).
+	manifest, err := readFrozenManifest(filepath.Join(dir, frozenManifestF))
+	if err != nil {
+		logger.Warn("frozen: could not read image manifest for pinning: " + err.Error())
+		reduceSnapshot(cfg, name, dir, nil)
+		return nil
+	}
+	reduceSnapshot(cfg, name, dir, manifest.Digests)
+	return nil
+}
+
+// reducingSnapshots guards against a background reduction racing a restore
+// or delete of the same snapshot, and against double-dispatching one.
+var (
+	reducingMu       sync.Mutex
+	reducingSnapshot = map[string]bool{}
+)
+
+// reduceSnapshot runs the detached phase-2 size reduction for a just-saved
+// snapshot. It is the two-phase seam: phase 1 (the consistent capture +
+// clone/extract) has already produced a valid, restorable snapshot, so this
+// must never make the snapshot incorrect — only smaller.
+//
+// Order is load-bearing: the pull-cache pin commits FIRST (a lost pin breaks
+// a future thaw or fat export), THEN the cosmetic rootfs re-sparsify (a lost
+// sparsify only leaves a larger snapshot). Both steps are idempotent so an
+// interrupted reduction completes on a re-run. digests is the frozen image
+// closure to pin, or nil for warm/cold.
+func reduceSnapshot(cfg *config.Config, name, dir string, digests []string) {
+	key := snapshotPinID(cfg.Cluster, name)
+	reducingMu.Lock()
+	if reducingSnapshot[key] {
+		reducingMu.Unlock()
+		return
+	}
+	reducingSnapshot[key] = true
+	reducingMu.Unlock()
+
+	go func() {
+		defer func() {
+			reducingMu.Lock()
+			delete(reducingSnapshot, key)
+			reducingMu.Unlock()
+		}()
+		runSnapshotReduction(cfg, name, dir, digests)
+	}()
+}
+
+// runSnapshotReduction performs the phase-2 steps synchronously (pin first,
+// then sparsify). Exposed separately so it is testable without the
+// goroutine. Safe to re-run.
+func runSnapshotReduction(cfg *config.Config, name, dir string, digests []string) {
+	// 1. Pin the image closure durably BEFORE any cosmetic step.
+	if len(digests) > 0 {
+		if err := pinSnapshotImages(snapshotPinID(cfg.Cluster, name), digests); err != nil {
+			logger.Warn("snapshot reduction: pinning image closure failed: " + err.Error())
+			// A failed pin means the thaw guarantee is not in place; do not
+			// proceed to shrink (nothing to shrink for frozen anyway).
+			return
+		}
+	}
+	// 2. Re-sparsify the rootfs clone (warm/cold only; frozen has none).
+	rootfs := filepath.Join(dir, serverRootfs)
+	if _, err := os.Stat(rootfs); err == nil {
+		reclaimed, err := reSparsifySnapshot(rootfs)
+		if err != nil {
+			logger.Warn("snapshot reduction: re-sparsify failed: " + err.Error())
+			return
+		}
+		if reclaimed > 0 {
+			logger.Info(fmt.Sprintf("snapshot '%s': reclaimed %.1f GB by re-sparsify", name, float64(reclaimed)/1e9))
+		}
+	}
 }
 
 // snapshotMetaValue reads one "key: value" line from a snapshot's
@@ -306,10 +416,39 @@ func writeSnapshot(cfg *config.Config, dir string, warm bool, serverIP string) e
 	return os.WriteFile(filepath.Join(dir, "meta.yaml"), []byte(meta), 0o644)
 }
 
+// snapshotExists reports whether the snapshot dir holds a restorable
+// snapshot of any tier (a block-image rootfs, or a frozen extract).
+func snapshotExists(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, serverRootfs)); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(dir, frozenStateDB)); err == nil {
+		return true
+	}
+	return false
+}
+
+// checkSnapshotCIDRs refuses a restore into a cluster with different CIDRs
+// than the snapshot was taken with. The CIDRs are baked into the snapshot's
+// datastore: restoring into a cluster created with different ones yields a
+// subtly broken cluster (e.g. kubelet hands pods a cluster-dns address in
+// the new service CIDR while the restored kube-dns service has the old one).
+func checkSnapshotCIDRs(cfg *config.Config, dir, name string) error {
+	for key, current := range map[string]string{"clusterCidr": cfg.ClusterCIDR, "serviceCidr": cfg.ServiceCIDR} {
+		if v := snapshotMetaValue(dir, key); v != "" && v != current {
+			return fmt.Errorf("snapshot '%s' was taken with %s %s, but this cluster uses %s; recreate the cluster with the snapshot's CIDRs to restore it",
+				name, key, v, current)
+		}
+	}
+	return nil
+}
+
 // SnapshotRestore restores a snapshot into the existing cluster container
-// and starts the cluster. A warm snapshot resumes the running cluster it
-// captured; with cold its saved machine state is ignored and the cluster
-// boots fresh from the snapshot's disk.
+// and starts the cluster, auto-detecting the tier from meta.yaml. A warm
+// snapshot resumes the running cluster it captured; cold ignores its saved
+// machine state and boots fresh from the snapshot's disk; a frozen snapshot
+// thaws (seeds the datastore + PVC data and rehydrates images from the
+// pull-cache). The CIDR check and kubeconfig re-merge apply to every tier.
 func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 	if err := validSnapshotName(name); err != nil {
 		return err
@@ -318,21 +457,40 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 		return fmt.Errorf("the docker sidecar is not a cluster; restore it with: k3c docker snapshot restore %s", name)
 	}
 	dir := snapshotDir(cfg, name)
-	if _, err := os.Stat(filepath.Join(dir, serverRootfs)); err != nil {
+	if !snapshotExists(dir) {
 		return fmt.Errorf("snapshot '%s' not found for cluster '%s'", name, cfg.Cluster)
 	}
 	if !containerExists(cfg.ServerName, false) {
 		return fmt.Errorf("cluster '%s' does not exist; create it first (the snapshot restores its state, not the container)", cfg.Cluster)
 	}
-	// The CIDRs are baked into the snapshot's datastore: restoring into a
-	// cluster created with different ones yields a subtly broken cluster
-	// (e.g. kubelet hands pods a cluster-dns address in the new service
-	// CIDR while the restored kube-dns service has the old one).
-	for key, current := range map[string]string{"clusterCidr": cfg.ClusterCIDR, "serviceCidr": cfg.ServiceCIDR} {
-		if v := snapshotMetaValue(dir, key); v != "" && v != current {
-			return fmt.Errorf("snapshot '%s' was taken with %s %s, but this cluster uses %s; recreate the cluster with the snapshot's CIDRs to restore it",
-				name, key, v, current)
+	if err := checkSnapshotCIDRs(cfg, dir, name); err != nil {
+		return err
+	}
+
+	// Guard against a background reduction (phase 2) of this same snapshot
+	// racing the restore.
+	key := snapshotPinID(cfg.Cluster, name)
+	reducingMu.Lock()
+	reducing := reducingSnapshot[key]
+	reducingMu.Unlock()
+	if reducing {
+		return fmt.Errorf("snapshot '%s' is still being reduced in the background; retry in a moment", name)
+	}
+
+	// Frozen thaw is cold-equivalent: seed state + boot fresh + rehydrate.
+	if snapshotModeOf(dir) == ModeFrozen {
+		resumeIfPaused(cfg)
+		if err := restoreFrozenSnapshot(cfg, dir); err != nil {
+			return err
 		}
+		// the thaw boots a fresh cluster whose credentials may differ from
+		// the one the kubeconfig was merged from; Start already re-merges,
+		// but re-merge defensively to mirror the warm/cold path
+		if err := KubeconfigMerge(cfg); err != nil {
+			return err
+		}
+		logger.Info("note: watch-based clients (k9s, kubectl -w) keep stale caches after a restore; restart them")
+		return nil
 	}
 
 	resumeIfPaused(cfg)
@@ -445,6 +603,13 @@ func SnapshotDelete(cfg *config.Config, name string) error {
 	dir := snapshotDir(cfg, name)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("snapshot '%s' not found for cluster '%s'", name, cfg.Cluster)
+	}
+	// Release the pull-cache pin first so its referenced blobs become
+	// eligible for eviction once no other snapshot pins them. Released
+	// before the dir is gone so a crash mid-delete still leaves a
+	// releasable pin (releaseSnapshotPin is idempotent).
+	if err := releaseSnapshotPin(snapshotPinID(cfg.Cluster, name)); err != nil {
+		logger.Warn("releasing snapshot pin: " + err.Error())
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return err

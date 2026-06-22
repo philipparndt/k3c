@@ -23,39 +23,39 @@
 
 ## 4. Frozen save (logical extract)
 
-- [ ] 4.1 Implement the guest-side extract: sqlite online backup of `state.db`, tar of `/var/lib/rancher/k3s/storage`, k3s TLS/token copy
-- [ ] 4.2 Enumerate referenced images and build the image-digest closure manifest
-- [ ] 4.3 Assemble the frozen snapshot dir (datastore + PVC data + certs + manifest) and write `meta.yaml` with `mode: frozen`
-- [ ] 4.4 Ensure the freeze window stays minimal (crash-consistent extract; no long pause) per the two-phase contract
-- [ ] 4.5 Verify the invariant in code: refuse to write a frozen snapshot missing the storage tar
+- [x] 4.1 Implement the guest-side extract: sqlite online backup of `state.db`, tar of `/var/lib/rancher/k3s/storage`, k3s TLS/token copy
+- [x] 4.2 Enumerate referenced images and build the image-digest closure manifest
+- [x] 4.3 Assemble the frozen snapshot dir (datastore + PVC data + certs + manifest) and write `meta.yaml` with `mode: frozen`
+- [x] 4.4 Ensure the freeze window stays minimal (crash-consistent extract; no long pause) per the two-phase contract
+- [x] 4.5 Verify the invariant in code: refuse to write a frozen snapshot missing the storage tar
 
 ## 5. Frozen restore (thaw)
 
-- [ ] 5.1 Implement thaw: provision a fresh cluster, restore `state.db` + PVC data + certs, boot cold-equivalent
-- [ ] 5.2 Trigger image rehydration from the pull-cache mirror and wait for readiness
-- [ ] 5.3 Apply the existing CIDR compatibility check and kubeconfig re-merge
-- [ ] 5.4 Fail clearly when a referenced digest is absent from the pull-cache (no silent partial start)
+- [x] 5.1 Implement thaw: provision a fresh cluster, restore `state.db` + PVC data + certs, boot cold-equivalent
+- [x] 5.2 Trigger image rehydration from the pull-cache mirror and wait for readiness
+- [x] 5.3 Apply the existing CIDR compatibility check and kubeconfig re-merge
+- [x] 5.4 Fail clearly when a referenced digest is absent from the pull-cache (no silent partial start)
 
 ## 6. Frozen export / import
 
-- [ ] 6.1 Export fat: bundle datastore + PVC data + certs + manifest + pinned blob closure (loose files from the pull-cache), zstd archive
-- [ ] 6.2 Export thin (`--thin`): bundle datastore + PVC data + manifest only
-- [ ] 6.3 Import fat: seed the target pull-cache with missing blobs (content-addressed), then thaw
-- [ ] 6.4 Import thin: thaw, re-pulling referenced images from the target's registries
+- [x] 6.1 Export fat: bundle datastore + PVC data + certs + manifest + pinned blob closure (loose files from the pull-cache), zstd archive
+- [x] 6.2 Export thin (`--thin`): bundle datastore + PVC data + manifest only
+- [x] 6.3 Import fat: seed the target pull-cache with missing blobs (content-addressed), then thaw
+- [x] 6.4 Import thin: thaw, re-pulling referenced images from the target's registries
 - [ ] 6.5 Round-trip test: export on one cache state, import into a cache missing the blobs, confirm seed + thaw
 
 ## 7. CLI wiring
 
-- [ ] 7.1 Add `--cold` / `--frozen` to `k3c snapshot save`; default warm where suspend is supported (`cmd/snapshot.go`)
-- [ ] 7.2 Make `restore` auto-detect the tier from `meta.yaml`
-- [ ] 7.3 Show the tier in `snapshot list`; add `--thin` to `snapshot export`
-- [ ] 7.4 Help text and error messages reflect the tier trade-offs (frozen = small, minutes to thaw)
+- [x] 7.1 Add `--cold` / `--frozen` to `k3c snapshot save`; default warm where suspend is supported (`cmd/snapshot.go`)
+- [x] 7.2 Make `restore` auto-detect the tier from `meta.yaml`
+- [x] 7.3 Show the tier in `snapshot list`; add `--thin` to `snapshot export`
+- [x] 7.4 Help text and error messages reflect the tier trade-offs (frozen = small, minutes to thaw)
 
 ## 8. Two-phase orchestration
 
-- [ ] 8.1 Wire `SnapshotSave` to run capture/clone in the freeze window and dispatch `reduceSnapshot` detached after resume
-- [ ] 8.2 In `reduceSnapshot`, commit the pin durably first, then run re-sparsify
-- [ ] 8.3 Make the background phase idempotent and re-runnable; guard against a snapshot being restored concurrently
+- [x] 8.1 Wire `SnapshotSave` to run capture/clone in the freeze window and dispatch `reduceSnapshot` detached after resume
+- [x] 8.2 In `reduceSnapshot`, commit the pin durably first, then run re-sparsify
+- [x] 8.3 Make the background phase idempotent and re-runnable; guard against a snapshot being restored concurrently
 
 ## 9. Tests, docs, spec sync
 
