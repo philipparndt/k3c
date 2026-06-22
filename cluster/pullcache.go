@@ -604,6 +604,12 @@ func PullCachePrune(cfg *config.Config, maxAge time.Duration) error {
 	}
 	cutoff := time.Now().Add(-maxAge)
 	marked := map[string]bool{}
+	// Snapshot pins are live regardless of age: a frozen snapshot's image
+	// closure must survive retention so the snapshot stays restorable.
+	pinned, err := pinnedDigestsIn(cfg)
+	if err != nil {
+		return fmt.Errorf("reading pull-cache pins: %w", err)
+	}
 	prunedTags := 0
 	tagsBase := filepath.Join(pullCacheDir(cfg), "tags")
 	_ = filepath.WalkDir(tagsBase, func(path string, d os.DirEntry, err error) error {
@@ -633,6 +639,9 @@ func PullCachePrune(cfg *config.Config, maxAge time.Duration) error {
 		if !strings.HasPrefix(name, "sha256:") || marked[name] {
 			continue
 		}
+		if _, ok := pinned[name]; ok {
+			continue // pinned by a snapshot: never evict, regardless of age
+		}
 		info, err := e.Info()
 		if err != nil || !info.ModTime().Before(cutoff) {
 			continue
@@ -643,8 +652,12 @@ func PullCachePrune(cfg *config.Config, maxAge time.Duration) error {
 			freed += info.Size()
 		}
 	}
-	logger.Info(fmt.Sprintf("pruned %d stale tags and %d blobs (%.1f GB freed)",
-		prunedTags, removed, float64(freed)/1e9))
+	msg := fmt.Sprintf("pruned %d stale tags and %d blobs (%.1f GB freed)",
+		prunedTags, removed, float64(freed)/1e9)
+	if len(pinned) > 0 {
+		msg += fmt.Sprintf("; %d snapshot-pinned blobs retained", len(pinned))
+	}
+	logger.Info(msg)
 	return nil
 }
 
@@ -737,18 +750,78 @@ func humanBytes(b int64) string {
 	}
 }
 
-// PullCacheClear empties the pull cache (the daemons recreate paths as
-// needed on the next download).
+// PullCacheClear empties the pull cache (the daemons recreate paths as needed
+// on the next download), preserving blobs pinned by a snapshot. It is the
+// non-forced path: see PullCacheClearForce.
 func PullCacheClear(cfg *config.Config) error {
-	if err := os.RemoveAll(pullCacheDir(cfg)); err != nil {
-		return err
+	return PullCacheClearForce(cfg, false)
+}
+
+// PullCacheClearForce empties the pull cache. Without force it warns about and
+// skips blob digests pinned by a snapshot (so clearing the cache cannot silently
+// break a frozen snapshot's thaw); with force it removes everything, pins
+// included. The daemons recreate the standard paths on the next download.
+//
+// (PullCacheClear keeps the original single-argument signature so existing CLI
+// callers compile unchanged; the CLI owner can wire a `clear --force` flag to
+// this function — see the task report.)
+func PullCacheClearForce(cfg *config.Config, force bool) error {
+	if force {
+		if err := os.RemoveAll(pullCacheDir(cfg)); err != nil {
+			return err
+		}
+		return ensurePullCacheDirs(cfg, "pull cache cleared")
 	}
+
+	pinned, err := pinnedDigestsIn(cfg)
+	if err != nil {
+		return fmt.Errorf("reading pull-cache pins: %w", err)
+	}
+	if len(pinned) == 0 {
+		if err := os.RemoveAll(pullCacheDir(cfg)); err != nil {
+			return err
+		}
+		return ensurePullCacheDirs(cfg, "pull cache cleared")
+	}
+
+	// Pins exist: sweep everything except the pinned blobs (and their type
+	// sidecars). Tags are dropped wholesale; the pinned blobs remain content-
+	// addressed and re-servable by digest.
+	for _, dir := range []string{"tags"} {
+		_ = os.RemoveAll(filepath.Join(pullCacheDir(cfg), dir))
+	}
+	removed, kept := 0, 0
+	entries, _ := os.ReadDir(filepath.Join(pullCacheDir(cfg), "blobs"))
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "sha256:") {
+			continue
+		}
+		if _, ok := pinned[name]; ok {
+			kept++
+			continue
+		}
+		if err := os.Remove(filepath.Join(pullCacheDir(cfg), "blobs", name)); err == nil {
+			_ = os.Remove(filepath.Join(pullCacheDir(cfg), "types", name))
+			removed++
+		}
+	}
+	logger.Warn(fmt.Sprintf("pull cache cleared with %d pinned blobs retained (removed %d); "+
+		"use force to remove pinned blobs too", kept, removed))
+	return ensurePullCacheDirs(cfg, "")
+}
+
+// ensurePullCacheDirs recreates the standard cache subdirectories and, when
+// msg is non-empty, logs it.
+func ensurePullCacheDirs(cfg *config.Config, msg string) error {
 	for _, dir := range []string{"blobs", "types", "tags"} {
 		if err := os.MkdirAll(filepath.Join(pullCacheDir(cfg), dir), 0o755); err != nil {
 			return err
 		}
 	}
-	logger.Info("pull cache cleared")
+	if msg != "" {
+		logger.Info(msg)
+	}
 	return nil
 }
 
