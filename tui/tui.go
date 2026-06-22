@@ -102,6 +102,41 @@ func modeDesc(mode cluster.SnapshotMode) string {
 	}
 }
 
+// exportPick is the open frozen-export tier chooser (slim/fat/thin). Only
+// frozen snapshots offer it; warm/cold export their disk image directly.
+type exportPick struct {
+	cluster string
+	snap    string
+	out     string
+	mode    cluster.FrozenExportMode
+}
+
+// cycle advances to the next export tier (wraps around). Order puts the small,
+// sensible default (slim) first.
+func (e *exportPick) cycle() {
+	order := []cluster.FrozenExportMode{cluster.FrozenSlim, cluster.FrozenFat, cluster.FrozenThin}
+	for i, md := range order {
+		if md == e.mode {
+			e.mode = order[(i+1)%len(order)]
+			return
+		}
+	}
+	e.mode = order[0]
+}
+
+// exportModeDesc is the one-line description shown as the user tabs through
+// export tiers.
+func exportModeDesc(mode cluster.FrozenExportMode) string {
+	switch mode {
+	case cluster.FrozenFat:
+		return "self-contained: bundles all image blobs (largest; imports offline)"
+	case cluster.FrozenThin:
+		return "no images (smallest; only safe with no local-only images)"
+	default: // slim
+		return "local-only images bundled; remote images re-pull on import"
+	}
+}
+
 // commandRun is one executed operation, kept for the whole session and shown
 // in the command-log dialog.
 type commandRun struct {
@@ -147,8 +182,9 @@ type model struct {
 	showHelp    bool // keybinding help dialog open
 	showDiagram bool // system data-flow diagram open
 
-	confirm *confirm
-	input   *nameInput
+	confirm    *confirm
+	input      *nameInput
+	exportPick *exportPick
 }
 
 // New builds the TUI model. cfg is only used for state-dir lookups; every
@@ -571,7 +607,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if m.busy == "" && m.confirm == nil && m.input == nil {
+		if m.busy == "" && m.confirm == nil && m.input == nil && m.exportPick == nil {
 			return m, tea.Batch(m.refresh(), tick())
 		}
 		return m, tick()
@@ -640,6 +676,35 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "cancelled"
 		m.failed = false
 		m.statusSeq++
+		return m, nil
+	}
+
+	// the frozen-export tier chooser eats every key
+	if m.exportPick != nil {
+		switch msg.Type {
+		case tea.KeyEscape:
+			m.exportPick = nil
+			m.status = "cancelled"
+			m.failed = false
+			m.statusSeq++
+			return m, nil
+		case tea.KeyCtrlC:
+			return m, tea.Quit
+		case tea.KeyTab:
+			m.exportPick.cycle()
+			return m, nil
+		case tea.KeyEnter:
+			p := *m.exportPick
+			m.exportPick = nil
+			args := []string{"snapshot", "export", p.cluster, p.snap, "-o", p.out}
+			switch p.mode {
+			case cluster.FrozenSlim:
+				args = append(args, "--slim")
+			case cluster.FrozenThin:
+				args = append(args, "--thin")
+			}
+			return m.startOp(fmt.Sprintf("%s export of %s to %s", p.mode, p.snap, p.out), args...)
+		}
 		return m, nil
 	}
 
@@ -801,6 +866,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		snap := m.curSnapshot()
 		out := name + "-" + snap + ".k3csnap"
+		// Frozen snapshots have a size/self-containment dial — let the user
+		// pick the tier; warm/cold export their disk image directly.
+		if r, ok := m.curRow(); ok && r.snapMode == string(cluster.ModeFrozen) {
+			m.exportPick = &exportPick{cluster: name, snap: snap, out: out, mode: cluster.FrozenSlim}
+			return m, nil
+		}
 		return m.startOp("export of "+snap+" to "+out,
 			"snapshot", "export", name, snap, "-o", out)
 
@@ -1038,6 +1109,8 @@ func (m model) View() string {
 		return m.confirmScreen()
 	case m.input != nil:
 		return m.inputScreen()
+	case m.exportPick != nil:
+		return m.exportScreen()
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.treeView(), m.statusView())
 }
@@ -1264,6 +1337,26 @@ func (m model) inputScreen() string {
 		dimSt.Render("      "+modeDesc(in.mode)), "",
 		dimSt.Render("enter save · tab cycle mode · esc cancel · spaces → dashes"))
 	return m.center(dialogBox.Width(64).Render(content))
+}
+
+func (m model) exportScreen() string {
+	p := m.exportPick
+	sel := lipgloss.NewStyle().Bold(true).Foreground(accent)
+	segs := make([]string, 0, 3)
+	for _, md := range []cluster.FrozenExportMode{cluster.FrozenSlim, cluster.FrozenFat, cluster.FrozenThin} {
+		if md == p.mode {
+			segs = append(segs, sel.Render(string(md)))
+		} else {
+			segs = append(segs, string(md))
+		}
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		titleSt.Render("Export frozen snapshot "+p.snap), "",
+		dimSt.Render("file  ")+p.out,
+		dimSt.Render("mode  ")+strings.Join(segs, dimSt.Render(" / ")),
+		dimSt.Render("      "+exportModeDesc(p.mode)), "",
+		dimSt.Render("enter export · tab cycle mode · esc cancel"))
+	return m.center(dialogBox.Width(72).Render(content))
 }
 
 func (m model) logScreen() string {
