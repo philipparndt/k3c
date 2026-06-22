@@ -456,6 +456,9 @@ func Create(cfg *config.Config) error {
 	if err := startServer(cfg); err != nil {
 		return err
 	}
+	// install the containerd discard_unpacked_layers template before the node
+	// is fully up so it is in place when k3s regenerates containerd's config
+	installContainerdConfig(cfg)
 	applyCPUPriority(cfg)
 	if err := KubeconfigMerge(cfg); err != nil {
 		return err
@@ -592,6 +595,9 @@ func Start(cfg *config.Config) error {
 func postStart(cfg *config.Config) error {
 	// virtiofs shares may come back dead from a restored machine state
 	repairVirtiofs(cfg)
+	// keep the containerd layer-discard template present across restarts and
+	// snapshot restores; it takes effect on the next config regeneration
+	installContainerdConfig(cfg)
 	if err := waitReady(cfg); err != nil {
 		return err
 	}

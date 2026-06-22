@@ -25,7 +25,7 @@ type ClusterInfo struct {
 // SnapshotInfo describes one saved snapshot.
 type SnapshotInfo struct {
 	Name    string
-	Mode    string // warm or cold
+	Mode    string // warm, cold, or frozen
 	Created string
 }
 

@@ -1,9 +1,15 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/philipparndt/go-logger"
 	"github.com/spf13/cobra"
 
 	"k3c/cluster"
+	"k3c/config"
 )
 
 var clusterCmd = &cobra.Command{
@@ -17,6 +23,49 @@ var clusterCreateCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		fail(cluster.Create(loadConfig(args)))
+	},
+}
+
+var clusterImportRunCmd = &cobra.Command{
+	Use:   "import-run FILE [NAME]",
+	Short: "Create a cluster from an exported snapshot and restore it, in one step",
+	Args:  cobra.RangeArgs(1, 2),
+	Run: func(cmd *cobra.Command, args []string) {
+		file := args[0]
+		info, err := cluster.SnapshotArchiveInfo(file)
+		fail(err)
+		name := info.Cluster
+		if len(args) > 1 {
+			name = args[1]
+		}
+		if name == "" {
+			fail(fmt.Errorf("the archive does not record a cluster name; pass one: k3c cluster import-run %s NAME", file))
+		}
+		// Use the snapshot's embedded cluster config unless the user passed
+		// --config. Seed it as the cluster's persisted config so Resolve picks
+		// it up (sizing, transparent egress, mirrors); the host-specific CA
+		// bundle is regenerated from the host at create time regardless.
+		if configFile == "" && info.Config != "" {
+			persisted := filepath.Join(config.StateDir(), "clusters", name, "k3c.yaml")
+			if err := os.MkdirAll(filepath.Dir(persisted), 0o755); err != nil {
+				fail(err)
+			}
+			if err := os.WriteFile(persisted, []byte(info.Config), 0o644); err != nil {
+				fail(err)
+			}
+			logger.Info("using the snapshot's embedded cluster config (override with --config)")
+		}
+		// Resolve the target cluster's config, then let the archive's CIDRs win
+		// — the snapshot's datastore is baked with them, so the cluster must use
+		// them or the restore is refused.
+		cfg := loadConfig([]string{name})
+		if info.ClusterCIDR != "" {
+			cfg.ClusterCIDR = info.ClusterCIDR
+		}
+		if info.ServiceCIDR != "" {
+			cfg.ServiceCIDR = info.ServiceCIDR
+		}
+		fail(cluster.ClusterImportRun(cfg, file))
 	},
 }
 
@@ -112,7 +161,7 @@ func init() {
 		"also delete the cluster's snapshots")
 	clusterReclaimCmd.Flags().BoolVar(&reclaimRelease, "release", false,
 		"deflate the balloon, giving the cluster its full configured memory back")
-	clusterCmd.AddCommand(clusterCreateCmd, clusterDeleteCmd, clusterStartCmd, clusterStopCmd,
+	clusterCmd.AddCommand(clusterCreateCmd, clusterImportRunCmd, clusterDeleteCmd, clusterStartCmd, clusterStopCmd,
 		clusterPauseCmd, clusterResumeCmd, clusterSuspendCmd, clusterReclaimCmd, clusterActivateCmd, clusterListCmd)
 	rootCmd.AddCommand(clusterCmd)
 }
