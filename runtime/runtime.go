@@ -67,6 +67,9 @@ type Resolved struct {
 	// invocation (e.g. CONTAINER_INSTALL_ROOT for the bundled runtime). It
 	// is empty when driving a host-installed container.
 	Env []string
+	// Source is a short human-readable description of how Binary was chosen
+	// (e.g. "configured containerBinary", "bundled runtime"), for `k3c info`.
+	Source string
 }
 
 // The cached resolution is keyed on the configured binary it was computed
@@ -99,19 +102,19 @@ func resolve(configured string) (Resolved, error) {
 	// 1. explicit override path
 	if p := os.Getenv("K3C_CONTAINER_BINARY"); p != "" {
 		logger.Debug("container runtime: using K3C_CONTAINER_BINARY=" + p)
-		return Resolved{Binary: p}, nil
+		return Resolved{Binary: p, Source: "K3C_CONTAINER_BINARY env"}, nil
 	}
 
 	// 2. force PATH lookup
 	if truthy(os.Getenv("K3C_CONTAINER_FROM_PATH")) {
 		logger.Debug("container runtime: using `container` from PATH (K3C_CONTAINER_FROM_PATH)")
-		return Resolved{Binary: "container"}, nil
+		return Resolved{Binary: "container", Source: "PATH (K3C_CONTAINER_FROM_PATH)"}, nil
 	}
 
 	// 3. user-configured binary
 	if configured != "" {
 		logger.Debug("container runtime: using configured containerBinary=" + configured)
-		return Resolved{Binary: configured}, nil
+		return Resolved{Binary: configured, Source: "configured containerBinary"}, nil
 	}
 
 	// 4. embedded bundled runtime
@@ -125,12 +128,13 @@ func resolve(configured string) (Resolved, error) {
 		return Resolved{
 			Binary: bin,
 			Env:    []string{"CONTAINER_INSTALL_ROOT=" + dir},
+			Source: "bundled runtime",
 		}, nil
 	}
 
 	// 5. fallback
 	logger.Debug("container runtime: no bundle embedded; falling back to `container` from PATH")
-	return Resolved{Binary: "container"}, nil
+	return Resolved{Binary: "container", Source: "PATH (fallback)"}, nil
 }
 
 // Binary returns just the resolved container CLI path. On resolution error
