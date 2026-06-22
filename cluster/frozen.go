@@ -22,7 +22,7 @@ import (
 
 // Frozen snapshot layout (under the snapshot dir):
 const (
-	frozenStateDB    = "frozen-state.db"    // sqlite online backup of k3s datastore
+	frozenStateTar   = "frozen-state.tar"   // kine SQLite datastore: db + WAL/SHM, crash-consistent
 	frozenStorageTar = "frozen-storage.tar" // /var/lib/rancher/k3s/storage (PVC data)
 	frozenCertsTar   = "frozen-certs.tar"   // k3s server TLS + token
 	frozenManifestF  = "frozen-images.yaml" // image-digest closure manifest
@@ -72,16 +72,23 @@ func writeFrozenSnapshot(cfg *config.Config, dir string, serverIP string) error 
 	}
 	defer os.RemoveAll(hostScratch)
 
-	// 1. Consistent sqlite online backup of the k3s datastore. ".backup"
-	// takes a read lock and copies a transactionally consistent image, so
-	// the live server keeps serving — this is the crash-consistent capture
-	// that keeps the freeze window minimal (no stop).
-	logger.Info("frozen: backing up k3s datastore")
-	backupScript := fmt.Sprintf(
-		"set -e; rm -f %[1]s/state.db; sqlite3 %[2]s \".backup '%[1]s/state.db'\"",
+	// 1. Crash-consistent copy of the kine SQLite datastore. The minimal k3s
+	// guest image has no sqlite3 CLI, so rather than an online .backup we copy
+	// the database together with its WAL/SHM sidecars in a single tar pass;
+	// SQLite replays the WAL on first open, recovering the latest committed
+	// state. This keeps the freeze window minimal (no stop) and matches the
+	// crash-consistency a cold/power-loss restore already gives.
+	logger.Info("frozen: copying k3s datastore (crash-consistent)")
+	backupScript := fmt.Sprintf(`set -e
+db=%[2]s; dir=$(dirname "$db"); base=$(basename "$db")
+cd "$dir"
+files="$base"
+[ -f "$base-wal" ] && files="$files $base-wal"
+[ -f "$base-shm" ] && files="$files $base-shm"
+tar -cf %[1]s/state.tar $files`,
 		frozenScratch, guestStateDB)
 	if out, err := runContainer("exec", cfg.ServerName, "sh", "-c", backupScript); err != nil {
-		return fmt.Errorf("sqlite backup of state.db failed: %s", strings.TrimSpace(out))
+		return fmt.Errorf("copying k3s datastore failed: %s", strings.TrimSpace(out))
 	}
 
 	// 2. Tar of ALL persistent-volume data. This is the correctness
@@ -112,7 +119,7 @@ func writeFrozenSnapshot(cfg *config.Config, dir string, serverIP string) error 
 	// Move the guest-written extract from the shared scratch into the
 	// snapshot dir on the host.
 	for _, m := range []struct{ src, dst string }{
-		{"state.db", frozenStateDB},
+		{"state.tar", frozenStateTar},
 		{"storage.tar", frozenStorageTar},
 		{"certs.tar", frozenCertsTar},
 	} {
@@ -127,7 +134,7 @@ func writeFrozenSnapshot(cfg *config.Config, dir string, serverIP string) error 
 	if info, err := os.Stat(filepath.Join(dir, frozenStorageTar)); err != nil || info.Size() == 0 {
 		return fmt.Errorf("frozen snapshot would omit persistent-volume data (%s missing or empty); refusing to write a snapshot that drops non-reconstructable data", guestStorage)
 	}
-	if info, err := os.Stat(filepath.Join(dir, frozenStateDB)); err != nil || info.Size() == 0 {
+	if info, err := os.Stat(filepath.Join(dir, frozenStateTar)); err != nil || info.Size() == 0 {
 		return fmt.Errorf("frozen snapshot would omit the cluster datastore (state.db missing or empty); refusing")
 	}
 
@@ -295,7 +302,7 @@ func restoreFrozenSnapshot(cfg *config.Config, dir string) error {
 	}
 	defer os.RemoveAll(hostScratch)
 	for _, m := range []struct{ src, dst string }{
-		{frozenStateDB, "state.db"},
+		{frozenStateTar, "state.tar"},
 		{frozenStorageTar, "storage.tar"},
 		{frozenCertsTar, "certs.tar"},
 	} {
@@ -322,7 +329,8 @@ mkdir -p %[2]s %[3]s %[4]s
 rm -rf %[3]s/*
 tar -xf %[1]s/storage.tar -C %[3]s
 mkdir -p $(dirname %[5]s)
-cp -f %[1]s/state.db %[5]s
+rm -f %[5]s %[5]s-wal %[5]s-shm
+tar -xf %[1]s/state.tar -C $(dirname %[5]s)
 tar -xf %[1]s/certs.tar -C %[4]s
 `, frozenScratch, guestServer, guestStorage, guestServer, guestStateDB)
 	if out, err := runContainer("exec", cfg.ServerName, "sh", "-c", seedScript); err != nil {

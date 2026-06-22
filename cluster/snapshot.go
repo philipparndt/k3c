@@ -422,7 +422,7 @@ func snapshotExists(dir string) bool {
 	if _, err := os.Stat(filepath.Join(dir, serverRootfs)); err == nil {
 		return true
 	}
-	if _, err := os.Stat(filepath.Join(dir, frozenStateDB)); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, frozenStateTar)); err == nil {
 		return true
 	}
 	return false

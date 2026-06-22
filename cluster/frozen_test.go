@@ -176,7 +176,7 @@ func TestExportImportFrozenRoundTrip(t *testing.T) {
 	if err := os.MkdirAll(snapDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(snapDir, frozenStateDB), []byte("fake-sqlite"))
+	writeFile(t, filepath.Join(snapDir, frozenStateTar), []byte("fake-sqlite"))
 	writeFile(t, filepath.Join(snapDir, frozenStorageTar), []byte("fake-pvc-tar"))
 	writeFile(t, filepath.Join(snapDir, frozenCertsTar), []byte("fake-certs-tar"))
 	writeFile(t, filepath.Join(snapDir, "meta.yaml"),
@@ -218,7 +218,7 @@ func TestExportImportFrozenRoundTrip(t *testing.T) {
 	}
 	// logical files landed in the new snapshot dir
 	impDir := snapshotDir(tgtCfg, "imported")
-	for _, f := range []string{frozenStateDB, frozenStorageTar, frozenCertsTar, frozenManifestF, "meta.yaml"} {
+	for _, f := range []string{frozenStateTar, frozenStorageTar, frozenCertsTar, frozenManifestF, "meta.yaml"} {
 		if _, err := os.Stat(filepath.Join(impDir, f)); err != nil {
 			t.Fatalf("frozen file %s missing after import: %v", f, err)
 		}
@@ -241,7 +241,7 @@ func TestExportImportFrozenThinSkipsBlobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := sha256Digest([]byte("x"))
-	writeFile(t, filepath.Join(snapDir, frozenStateDB), []byte("db"))
+	writeFile(t, filepath.Join(snapDir, frozenStateTar), []byte("db"))
 	writeFile(t, filepath.Join(snapDir, frozenStorageTar), []byte("pvc"))
 	writeFile(t, filepath.Join(snapDir, frozenCertsTar), []byte("certs"))
 	writeFile(t, filepath.Join(snapDir, "meta.yaml"), []byte("cluster: src\nmode: frozen\n"))

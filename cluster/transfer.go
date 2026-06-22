@@ -136,7 +136,7 @@ const frozenBlobPrefix = "blobs/"
 // closure and relies on the target's registries at import.
 func exportFrozen(cfg *config.Config, name, out string, thin bool) error {
 	dir := snapshotDir(cfg, name)
-	if _, err := os.Stat(filepath.Join(dir, frozenStateDB)); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, frozenStateTar)); err != nil {
 		return fmt.Errorf("frozen snapshot '%s' is incomplete (no datastore) for cluster '%s'", name, cfg.Cluster)
 	}
 	if out == "" {
@@ -174,7 +174,7 @@ func exportFrozen(cfg *config.Config, name, out string, thin bool) error {
 	}
 
 	// The logical extract files (small relative to the blobs).
-	for _, fileName := range []string{"meta.yaml", frozenStateDB, frozenStorageTar, frozenCertsTar, frozenManifestF} {
+	for _, fileName := range []string{"meta.yaml", frozenStateTar, frozenStorageTar, frozenCertsTar, frozenManifestF} {
 		data, err := os.ReadFile(filepath.Join(dir, fileName))
 		if err != nil {
 			return fmt.Errorf("reading %s for export: %w", fileName, err)
@@ -530,7 +530,7 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 					}
 				}
 			}
-		case frozenStateDB, frozenStorageTar, frozenCertsTar, frozenManifestF:
+		case frozenStateTar, frozenStorageTar, frozenCertsTar, frozenManifestF:
 			frozen = true
 			logger.Info(fmt.Sprintf("unpacking %s (%.2f GB)", hdr.Name, float64(hdr.Size)/1e9))
 			if err := writeRegularFile(filepath.Join(tmp, hdr.Name), tr); err != nil {
@@ -556,7 +556,7 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 		}
 	}
 	if frozen {
-		if _, err := os.Stat(filepath.Join(tmp, frozenStateDB)); err != nil {
+		if _, err := os.Stat(filepath.Join(tmp, frozenStateTar)); err != nil {
 			return fmt.Errorf("%s is a frozen bundle but contains no datastore", file)
 		}
 		if seededBlobs > 0 {
