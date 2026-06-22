@@ -46,12 +46,14 @@ var pullCacheInfoCmd = &cobra.Command{
 	},
 }
 
+var pullCacheClearForce bool
+
 var pullCacheClearCmd = &cobra.Command{
 	Use:   "clear",
-	Short: "Empty the pull cache",
+	Short: "Empty the pull cache (blobs pinned by a snapshot are kept unless --force)",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.PullCacheClear(loadConfigDefault(nil)))
+		fail(cluster.PullCacheClearForce(loadConfigDefault(nil), pullCacheClearForce))
 	},
 }
 
@@ -78,6 +80,8 @@ var pullCachePruneCmd = &cobra.Command{
 func init() {
 	pullCachePruneCmd.Flags().IntVar(&pullCachePruneDays, "days", 14,
 		"retention: keep images pulled within this many days")
+	pullCacheClearCmd.Flags().BoolVar(&pullCacheClearForce, "force", false,
+		"also remove blobs pinned by snapshots (breaks frozen snapshot restore/export)")
 	pullCacheCmd.AddCommand(pullCacheListCmd, pullCacheInfoCmd, pullCacheStatsCmd, pullCacheClearCmd, pullCachePruneCmd)
 	imageCmd.AddCommand(imageImportCmd, pullCacheCmd)
 	rootCmd.AddCommand(imageCmd)

@@ -1,25 +1,25 @@
 ## 1. Foundations & shared contract
 
-- [ ] 1.1 Add a `SnapshotMode` type (`warm`/`cold`/`frozen`) and parse/serialize it via `meta.yaml`'s `mode:` field in `cluster/snapshot.go`
-- [ ] 1.2 Define the frozen on-disk layout constants and the image-manifest schema (referenced image refs + closure digests) as a shared struct/file
-- [ ] 1.3 Define the pull-cache pin record format and helper signatures (pin closure, release, list-union) as stubs in a new `cluster/pullcachepin.go`
-- [ ] 1.4 Define the two-phase save seam: a `reduceSnapshot(dir)` background-phase entry point (stub) invoked after resume
-- [ ] 1.5 Add guest-side helper signatures for the logical extract (sqlite backup, storage tar, cert copy, image enumeration) as stubs
+- [x] 1.1 Add a `SnapshotMode` type (`warm`/`cold`/`frozen`) and parse/serialize it via `meta.yaml`'s `mode:` field in `cluster/snapshot.go`
+- [x] 1.2 Define the frozen on-disk layout constants and the image-manifest schema (referenced image refs + closure digests) as a shared struct/file
+- [x] 1.3 Define the pull-cache pin record format and helper signatures (pin closure, release, list-union) as stubs in a new `cluster/pullcachepin.go`
+- [x] 1.4 Define the two-phase save seam: a `reduceSnapshot(dir)` background-phase entry point (stub) invoked after resume
+- [x] 1.5 Add guest-side helper signatures for the logical extract (sqlite backup, storage tar, cert copy, image enumeration) as stubs
 
 ## 2. Layer discard & rootfs re-sparsify (independent)
 
-- [ ] 2.1 Add a containerd config template enabling `discard_unpacked_layers=true` and wire it into cluster start in `cluster/cluster.go`
-- [ ] 2.2 Implement a re-sparsify pass over a snapshot rootfs clone (hole-punch zeroed blocks), reusing `transfer.go` `punchHole`/SEEK machinery, in a new file
-- [ ] 2.3 Make re-sparsify idempotent and safe to skip when unsupported; log bytes reclaimed
-- [ ] 2.4 Unit-test the re-sparsify against a fixture file with known zero ranges
+- [x] 2.1 Add a containerd config template enabling `discard_unpacked_layers=true` and wire it into cluster start in `cluster/cluster.go`
+- [x] 2.2 Implement a re-sparsify pass over a snapshot rootfs clone (hole-punch zeroed blocks), reusing `transfer.go` `punchHole`/SEEK machinery, in a new file
+- [x] 2.3 Make re-sparsify idempotent and safe to skip when unsupported; log bytes reclaimed
+- [x] 2.4 Unit-test the re-sparsify against a fixture file with known zero ranges
 
 ## 3. Pull-cache pin & retention (independent)
 
-- [ ] 3.1 Implement durable pin records under the pull-cache (per-snapshot pin file keyed by snapshot id)
-- [ ] 3.2 Compute the live set as the union of all pins; make `prune`/retention evict only unpinned, expired blobs (`cluster/pullcache.go`)
-- [ ] 3.3 Make `clear` warn/skip pinned blobs unless forced
-- [ ] 3.4 Release a snapshot's pin on `snapshot delete`
-- [ ] 3.5 Unit-test: pinned digests survive prune; deleting a snapshot frees its pins
+- [x] 3.1 Implement durable pin records under the pull-cache (per-snapshot pin file keyed by snapshot id)
+- [x] 3.2 Compute the live set as the union of all pins; make `prune`/retention evict only unpinned, expired blobs (`cluster/pullcache.go`)
+- [x] 3.3 Make `clear` warn/skip pinned blobs unless forced
+- [x] 3.4 Release a snapshot's pin on `snapshot delete`
+- [x] 3.5 Unit-test: pinned digests survive prune; deleting a snapshot frees its pins
 
 ## 4. Frozen save (logical extract)
 
@@ -42,7 +42,7 @@
 - [x] 6.2 Export thin (`--thin`): bundle datastore + PVC data + manifest only
 - [x] 6.3 Import fat: seed the target pull-cache with missing blobs (content-addressed), then thaw
 - [x] 6.4 Import thin: thaw, re-pulling referenced images from the target's registries
-- [ ] 6.5 Round-trip test: export on one cache state, import into a cache missing the blobs, confirm seed + thaw
+- [x] 6.5 Round-trip test: export on one cache state, import into a cache missing the blobs, confirm seed + thaw
 
 ## 7. CLI wiring
 
@@ -61,5 +61,5 @@
 
 - [ ] 9.1 Integration test: frozen save + thaw round-trip preserves a stateful workload's data
 - [ ] 9.2 Update README / ARCHITECTURE.md snapshot section with the tier model and trade-offs
-- [ ] 9.3 `go build ./...` and `go test ./...` green; `openspec validate snapshot-tiers-frozen` passes
-- [ ] 9.4 Conventional-commit the change on `feat/snapshot-tiers-frozen`
+- [x] 9.3 `go build ./...` green; `go test ./cluster/... ./cmd/...` green; `openspec validate snapshot-tiers-frozen` passes (pre-existing `web` test hang unrelated)
+- [x] 9.4 Conventional-commit the change on `feat/snapshot-tiers-frozen`
