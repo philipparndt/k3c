@@ -32,7 +32,13 @@ const exportManifest = "export.yaml"
 
 // exportable returns the snapshot files included in an export.
 func exportable(dir string) []string {
-	files := []string{"meta.yaml", serverRootfs}
+	// Order the small text files first (meta, embedded config) so the archive
+	// metadata is readable without streaming past the multi-GB rootfs images.
+	files := []string{"meta.yaml"}
+	if _, err := os.Stat(filepath.Join(dir, clusterConfigFile)); err == nil {
+		files = append(files, clusterConfigFile)
+	}
+	files = append(files, serverRootfs)
 	if _, err := os.Stat(filepath.Join(dir, registryRootfs)); err == nil {
 		files = append(files, registryRootfs)
 	}
@@ -109,6 +115,12 @@ func SnapshotExport(cfg *config.Config, name, out string, mode FrozenExportMode)
 				return err
 			}
 			data = []byte(strings.ReplaceAll(string(raw), "mode: warm", "mode: cold"))
+		}
+		if fileName == clusterConfigFile {
+			// small text file; ship verbatim (not as a sparse image)
+			if data, err = os.ReadFile(path); err != nil {
+				return err
+			}
 		}
 		if data != nil {
 			if err := writeTarBytes(tw, fileName, data); err != nil {
@@ -194,8 +206,14 @@ func exportFrozen(cfg *config.Config, name, out string, mode FrozenExportMode) e
 		return err
 	}
 
-	// The logical extract files (small relative to the blobs).
-	for _, fileName := range []string{"meta.yaml", frozenStateTar, frozenStorageTar, frozenCertsTar, frozenManifestF} {
+	// The logical extract files (small relative to the blobs). meta + embedded
+	// config first so archive metadata reads without streaming the rest.
+	logicalFiles := []string{"meta.yaml"}
+	if _, err := os.Stat(filepath.Join(dir, clusterConfigFile)); err == nil {
+		logicalFiles = append(logicalFiles, clusterConfigFile)
+	}
+	logicalFiles = append(logicalFiles, frozenStateTar, frozenStorageTar, frozenCertsTar, frozenManifestF)
+	for _, fileName := range logicalFiles {
 		data, err := os.ReadFile(filepath.Join(dir, fileName))
 		if err != nil {
 			return fmt.Errorf("reading %s for export: %w", fileName, err)
@@ -506,11 +524,13 @@ type ArchiveInfo struct {
 	Mode        string
 	ClusterCIDR string
 	ServiceCIDR string
+	Config      string // embedded cluster k3c.yaml ("" if the archive has none)
 }
 
-// SnapshotArchiveInfo peeks an export archive for its export.yaml + meta.yaml
-// (written first, so it stops before streaming the large blobs) and returns
-// the originating cluster name, snapshot name, tier, and CIDRs.
+// SnapshotArchiveInfo peeks an export archive for its export.yaml, meta.yaml,
+// and embedded cluster config (all written first, before the large images), and
+// returns the originating cluster name, snapshot name, tier, CIDRs, and config.
+// It stops at the first large entry, so it never streams the rootfs/blobs.
 func SnapshotArchiveInfo(file string) (ArchiveInfo, error) {
 	var info ArchiveInfo
 	f, err := os.Open(file)
@@ -524,8 +544,7 @@ func SnapshotArchiveInfo(file string) (ArchiveInfo, error) {
 	}
 	defer zr.Close()
 	tr := tar.NewReader(zr)
-	gotExport, gotMeta := false, false
-	for !(gotExport && gotMeta) {
+	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
@@ -544,7 +563,6 @@ func SnapshotArchiveInfo(file string) (ArchiveInfo, error) {
 					info.Snapshot = strings.TrimSpace(v)
 				}
 			}
-			gotExport = true
 		case "meta.yaml":
 			data, _ := io.ReadAll(io.LimitReader(tr, 1<<16))
 			for _, line := range strings.Split(string(data), "\n") {
@@ -558,7 +576,13 @@ func SnapshotArchiveInfo(file string) (ArchiveInfo, error) {
 					info.ServiceCIDR = strings.TrimSpace(v)
 				}
 			}
-			gotMeta = true
+		case clusterConfigFile:
+			data, _ := io.ReadAll(io.LimitReader(tr, 1<<20))
+			info.Config = string(data)
+		default:
+			// first large entry (rootfs/state/blob): the leading text files
+			// have all been read, so stop before streaming gigabytes.
+			return info, nil
 		}
 	}
 	return info, nil
@@ -674,7 +698,7 @@ func SnapshotImport(cfg *config.Config, file, name string) error {
 			if err := writeRegularFile(filepath.Join(tmp, hdr.Name), tr); err != nil {
 				return err
 			}
-		case "meta.yaml":
+		case "meta.yaml", clusterConfigFile:
 			if err := writeRegularFile(filepath.Join(tmp, hdr.Name), tr); err != nil {
 				return err
 			}

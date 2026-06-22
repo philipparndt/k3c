@@ -220,7 +220,11 @@ tar -cf %[1]s/certs.tar $items`,
 	if err := writeFrozenManifest(filepath.Join(dir, frozenManifestF), manifest); err != nil {
 		return err
 	}
-	return writeFrozenMeta(cfg, dir, serverIP)
+	if err := writeFrozenMeta(cfg, dir, serverIP); err != nil {
+		return err
+	}
+	captureClusterConfig(cfg, dir)
+	return nil
 }
 
 // enumerateFrozenImages lists the images referenced in the guest's

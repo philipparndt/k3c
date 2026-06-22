@@ -2,10 +2,14 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
+	"github.com/philipparndt/go-logger"
 	"github.com/spf13/cobra"
 
 	"k3c/cluster"
+	"k3c/config"
 )
 
 var clusterCmd = &cobra.Command{
@@ -36,6 +40,20 @@ var clusterImportRunCmd = &cobra.Command{
 		}
 		if name == "" {
 			fail(fmt.Errorf("the archive does not record a cluster name; pass one: k3c cluster import-run %s NAME", file))
+		}
+		// Use the snapshot's embedded cluster config unless the user passed
+		// --config. Seed it as the cluster's persisted config so Resolve picks
+		// it up (sizing, transparent egress, mirrors); the host-specific CA
+		// bundle is regenerated from the host at create time regardless.
+		if configFile == "" && info.Config != "" {
+			persisted := filepath.Join(config.StateDir(), "clusters", name, "k3c.yaml")
+			if err := os.MkdirAll(filepath.Dir(persisted), 0o755); err != nil {
+				fail(err)
+			}
+			if err := os.WriteFile(persisted, []byte(info.Config), 0o644); err != nil {
+				fail(err)
+			}
+			logger.Info("using the snapshot's embedded cluster config (override with --config)")
 		}
 		// Resolve the target cluster's config, then let the archive's CIDRs win
 		// — the snapshot's datastore is baked with them, so the cluster must use

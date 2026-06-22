@@ -98,7 +98,10 @@ snapshot archive and restore it in a single step. It SHALL read the archive's
 recorded cluster name (used as the default when NAME is omitted) and its CIDRs,
 SHALL create the cluster using those CIDRs (so the restore is not refused on a
 CIDR mismatch), then SHALL import and restore the archive. It SHALL refuse to
-run when a cluster of the target name already exists.
+run when a cluster of the target name already exists. A snapshot SHALL embed the
+cluster's project config (`k3c.yaml`), and `import-run` SHALL use that embedded
+config by default and SHALL override it when `--config` is given. The
+host-specific CA bundle is regenerated at create time and is not embedded.
 
 #### Scenario: Bring up a cluster from an archive on a fresh machine
 
@@ -114,6 +117,13 @@ run when a cluster of the target name already exists.
   already exists
 - **THEN** the command refuses and directs the user to import + restore into it
   or delete it first
+
+#### Scenario: Recreate uses the embedded config
+
+- **WHEN** the user runs `k3c cluster import-run vehub.k3csnap` with no
+  `--config`, and the archive embeds the cluster's `k3c.yaml`
+- **THEN** the cluster is created with the embedded settings (sizing, egress,
+  mirrors), not generic defaults; passing `--config` overrides them
 
 ### Requirement: Snapshot tiers preserve all non-reconstructable data
 

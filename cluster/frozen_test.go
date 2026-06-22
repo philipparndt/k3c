@@ -328,6 +328,46 @@ func TestExportImportFrozenSlimBundlesLocalOnly(t *testing.T) {
 	}
 }
 
+// TestSnapshotArchiveInfoReadsEmbeddedConfig verifies the embedded cluster
+// config round-trips through export and is read by SnapshotArchiveInfo (the bit
+// import-run relies on to recreate a cluster without --config).
+func TestSnapshotArchiveInfoReadsEmbeddedConfig(t *testing.T) {
+	srcCfg := &config.Config{
+		BaseDir: t.TempDir(), Cluster: "src",
+		ClusterCIDR: "10.52.0.0/16", ServiceCIDR: "10.54.0.0/16",
+	}
+	snapDir := snapshotDir(srcCfg, "snap1")
+	if err := os.MkdirAll(snapDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(snapDir, frozenStateTar), []byte("db"))
+	writeFile(t, filepath.Join(snapDir, frozenStorageTar), []byte("pvc"))
+	writeFile(t, filepath.Join(snapDir, frozenCertsTar), []byte("certs"))
+	writeFile(t, filepath.Join(snapDir, "meta.yaml"),
+		[]byte("cluster: src\nmode: frozen\nclusterCidr: 10.52.0.0/16\nserviceCidr: 10.54.0.0/16\n"))
+	embedded := "cluster:\n  name: src\n  memory: 32G\n"
+	writeFile(t, filepath.Join(snapDir, clusterConfigFile), []byte(embedded))
+	if err := writeFrozenManifest(filepath.Join(snapDir, frozenManifestF), frozenManifest{}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "snap1.k3csnap")
+	if err := exportFrozen(srcCfg, "snap1", out, FrozenThin); err != nil {
+		t.Fatalf("exportFrozen: %v", err)
+	}
+
+	info, err := SnapshotArchiveInfo(out)
+	if err != nil {
+		t.Fatalf("SnapshotArchiveInfo: %v", err)
+	}
+	if info.Config != embedded {
+		t.Fatalf("embedded config not read back: got %q want %q", info.Config, embedded)
+	}
+	if info.Cluster != "src" || info.ClusterCIDR != "10.52.0.0/16" || info.ServiceCIDR != "10.54.0.0/16" {
+		t.Fatalf("archive info wrong: %+v", info)
+	}
+}
+
 func writeFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0o644); err != nil {

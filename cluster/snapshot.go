@@ -366,6 +366,27 @@ func hostReachableIP(col string) string {
 	return strings.SplitN(strings.TrimSpace(ips[0]), "/", 2)[0]
 }
 
+// clusterConfigFile is the embedded copy of the cluster's project config
+// (k3c.yaml), captured at save time so `cluster import-run` can recreate the
+// cluster with its real settings (sizing, egress, mirrors) without a separate
+// --config. The host-specific CA bundle is regenerated from the host at create
+// time regardless, so embedding the k3c.yaml is safe and portable.
+const clusterConfigFile = "cluster-config.yaml"
+
+// captureClusterConfig copies the cluster's project config into the snapshot.
+// Best-effort: a cluster created from pure defaults has nothing to embed.
+func captureClusterConfig(cfg *config.Config, dir string) {
+	for _, src := range []string{filepath.Join(cfg.RunDir(), "k3c.yaml"), cfg.ConfigFile} {
+		if src == "" {
+			continue
+		}
+		if data, err := os.ReadFile(src); err == nil {
+			_ = os.WriteFile(filepath.Join(dir, clusterConfigFile), data, 0o644)
+			return
+		}
+	}
+}
+
 func writeSnapshot(cfg *config.Config, dir string, warm bool, serverIP string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -413,7 +434,11 @@ func writeSnapshot(cfg *config.Config, dir string, warm bool, serverIP string) e
 	// cluster-dns address); a restore into a cluster with different CIDRs
 	// must be refused
 	meta += "clusterCidr: " + cfg.ClusterCIDR + "\nserviceCidr: " + cfg.ServiceCIDR + "\n"
-	return os.WriteFile(filepath.Join(dir, "meta.yaml"), []byte(meta), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "meta.yaml"), []byte(meta), 0o644); err != nil {
+		return err
+	}
+	captureClusterConfig(cfg, dir)
+	return nil
 }
 
 // snapshotExists reports whether the snapshot dir holds a restorable
