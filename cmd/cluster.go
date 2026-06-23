@@ -80,6 +80,15 @@ var clusterDeleteCmd = &cobra.Command{
 	},
 }
 
+var clusterRepairCmd = &cobra.Command{
+	Use:   "repair [NAME]",
+	Short: "Rebuild host↔guest gateway forwarding (registry/webhook EOF on the gateway) without recreating the cluster",
+	Args:  cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.Repair(loadConfigDefault(args)))
+	},
+}
+
 var clusterStartCmd = &cobra.Command{
 	Use:   "start [NAME]",
 	Short: "Resume a stopped cluster",
@@ -162,6 +171,6 @@ func init() {
 	clusterReclaimCmd.Flags().BoolVar(&reclaimRelease, "release", false,
 		"deflate the balloon, giving the cluster its full configured memory back")
 	clusterCmd.AddCommand(clusterCreateCmd, clusterImportRunCmd, clusterDeleteCmd, clusterStartCmd, clusterStopCmd,
-		clusterPauseCmd, clusterResumeCmd, clusterSuspendCmd, clusterReclaimCmd, clusterActivateCmd, clusterListCmd)
+		clusterRepairCmd, clusterPauseCmd, clusterResumeCmd, clusterSuspendCmd, clusterReclaimCmd, clusterActivateCmd, clusterListCmd)
 	rootCmd.AddCommand(clusterCmd)
 }

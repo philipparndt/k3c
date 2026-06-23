@@ -325,6 +325,42 @@ func (d *doctor) checkDaemons(cfg *config.Config) {
 		return
 	}
 	d.pass(fmt.Sprintf("all %d listeners up", len(listeners)))
+	d.checkGatewayForwarding(cfg)
+}
+
+// checkGatewayForwarding probes a daemon service over the vmnet GATEWAY IP — the
+// path the guest actually uses — instead of loopback. Listeners bind wildcard
+// and report "up" on loopback even when guest->gateway forwarding has gone
+// stale (long uptime, host sleep/resume), so this catches "listener up but
+// gateway dead", which a `daemons restart` cannot fix.
+func (d *doctor) checkGatewayForwarding(cfg *config.Config) {
+	if !cfg.RegistryEnabled || cfg.VmnetGateway == "" {
+		return
+	}
+	client := &http.Client{Timeout: 4 * time.Second}
+	probe := func(host string) error {
+		resp, err := client.Get("http://" + net.JoinHostPort(host, cfg.RegistryPort) + "/v2/")
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		return nil
+	}
+	if probe(cfg.VmnetGateway) == nil {
+		d.pass("gateway forwarding ok (registry via " + cfg.VmnetGateway + ":" + cfg.RegistryPort + ")")
+		return
+	}
+	gwErr := probe(cfg.VmnetGateway)
+	if probe("127.0.0.1") == nil {
+		// loopback serves but the gateway does not: the forwarding plane (vmnet
+		// attachment / gvnet netstack) is stale, not the service. A daemons
+		// restart only re-binds listeners and will NOT fix this.
+		d.fail("registry serves on loopback but not via the gateway "+cfg.VmnetGateway+":"+cfg.RegistryPort+
+			" ("+firstLine(gwErr.Error())+") — guest->gateway forwarding is stale; a daemons restart will not fix it",
+			"k3c cluster repair")
+		return
+	}
+	d.fail("registry not reachable on the gateway or loopback ("+firstLine(gwErr.Error())+")", "k3c cluster repair")
 }
 
 // checkEgress sends a request to a registry mirror through the host
@@ -453,7 +489,8 @@ func (d *doctor) checkWebhook(cfg *config.Config) {
 	resp, err := client.Post("https://"+cfg.VmnetGateway+":"+webhookPort+"/mutate-pods",
 		"application/json", bytes.NewReader(body))
 	if err != nil {
-		d.fail("webhook endpoint not reachable: "+firstLine(err.Error()), "k3c daemons restart")
+		d.fail("webhook endpoint not reachable on the gateway: "+firstLine(err.Error())+
+			" — if listeners are up, the guest->gateway forwarding is stale", "k3c cluster repair")
 		return
 	}
 	defer resp.Body.Close()
