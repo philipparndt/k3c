@@ -560,6 +560,43 @@ func Stop(cfg *config.Config) error {
 	return nil
 }
 
+// Repair rebuilds the host->guest gateway forwarding plane without recreating
+// the cluster (all state is preserved). Use it when host listeners report "up"
+// but the gateway path (e.g. registry :5001 or the admission webhook :9443 on
+// the vmnet gateway) returns EOF — typically after long uptime or host
+// sleep/resume. A `daemons restart` only re-binds the host listeners; the dead
+// path is the VM's network attachment (the vmnet bridge and, with transparent
+// egress, the per-VM gvnet netstack), which only a VM restart rebuilds.
+func Repair(cfg *config.Config) error {
+	if !containerExists(cfg.ServerName, false) {
+		return fmt.Errorf("cluster '%s' does not exist; create it first", cfg.Cluster)
+	}
+	resumeIfPaused(cfg)
+	logger.Info("repairing gateway forwarding for cluster '" + cfg.Cluster + "'")
+
+	// Force a fresh host-daemon spawn (re-binds listeners, reaps orphans). Start
+	// (below) re-spawns them since their pidfiles are now gone.
+	StopDaemons(cfg)
+
+	// Restart the server VM so its network attachment is rebuilt. Stopping it
+	// disconnects the VM; then tear down the transparent-egress netstack so the
+	// next start spawns a FRESH one — ensureGvnet keeps a netstack whose pid is
+	// alive and socket present, which is exactly the stale-but-running state we
+	// are repairing, so it must be removed explicitly.
+	if containerExists(cfg.ServerName, true) {
+		logger.Info("restarting the server VM to rebuild its network attachment")
+		_, _ = runContainer("stop", cfg.ServerName)
+	}
+	if cfg.TransparentEgress {
+		stopGvnet(cfg, cfg.ServerName)
+	}
+
+	// Start re-spawns the daemons, respawns the netstack and re-attaches the VM
+	// (startServerVM -> ensureGvnet), re-merges the kubeconfig, and via postStart
+	// repairs virtiofs and re-registers the admission webhook, then waits Ready.
+	return Start(cfg)
+}
+
 // Start resumes a stopped cluster.
 func Start(cfg *config.Config) error {
 	if err := preflight(); err != nil {
