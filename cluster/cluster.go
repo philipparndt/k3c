@@ -299,8 +299,28 @@ func KubeconfigGet(cfg *config.Config) error {
 	return nil
 }
 
-// KubeconfigMerge merges the cluster's kubeconfig into ~/.kube/config and
-// switches the current context.
+// kubeconfigPath returns the kubeconfig file the merged cluster context is
+// written into. It honours the KUBECONFIG environment variable (the first
+// non-empty entry of the path list, matching kubectl's write semantics) and
+// falls back to ~/.kube/config when KUBECONFIG is unset. Resolving the same
+// path for both the merge and the subsequent use-context keeps them in sync:
+// hardcoding ~/.kube/config while use-context read the ambient KUBECONFIG was
+// what made the merge fail when KUBECONFIG pointed elsewhere.
+func kubeconfigPath() (string, error) {
+	for _, p := range filepath.SplitList(os.Getenv("KUBECONFIG")) {
+		if p != "" {
+			return p, nil
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".kube", "config"), nil
+}
+
+// KubeconfigMerge merges the cluster's kubeconfig into the active kubeconfig
+// (KUBECONFIG, or ~/.kube/config) and switches the current context.
 func KubeconfigMerge(cfg *config.Config) error {
 	// without the per-cluster ports the server URL gets an empty port,
 	// which is not even valid YAML
@@ -322,13 +342,11 @@ func KubeconfigMerge(cfg *config.Config) error {
 	tmp.Close()
 
 	logger.Info("merging kubeconfig (context: " + cfg.KubeContext + ")")
-	home, err := os.UserHomeDir()
+	kubeConfig, err := kubeconfigPath()
 	if err != nil {
 		return err
 	}
-	kubeDir := filepath.Join(home, ".kube")
-	kubeConfig := filepath.Join(kubeDir, "config")
-	if err := os.MkdirAll(kubeDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(kubeConfig), 0o755); err != nil {
 		return err
 	}
 	if _, err := os.Stat(kubeConfig); err == nil {
@@ -337,7 +355,7 @@ func KubeconfigMerge(cfg *config.Config) error {
 			_ = os.WriteFile(filepath.Join(cfg.RunDir(), "kubeconfig.backup"), data, 0o600)
 		}
 		merge := exec.Command("kubectl", "config", "view", "--flatten")
-		merge.Env = append(os.Environ(), "KUBECONFIG="+tmp.Name()+":"+kubeConfig)
+		merge.Env = append(os.Environ(), "KUBECONFIG="+tmp.Name()+string(os.PathListSeparator)+kubeConfig)
 		merged, err := merge.Output()
 		if err != nil {
 			detail := ""
@@ -355,8 +373,15 @@ func KubeconfigMerge(cfg *config.Config) error {
 			return err
 		}
 	}
-	_, err = runOut("kubectl", "config", "use-context", cfg.KubeContext)
-	return err
+	// Pin use-context to the file we just wrote. If we relied on the ambient
+	// KUBECONFIG instead, a KUBECONFIG that lists other files first would not
+	// see the freshly merged context and this would fail with exit status 1.
+	use := exec.Command("kubectl", "config", "use-context", cfg.KubeContext)
+	use.Env = append(os.Environ(), "KUBECONFIG="+kubeConfig)
+	if out, err := use.CombinedOutput(); err != nil {
+		return fmt.Errorf("kubectl config use-context failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func kubectl(cfg *config.Config, args ...string) (string, error) {
