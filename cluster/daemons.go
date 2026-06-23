@@ -669,10 +669,22 @@ func SpawnDaemons(cfg *config.Config) error {
 		case egressPortMissing(cfg):
 			logger.Info("restarting host daemons (egress ports changed)")
 			StopDaemons(cfg)
+		case !pullCacheHealthy(cfg):
+			// pid alive and version matches, but the pull-cache port is not
+			// answering — typically a stale/orphaned daemon holds it. Restart
+			// (and reap orphans below) so image pulls work again.
+			logger.Info("restarting host daemons (pull-cache not responding)")
+			StopDaemons(cfg)
 		default:
 			logger.Info("host daemons already running")
 			return nil
 		}
+	}
+	// Reap any orphaned daemons (e.g. from an older build) and wait for the
+	// listener ports to free, so the fresh spawn can bind them cleanly.
+	reapOrphanDaemons()
+	for i := 0; i < 15 && portOpen(cfg.ProxyPort); i++ {
+		time.Sleep(200 * time.Millisecond)
 	}
 	logger.Info("starting host daemons (proxy :" + cfg.ProxyPort + ", sni-gateway :443)")
 	if err := os.MkdirAll(cfg.BaseDir, 0o755); err != nil {
@@ -715,6 +727,45 @@ func SpawnDaemons(cfg *config.Config) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("daemons did not come up; see %s", cfg.DaemonLogFile())
+}
+
+// pullCacheHealthy reports whether the pull-cache is actually serving, not just
+// holding its port open. A stale/orphaned daemon (e.g. one left by a previous
+// build) accepts the connection and drops it (EOF) instead of answering the
+// registry API — image pulls then fail with "EOF" while the pidfile still looks
+// healthy. A short HTTP probe of the registry base distinguishes the two.
+func pullCacheHealthy(cfg *config.Config) bool {
+	if !cfg.PullCacheEnabled || cfg.PullCachePort == "" {
+		return true
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + cfg.PullCachePort + "/v2/")
+	if err != nil {
+		return false // EOF / connection refused: not actually serving
+	}
+	_ = resp.Body.Close()
+	return true // any HTTP response means the listener is alive and answering
+}
+
+// reapOrphanDaemons kills leftover `k3c daemons run` processes that the pidfile
+// no longer tracks — e.g. an older build's daemon that survived a restart and
+// still holds a listener (the stale pull-cache that serves EOF). Without this, a
+// fresh daemon cannot rebind that port. Best-effort.
+func reapOrphanDaemons() {
+	out, err := exec.Command("pgrep", "-f", "k3c daemons run").Output()
+	if err != nil {
+		return
+	}
+	self := os.Getpid()
+	for _, f := range strings.Fields(string(out)) {
+		pid, err := strconv.Atoi(f)
+		if err != nil || pid == self {
+			continue
+		}
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+		}
+	}
 }
 
 // StopDaemons stops the host daemons and removes their pidfiles.
