@@ -613,9 +613,9 @@ func SnapshotList(cfg *config.Config) error {
 		fmt.Printf("no snapshots for cluster '%s'\n", cfg.Cluster)
 		return nil
 	}
-	fmt.Printf("%-24s %-6s %s\n", "NAME", "MODE", "CREATED")
+	fmt.Printf("%-24s %-6s %9s  %s\n", "NAME", "MODE", "SIZE", "CREATED")
 	for _, s := range snapshots {
-		fmt.Printf("%-24s %-6s %s\n", s.Name, s.Mode, s.Created)
+		fmt.Printf("%-24s %-6s %9s  %s\n", s.Name, s.Mode, humanBytes(s.Size), s.Created)
 	}
 	return nil
 }

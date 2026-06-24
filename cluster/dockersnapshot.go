@@ -225,6 +225,7 @@ func DockerSnapshots(cfg *config.Config) []SnapshotInfo {
 			continue
 		}
 		info := SnapshotInfo{Name: e.Name(), Mode: "cold"}
+		info.Size = dirDiskUsage(dockerSnapshotDir(cfg, e.Name()))
 		if data, err := os.ReadFile(filepath.Join(dockerSnapshotDir(cfg, e.Name()), "meta")); err == nil {
 			for _, line := range strings.Split(string(data), "\n") {
 				if strings.HasPrefix(line, "mode: ") {

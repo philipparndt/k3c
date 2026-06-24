@@ -45,6 +45,7 @@ type treeRow struct {
 	snapName    string // set on a snapshot row
 	snapMode    string
 	snapWhen    string
+	snapSize    string // human-readable on-disk size of a snapshot
 	placeholder string // dim filler row ("loading…", "no snapshots …")
 }
 
@@ -417,6 +418,7 @@ func (m *model) rebuildRows() {
 				rows = append(rows, treeRow{
 					kind: rowSnapshot, machine: i,
 					snapName: s.Name, snapMode: s.Mode, snapWhen: s.Created,
+					snapSize: humanBytes(s.Size),
 				})
 			}
 		}
@@ -1273,7 +1275,7 @@ func (m model) renderRow(r treeRow, w int, selected bool) string {
 		return dimSt.Render(indent + r.placeholder)
 	}
 	if selected {
-		plain := fmt.Sprintf("%s%-24s %-6s %s", indent, r.snapName, r.snapMode, r.snapWhen)
+		plain := fmt.Sprintf("%s%-24s %-6s %9s  %s", indent, r.snapName, r.snapMode, r.snapSize, r.snapWhen)
 		return selectSt.Render(padRight(plain, w))
 	}
 	label := fmt.Sprintf("%-6s", r.snapMode)
@@ -1284,7 +1286,8 @@ func (m model) renderRow(r treeRow, w int, selected bool) string {
 	case "frozen":
 		mode = lipgloss.NewStyle().Foreground(cool).Render(label)
 	}
-	return fmt.Sprintf("%s%-24s %s %s", indent, r.snapName, mode, dimSt.Render(r.snapWhen))
+	return fmt.Sprintf("%s%-24s %s %s  %s", indent, r.snapName, mode,
+		dimSt.Render(fmt.Sprintf("%9s", r.snapSize)), dimSt.Render(r.snapWhen))
 }
 
 func (m model) statusView() string {

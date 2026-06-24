@@ -27,6 +27,31 @@ type SnapshotInfo struct {
 	Name    string
 	Mode    string // warm, cold, or frozen
 	Created string
+	Size    int64 // on-disk allocated size of the snapshot directory, in bytes
+}
+
+// dirDiskUsage returns the total on-disk allocated size of a directory tree,
+// in bytes. It sums st_blocks (sparse-aware), so the multi-GB-but-sparse
+// rootfs images count only the blocks actually allocated — matching `du`
+// rather than apparent size. Unreadable entries are skipped.
+func dirDiskUsage(dir string) int64 {
+	var total int64
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if b := allocatedBytes(info); b > 0 {
+			total += b
+		} else {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 // Clusters returns all k3c clusters (containers named <cluster>-server)
@@ -133,6 +158,7 @@ func Snapshots(cfg *config.Config, cluster string) []SnapshotInfo {
 			continue
 		}
 		info := SnapshotInfo{Name: e.Name(), Mode: "cold", Created: "?"}
+		info.Size = dirDiskUsage(filepath.Join(base, e.Name()))
 		if meta, err := os.ReadFile(filepath.Join(base, e.Name(), "meta.yaml")); err == nil {
 			for _, line := range strings.Split(string(meta), "\n") {
 				if v, ok := strings.CutPrefix(line, "created: "); ok {
