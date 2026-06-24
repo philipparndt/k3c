@@ -244,6 +244,20 @@ func saveFrozen(cfg *config.Config, name, dir string) error {
 		_ = os.RemoveAll(dir)
 		return err
 	}
+
+	// A frozen snapshot drops the in-VM image store and rehydrates remote
+	// images from the host pull-cache on thaw. If the cache is missing any
+	// referenced blob (e.g. it was evicted by an earlier `pull cache prune`),
+	// the snapshot is born unrestorable. Fail here rather than reporting
+	// success and letting the failure surface only at restore. This is the
+	// same presence check the restore path runs, so it honors a bundled
+	// local-images archive (which downgrades missing remote digests to a
+	// warning).
+	if err := verifyFrozenBlobs(cfg, dir); err != nil {
+		_ = os.RemoveAll(dir)
+		return fmt.Errorf("refusing to save an unrestorable frozen snapshot — %w", err)
+	}
+
 	logger.Info("snapshot '" + name + "' (frozen) saved for cluster '" + cfg.Cluster + "'")
 
 	// Phase 2: read the manifest we just wrote and hand its digest closure
