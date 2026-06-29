@@ -156,18 +156,31 @@ func newSnapshotCmd() *cobra.Command {
 		"frozen only: bundle no images at all (only safe when the cluster has no local-only images)")
 	exportCmd.MarkFlagsMutuallyExclusive("slim", "thin")
 
+	var importCluster string
 	importCmd := &cobra.Command{
 		Use:   "import FILE [NAME]",
-		Short: "Import an exported snapshot archive (create the cluster first)",
-		Args:  cobra.RangeArgs(1, 2),
+		Short: "Import an exported snapshot archive as a stored snapshot of an existing cluster",
+		Long: "Import an exported archive into an existing cluster as a stored snapshot.\n" +
+			"FILE is the archive; the optional NAME is the snapshot name to store it\n" +
+			"under (defaulting to the archive's name). The target cluster is the\n" +
+			"active one (or the only one) unless --cluster selects another.\n\n" +
+			"To create a brand-new cluster from an archive instead, use\n" +
+			"`k3c cluster import-run` — there the second argument is the cluster name.",
+		Args: cobra.RangeArgs(1, 2),
 		Run: func(cmd *cobra.Command, args []string) {
 			name := ""
 			if len(args) > 1 {
 				name = args[1]
 			}
-			fail(cluster.SnapshotImport(loadConfigDefault(nil), args[0], name))
+			var clusterArgs []string
+			if importCluster != "" {
+				clusterArgs = []string{importCluster}
+			}
+			fail(cluster.SnapshotImport(loadConfigDefault(clusterArgs), args[0], name))
 		},
 	}
+	importCmd.Flags().StringVarP(&importCluster, "cluster", "C", "",
+		"target cluster (default: the active cluster, or the only one)")
 
 	snapshotCmd.AddCommand(saveCmd, restoreCmd, listCmd, deleteCmd, exportCmd, importCmd)
 	return snapshotCmd

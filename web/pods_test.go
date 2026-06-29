@@ -14,6 +14,9 @@ import (
 // handlePods is read-only and returns an empty list (never nil/error) when no
 // cluster is targetable, so the browser can render an empty state.
 func TestHandlePodsEmptyWhenNoCluster(t *testing.T) {
+	// Isolate from the developer's machine: an empty state dir means
+	// ActiveClusterName (the targetCluster fallback) resolves to no cluster.
+	t.Setenv("K3C_BASE_DIR", t.TempDir())
 	s := &Server{}
 	req := httptest.NewRequest(http.MethodGet, "/api/pods", nil)
 	rec := httptest.NewRecorder()
@@ -44,6 +47,9 @@ func TestTargetClusterUsesQueryParam(t *testing.T) {
 // The SSE endpoint refuses a request that resolves to no cluster rather than
 // opening an empty stream.
 func TestHandlePodsStreamNoCluster(t *testing.T) {
+	// Isolate from the developer's machine: with an empty state dir,
+	// targetCluster resolves to "" and the handler must reject with 400.
+	t.Setenv("K3C_BASE_DIR", t.TempDir())
 	s := &Server{pods: newPodStreamManager(context.Background())}
 	req := httptest.NewRequest(http.MethodGet, "/api/pods/stream", nil)
 	rec := httptest.NewRecorder()

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/philipparndt/go-logger"
@@ -60,7 +61,9 @@ func loadConfig(args []string) *config.Config {
 	}
 	cfg, err := config.Resolve(name, configFile)
 	if err != nil {
-		logger.Panic("Failed to load config", err)
+		// A bad config file is user error, not a k3c bug: report it cleanly
+		// and exit rather than dumping a panic stack trace.
+		fail(fmt.Errorf("failed to load config: %w", err))
 	}
 	cluster.SetContainerBinary(cfg.ContainerBinary)
 	return cfg

@@ -18,7 +18,9 @@ var imageImportCmd = &cobra.Command{
 	Short: "Import an image from the host image store into the cluster",
 	Args:  cobra.RangeArgs(1, 2),
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.ImageImport(loadConfig(args[1:]), args[0]))
+		// No CLUSTER given: target the active cluster (or the only one), like
+		// every other cluster-scoped command — not the literal default "k3c".
+		fail(cluster.ImageImport(loadConfigDefault(args[1:]), args[0]))
 	},
 }
 

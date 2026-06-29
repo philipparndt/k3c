@@ -460,7 +460,11 @@ func RunDaemons(cfg *config.Config) error {
 	}
 	_ = os.WriteFile(daemonsVersionFile(cfg), []byte(daemonsVersion(cfg)+"\n"), 0o644)
 	startAutoReclaim(cfg)
-	errCh := make(chan error, 3)
+	// Buffer one slot per listener goroutine so a crashing listener never
+	// blocks forever on send (leaking its goroutine) once we return after the
+	// first error. 5 covers proxy + SNI + registry + pull-cache + webhook;
+	// over-allocating (EgressPorts may include 443, which we skip) is harmless.
+	errCh := make(chan error, 5+len(cfg.EgressPorts)+len(cfg.EgressForwards))
 	proxyPort, _ := strconv.Atoi(cfg.ProxyPort)
 	go func() {
 		errCh <- serve("0.0.0.0:"+cfg.ProxyPort, arbitrate(cfg, proxyPort, handleProxyConn))

@@ -365,11 +365,11 @@ func KubeconfigMerge(cfg *config.Config) error {
 			}
 			return fmt.Errorf("kubeconfig merge failed: %w%s", err, detail)
 		}
-		if err := os.WriteFile(kubeConfig, merged, 0o600); err != nil {
+		if err := writeFileAtomic(kubeConfig, merged, 0o600); err != nil {
 			return err
 		}
 	} else {
-		if err := os.WriteFile(kubeConfig, []byte(kc), 0o600); err != nil {
+		if err := writeFileAtomic(kubeConfig, []byte(kc), 0o600); err != nil {
 			return err
 		}
 	}
@@ -382,6 +382,32 @@ func KubeconfigMerge(cfg *config.Config) error {
 		return fmt.Errorf("kubectl config use-context failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// writeFileAtomic writes data to path via a temp file in the same directory
+// followed by an atomic rename, so a crash or disk-full mid-write can never
+// truncate an existing file. This matters for ~/.kube/config, which k3c does
+// not own — it holds all the user's other clusters' contexts.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func kubectl(cfg *config.Config, args ...string) (string, error) {

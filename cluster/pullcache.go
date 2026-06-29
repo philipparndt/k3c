@@ -437,11 +437,28 @@ func (p *pullCache) resolveTag(ns, name, tag, accept string) (string, error) {
 	if hdr := resp.Header.Get("Docker-Content-Digest"); hdr != "" && hdr != digest {
 		return "", fmt.Errorf("manifest digest mismatch for %s/%s:%s", ns, name, tag)
 	}
-	if err := os.WriteFile(p.blobPath(digest), body, 0o644); err != nil {
+	// Commit the blob atomically (temp + rename) like streamBlob/fetchContent
+	// do: a concurrent reader (serveManifestByDigest stats then reads this
+	// path) must never observe a half-written manifest. The content-type
+	// sidecar is written before the rename, so once the blob is visible its
+	// type is too.
+	tmp, err := os.CreateTemp(filepath.Join(pullCacheDir(p.cfg), "blobs"), ".download-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
 		return "", err
 	}
 	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
 		_ = os.WriteFile(p.typePath(digest), []byte(contentType), 0o644)
+	}
+	if err := os.Rename(tmp.Name(), p.blobPath(digest)); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(p.tagPath(ns, name, tag)), 0o755); err != nil {
 		return "", err

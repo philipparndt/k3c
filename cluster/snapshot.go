@@ -80,10 +80,20 @@ func containerRootfsPath(name string) (string, error) {
 }
 
 // cloneFile copies src to dst using an APFS copy-on-write clone.
+//
+// It clones into a temp sibling and renames over dst, so a failed clone
+// (cross-volume, out of space) leaves the existing dst untouched. This matters
+// on restore, where dst is the live container rootfs — the original must
+// survive a failed restore so the cluster can still boot.
 func cloneFile(src, dst string) error {
-	_ = os.Remove(dst)
-	if err := unix.Clonefile(src, dst, 0); err != nil {
+	tmp := fmt.Sprintf("%s.clone-%d.tmp", dst, os.Getpid())
+	_ = os.Remove(tmp) // Clonefile requires the target not to exist
+	if err := unix.Clonefile(src, tmp, 0); err != nil {
 		return fmt.Errorf("clonefile %s -> %s: %w (snapshots require APFS on the same volume)", src, dst, err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("commit clone to %s: %w", dst, err)
 	}
 	return nil
 }
