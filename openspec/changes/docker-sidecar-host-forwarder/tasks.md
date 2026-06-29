@@ -7,10 +7,10 @@
 
 ## 2. Engine endpoint: stop depending on guest vmnet L2 (Phase 1, high confidence)
 
-- [ ] 2.1 Repoint `startDockerSocket` (`cluster/dockerports.go`) at the stable Apple-published loopback endpoint (`127.0.0.1:<DockerPort>`) instead of dialing `<vmIP>:2375`
-- [ ] 2.2 Confirm `DockerHost`/`ensureDockerContext` wiring (`cluster/docker.go`) resolves to the host socket/loopback, never the guest IP; adjust `DockerHostTCP` callers if needed
-- [ ] 2.3 Make the engine-API discovery poll (`dockerPublishedPorts`) read the engine over the stable endpoint rather than `http://<vmIP>:2375`
-- [ ] 2.4 Verify `docker ps` / `docker run` and `eval $(k3c docker env)` work with the guest vmnet IP unreachable (simulate inert vmnet)
+- [x] 2.1 `startDockerSocket` now dials the stable loopback endpoint via new helper `dockerEngineEndpoint(cfg)` = `127.0.0.1:<DockerPort>` instead of `containerIP`+`<vmIP>:2375` (`cluster/dockerports.go`). Hermetic test `TestStartDockerSocketForwardsToLoopbackEngine` exercises the real function end-to-end.
+- [x] 2.2 `DockerHost` already returns the host unix socket (`unix://<BaseDir>/docker.sock`) and `ensureDockerContext` sets the context host to it — both loopback/socket, never the guest IP. `DockerHostTCP` had **no callers**; repointed it to the loopback endpoint anyway to remove the guest-IP landmine.
+- [x] 2.3 `dockerPublishedPorts(endpoint)` now queries `http://127.0.0.1:<DockerPort>/containers/json` (signature `ip`→`endpoint`); `reconcileDockerPorts(cfg, …)` passes `dockerEngineEndpoint(cfg)`. Unit test `TestDockerPublishedPortsQueriesEndpointAndParses`.
+- [x] 2.4 Verified live against the real engine (vmnet `192.168.64.7:2375` confirmed DEAD): `docker -H tcp://127.0.0.1:2375 version` → server 29.6.1; `GET /containers/json` → OK; and the full `DOCKER_HOST=unix://` path through a loopback-backed unix socket → `docker version` + `docker ps` exit 0. (Data plane for nested ports stays on vmnet — Phase 2, §3.)
 
 ## 3. Nested published ports: control-channel forwarder (Phase 2, gated on §1)
 

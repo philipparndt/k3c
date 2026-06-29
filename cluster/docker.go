@@ -107,10 +107,12 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		"-p", "127.0.0.1:" + cfg.DockerPort + ":2375",
 	}
 	if cfg.TransparentEgress {
-		// dual-NIC: vmnet stays primary (host<->VM: published 2375 + the
-		// DockerHost IP keep targeting the host-routable vmnet NIC); the gvnet
-		// NIC is added second and the entrypoint repoints the default route at
-		// it for transparent egress. No CONNECT proxy needed.
+		// dual-NIC: vmnet stays primary for the sidecar's gateway services
+		// (proxy, pull-cache, registry at the vmnet gateway) and the cluster's
+		// containerIP/kube-API; the gvnet NIC is added second and the entrypoint
+		// repoints the default route at it for transparent egress. No CONNECT
+		// proxy needed. The host reaches the engine via the Apple-published
+		// 127.0.0.1:<DockerPort> loopback, not the guest vmnet IP (startDockerSocket).
 		nets, err := gvnetNetworks(cfg, dockerName)
 		if err != nil {
 			return err
@@ -485,15 +487,15 @@ func DockerHost(cfg *config.Config) (string, error) {
 	return "unix://" + dockerSocketPath(cfg), nil
 }
 
-// DockerHostTCP returns the direct tcp endpoint on the sidecar VM, for tools
-// that cannot use a unix socket or need to reach published ports on the VM
-// address itself rather than the mirrored host loopback.
+// DockerHostTCP returns the engine's tcp endpoint for tools that cannot use a
+// unix socket. It is the stable Apple-published loopback (127.0.0.1:<DockerPort>),
+// not the guest vmnet IP — the latter is not host-reachable (see
+// startDockerSocket / the docker-sidecar-host-forwarder change).
 func DockerHostTCP(cfg *config.Config) (string, error) {
-	ip := containerIP(dockerName)
-	if ip == "" {
+	if !containerExists(dockerName, true) {
 		return "", fmt.Errorf("docker sidecar is not running (k3c docker up)")
 	}
-	return "tcp://" + ip + ":2375", nil
+	return "tcp://" + dockerEngineEndpoint(cfg), nil
 }
 
 // DockerEnv prints shell exports for the sidecar engine.

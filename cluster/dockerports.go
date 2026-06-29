@@ -26,11 +26,22 @@ func dockerSocketPath(cfg *config.Config) string {
 	return filepath.Join(cfg.BaseDir, "docker.sock")
 }
 
+// dockerEngineEndpoint is the stable, host-local address the Apple runtime
+// publishes the sidecar engine on (docker.go: -p 127.0.0.1:<DockerPort>:2375).
+// Forwarding through this loopback endpoint never depends on the guest vmnet IP
+// being reachable from the host at L2 — which it is not (see the
+// docker-sidecar-host-forwarder change, OQ#2). It survives sidecar recreation:
+// the runtime republishes the same host port.
+func dockerEngineEndpoint(cfg *config.Config) string {
+	return net.JoinHostPort("127.0.0.1", cfg.DockerPort)
+}
+
 // startDockerSocket serves a host unix socket that forwards to the sidecar's
-// docker engine (tcp 2375 on the VM). The sidecar IP is resolved per
-// connection, so the socket keeps working across sidecar recreation;
-// connections made while no sidecar is running are closed. Idle (just an
-// unused listener) until something dials it.
+// docker engine via the stable Apple-published loopback endpoint
+// (127.0.0.1:<DockerPort>), so it keeps working across sidecar recreation and
+// when the guest vmnet IP is unreachable; connections made while no sidecar is
+// running fail to dial and are closed. Idle (just an unused listener) until
+// something dials it.
 func startDockerSocket(cfg *config.Config) {
 	path := dockerSocketPath(cfg)
 	// a stale socket file from a previous daemon blocks the bind
@@ -49,12 +60,10 @@ func startDockerSocket(cfg *config.Config) {
 				return
 			}
 			go func() {
-				ip := containerIP(dockerName)
-				if ip == "" {
-					_ = conn.Close() // sidecar not running
-					return
-				}
-				upstream, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "2375"), connectTimeout)
+				// dial the stable host-local engine endpoint, never the guest
+				// vmnet IP (not host-reachable); a stopped sidecar has no
+				// published port, so the dial fails fast and we close.
+				upstream, err := net.DialTimeout("tcp", dockerEngineEndpoint(cfg), connectTimeout)
 				if err != nil {
 					_ = conn.Close()
 					return
@@ -111,7 +120,7 @@ func startDockerPortForward(cfg *config.Config) {
 	go func() {
 		active := map[string]net.Listener{}
 		for {
-			reconcileDockerPorts(active, owned)
+			reconcileDockerPorts(cfg, active, owned)
 			time.Sleep(dockerPortPoll)
 		}
 	}()
@@ -121,12 +130,15 @@ func startDockerPortForward(cfg *config.Config) {
 // sidecar's currently published ports, and records every published port for
 // the daemon's contested-port arbitration. Listeners are keyed by host:port so
 // the same port published on different addresses is tracked independently.
-func reconcileDockerPorts(active map[string]net.Listener, owned map[int]bool) {
+func reconcileDockerPorts(cfg *config.Config, active map[string]net.Listener, owned map[int]bool) {
+	// discovery reads the engine over the stable loopback endpoint (vmnet-
+	// independent); the per-port data plane below still dials the guest VM at
+	// <ip>:<port> — that tunnel is replaced over a control channel in Phase 2.
 	ip := containerIP(dockerName)
 	desired := map[string]portBind{}
 	published := map[int]string{}
 	if ip != "" {
-		for _, b := range dockerPublishedPorts(ip) {
+		for _, b := range dockerPublishedPorts(dockerEngineEndpoint(cfg)) {
 			published[b.port] = fmt.Sprintf("%s:%d", ip, b.port)
 			// daemon-owned ports (:443 ingress, registry, proxy, egress,
 			// pull-cache) are contested: the daemon already holds the host
@@ -182,10 +194,12 @@ func acceptDockerForward(ln net.Listener, target string) {
 }
 
 // dockerPublishedPorts returns the published host TCP endpoints reported by
-// the sidecar's docker engine, preserving the bind address docker chose.
-func dockerPublishedPorts(ip string) []portBind {
+// the sidecar's docker engine, preserving the bind address docker chose. It
+// queries the engine over the stable loopback endpoint (127.0.0.1:<DockerPort>),
+// so discovery does not depend on the guest vmnet IP being host-reachable.
+func dockerPublishedPorts(endpoint string) []portBind {
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + ip + ":2375/containers/json")
+	resp, err := client.Get("http://" + endpoint + "/containers/json")
 	if err != nil {
 		return nil
 	}
