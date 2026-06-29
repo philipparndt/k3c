@@ -55,10 +55,46 @@ type treeRow struct {
 // confirm is a pending yes/no question and the command an answer of yes
 // runs. A non-nil noCmd runs on decline instead of cancelling — used for
 // follow-up questions where "no" still performs the base action.
+//
+// The dialog renders as buttons (cancel on the left, the affirmative action on
+// the right; a noCmd adds a middle button). destructive paints the affirmative
+// button red. focus is the selected button, navigated with ←/→ and defaulting
+// to the safe leftmost (Cancel).
 type confirm struct {
-	prompt string
-	cmd    tea.Cmd
-	noCmd  tea.Cmd
+	prompt      string
+	cmd         tea.Cmd
+	noCmd       tea.Cmd
+	yesLabel    string // affirmative button label (default "OK")
+	noLabel     string // middle button label when noCmd is set (default "No")
+	destructive bool   // paint the affirmative button red
+	focus       int    // selected button index (0 = Cancel)
+}
+
+// confirmButton is one rendered button in a confirm dialog. A nil action is
+// the cancel button.
+type confirmButton struct {
+	label       string
+	destructive bool
+	action      tea.Cmd
+}
+
+// buttons lays out the dialog's buttons left-to-right: Cancel, then (when a
+// noCmd decline path exists) the decline button, then the affirmative action.
+func (c confirm) buttons() []confirmButton {
+	yes := c.yesLabel
+	if yes == "" {
+		yes = "OK"
+	}
+	btns := []confirmButton{{label: "Cancel"}}
+	if c.noCmd != nil {
+		no := c.noLabel
+		if no == "" {
+			no = "No"
+		}
+		btns = append(btns, confirmButton{label: no, action: c.noCmd})
+	}
+	btns = append(btns, confirmButton{label: yes, destructive: c.destructive, action: c.cmd})
+	return btns
 }
 
 // askMsg opens a (follow-up) confirmation.
@@ -346,8 +382,10 @@ func (m model) dockerKey(key string) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case "d", "x":
 		m.confirm = &confirm{
-			prompt: "Remove the docker sidecar? (the image-store volume is kept)",
-			cmd:    m.opCmd("docker sidecar removal", "docker", "rm"),
+			prompt:      "Remove the docker sidecar? (the image-store volume is kept)",
+			cmd:         m.opCmd("docker sidecar removal", "docker", "rm"),
+			yesLabel:    "Remove",
+			destructive: true,
 		}
 		return m, nil
 	}
@@ -688,22 +726,61 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// a pending confirmation eats every key
+	// a pending confirmation eats every key: arrows/tab move between buttons,
+	// enter activates the focused one; y/n/esc stay as direct shortcuts
 	if m.confirm != nil {
 		c := *m.confirm
-		m.confirm = nil
+		btns := c.buttons()
+		cancel := func() (tea.Model, tea.Cmd) {
+			m.confirm = nil
+			m.status = "cancelled"
+			m.failed = false
+			m.statusSeq++
+			return m, nil
+		}
 		switch msg.String() {
+		case "left", "h":
+			if c.focus > 0 {
+				c.focus--
+			}
+			m.confirm = &c
+			return m, nil
+		case "right", "l":
+			if c.focus < len(btns)-1 {
+				c.focus++
+			}
+			m.confirm = &c
+			return m, nil
+		case "tab":
+			c.focus = (c.focus + 1) % len(btns)
+			m.confirm = &c
+			return m, nil
+		case "shift+tab":
+			c.focus = (c.focus - 1 + len(btns)) % len(btns)
+			m.confirm = &c
+			return m, nil
+		case "enter", " ":
+			b := btns[c.focus]
+			if b.action == nil {
+				return cancel()
+			}
+			m.confirm = nil
+			return m, b.action
 		case "y", "Y":
+			m.confirm = nil
 			return m, c.cmd
 		case "n", "N":
+			m.confirm = nil
 			if c.noCmd != nil {
 				return m, c.noCmd
 			}
+			return cancel()
+		case "esc", "q":
+			return cancel()
+		case "ctrl+c":
+			return m, tea.Quit
 		}
-		m.status = "cancelled"
-		m.failed = false
-		m.statusSeq++
-		return m, nil
+		return m, nil // ignore any other key
 	}
 
 	// the frozen-export tier chooser eats every key
@@ -877,8 +954,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				restore = m.opCmd("restore of "+snap+" into the docker sidecar", "docker", "snapshot", "restore", snap)
 			}
 			m.confirm = &confirm{
-				prompt: fmt.Sprintf("Restore snapshot %q into %q? Its current state is replaced.", snap, name),
-				cmd:    restore,
+				prompt:      fmt.Sprintf("Restore snapshot %q into %q? Its current state is replaced.", snap, name),
+				cmd:         restore,
+				yesLabel:    "Restore",
+				destructive: true,
 			}
 			return m, nil
 		}
@@ -957,14 +1036,21 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.onSnapshot() {
 			deleteOnly := m.opCmd("delete of cluster "+name, "cluster", "delete", name)
 			first := confirm{
-				prompt: fmt.Sprintf("DELETE cluster %q and all its state?", name),
-				cmd:    deleteOnly,
+				prompt:      fmt.Sprintf("DELETE cluster %q and all its state?", name),
+				cmd:         deleteOnly,
+				yesLabel:    "Delete",
+				destructive: true,
 			}
 			if n := len(m.snapsByMachine[name]); n > 0 {
+				// Cancel here aborts everything; the two action buttons are the
+				// keep-snapshots and delete-snapshots paths.
 				followUp := confirm{
-					prompt: fmt.Sprintf("Also delete its %d snapshot(s)? (y deletes them, n keeps them, esc cancels everything)", n),
-					cmd:    m.opCmd("delete of cluster "+name+" with snapshots", "cluster", "delete", "--snapshots", name),
-					noCmd:  deleteOnly,
+					prompt:      fmt.Sprintf("Also delete its %d snapshot(s)?", n),
+					cmd:         m.opCmd("delete of cluster "+name+" with snapshots", "cluster", "delete", "--snapshots", name),
+					noCmd:       deleteOnly,
+					yesLabel:    "Delete snapshots",
+					noLabel:     "Keep snapshots",
+					destructive: true,
 				}
 				first.cmd = func() tea.Msg { return askMsg{c: followUp} }
 			}
@@ -977,8 +1063,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			del = m.opCmd("delete of docker snapshot "+snap, "docker", "snapshot", "delete", snap)
 		}
 		m.confirm = &confirm{
-			prompt: fmt.Sprintf("Delete snapshot %q of %q?", snap, name),
-			cmd:    del,
+			prompt:      fmt.Sprintf("Delete snapshot %q of %q?", snap, name),
+			cmd:         del,
+			yesLabel:    "Delete",
+			destructive: true,
 		}
 		return m, nil
 	}
@@ -1397,12 +1485,42 @@ func (m model) center(box string) string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
+// renderButton draws one confirm-dialog button. The focused button is filled
+// (accent, or red when it is the destructive affirmative action); an unfocused
+// destructive action keeps red text so the consequence reads even before it is
+// selected.
+func renderButton(label string, focused, destructive bool) string {
+	st := lipgloss.NewStyle().Padding(0, 2).Border(lipgloss.RoundedBorder()).Bold(true)
+	switch {
+	case focused && destructive:
+		return st.BorderForeground(bad).Background(bad).
+			Foreground(lipgloss.Color("#FFFFFF")).Render(label)
+	case focused:
+		return st.BorderForeground(accent).Background(accent).
+			Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#1A1A1A"}).Render(label)
+	case destructive:
+		return st.BorderForeground(bad).Foreground(bad).Render(label)
+	default:
+		return st.BorderForeground(dim).Foreground(dim).Render(label)
+	}
+}
+
 func (m model) confirmScreen() string {
 	c := m.confirm
+	btns := c.buttons()
+	rendered := make([]string, 0, len(btns)*2-1)
+	for i, b := range btns {
+		if i > 0 {
+			rendered = append(rendered, "  ")
+		}
+		rendered = append(rendered, renderButton(b.label, i == c.focus, b.destructive))
+	}
+	row := lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		titleSt.Render("Confirm"), "",
 		c.prompt, "",
-		dimSt.Render("y yes · n no · esc cancel"))
+		row, "",
+		dimSt.Render("← → select · enter confirm · esc cancel"))
 	return m.center(dialogBox.Render(content))
 }
 
