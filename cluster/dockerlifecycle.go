@@ -178,15 +178,14 @@ func DockerSidecarInfo(cfg *config.Config) (ClusterInfo, bool) {
 	if !ok {
 		return ClusterInfo{}, false
 	}
-	ram := "-"
-	if cfg.DockerMemory != "" {
-		ram = cfg.DockerMemory
-	}
 	return ClusterInfo{
 		Name:     "docker",
 		Server:   state,
 		Registry: "-",
-		RAM:      ram,
+		// Measured live footprint via humanBytes, exactly like cluster servers
+		// ("-" when stopped) — not the raw configured DockerMemory, which
+		// rendered differently (e.g. "48G" vs "25.8 GB").
+		RAM:      vmRAM(dockerName),
 		Context:  cfg.DockerContext,
 		Kind:     "docker",
 		Active:   readActive(cfg).Sidecar,
