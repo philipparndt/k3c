@@ -353,7 +353,19 @@ func forwardRegistryLoopback(cfg *config.Config) {
 func ensureDockerForwarder(cfg *config.Config) {
 	src := runtime.DockerForwarderBinary()
 	if src == "" {
-		logger.Debug("docker: in-guest forwarder binary unavailable; nested published ports won't be forwarded")
+		logger.Warn("docker: in-guest forwarder binary not found, so nested published ports " +
+			"(e.g. Testcontainers mapped ports) won't be reachable from the host. Build it next " +
+			"to k3c (make build / make docker-fwd) or set K3C_DOCKER_FWD_BINARY.")
+		return
+	}
+	// The forwarder only helps if the runtime actually bridges its socket to the
+	// host — which happens only for sidecars created WITH --publish-socket. A
+	// sidecar created before this feature has no bridge; surface that with the
+	// fix rather than silently not forwarding nested ports.
+	if _, err := os.Stat(dockerForwardSocketPath(cfg)); err != nil {
+		logger.Warn("docker: this sidecar predates the nested-port bridge, so published container " +
+			"ports (e.g. Testcontainers mapped ports) are not reachable from the host. Recreate it " +
+			"to enable them: k3c docker rm && k3c docker up")
 		return
 	}
 	data, err := os.ReadFile(src)
@@ -547,15 +559,21 @@ func DockerHostTCP(cfg *config.Config) (string, error) {
 // the in-guest forwarder), "localhost" reaches them — so TESTCONTAINERS_HOST_-
 // OVERRIDE is deliberately NOT set: loopback surfacing makes it unnecessary, and
 // the guest vmnet IP it would otherwise name is not host-reachable on macOS 26
-// (see the docker-sidecar-host-forwarder change). Ryuk (the reaper) is left
-// enabled; it maps a port that surfaces on loopback the same way.
+// (see the docker-sidecar-host-forwarder change).
+//
+// We do NOT force TESTCONTAINERS_RYUK_DISABLED. Ryuk (the reaper) is the one
+// container Testcontainers pins to the engine's default `bridge` network, which
+// can intermittently fail to start on VM-backed engines (as documented for
+// colima/podman). Leaving it unset means `eval $(k3c docker env)` won't clobber a
+// consumer's `TESTCONTAINERS_RYUK_DISABLED=true` workaround; mapped ports still
+// surface on loopback either way (the test cleans up via t.Cleanup when Ryuk is
+// off).
 func DockerEnv(cfg *config.Config) error {
 	host, err := DockerHost(cfg)
 	if err != nil {
 		return err
 	}
 	fmt.Println("export DOCKER_HOST=" + host)
-	fmt.Println("export TESTCONTAINERS_RYUK_DISABLED=false")
 	return nil
 }
 

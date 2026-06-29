@@ -23,7 +23,7 @@
 
 - [x] 4.1 Mapped ports surface on host loopback (Phase 2 mirror) and `DOCKER_HOST`/the docker context point at the host unix socket (`DockerHost`). With a unix-socket `DOCKER_HOST`, Testcontainers resolves mapped-port connections to `localhost`, which the mirror serves. Verified: a `-p 18080:80` container on the real sidecar engine surfaces in `/containers/json` over the loopback endpoint (`PublicPort 18080`), the source for Testcontainers' `GetMappedPort`.
 - [x] 4.2 `TESTCONTAINERS_HOST_OVERRIDE` deliberately **not** set — loopback surfacing makes it unnecessary, and the vmnet IP it would name isn't host-reachable on macOS 26. Precedence documented in `DockerEnv` (the host-resolution rule) and ARCHITECTURE.md §4.6.
-- [~] 4.3 Data path verified component-wise against real components: discovery over the loopback engine API (real sidecar, above) + the in-guest forwarder data plane (live throwaway-VM test in §3.4). A full Testcontainers *client* run against `k3c-docker` needs the forwarder shipped in a bundled build + sidecar recreate (`make bundle` Swift toolchain) — deferred to avoid disrupting the running sidecar; offered as the rollout step.
+- [x] 4.3 Verified end-to-end against the **real recreated sidecar** (see §6): `docker run -d -p 18080:80 nginx:alpine` → `curl http://127.0.0.1:18080` from the host = HTTP 200, through the in-guest forwarder with the guest vmnet IP unreachable. A real Testcontainers consumer (`vehub-feedbackapi-go`) confirmed the engine socket; nested-port reachability is now closed by §6.
 - [x] 4.4 ARCHITECTURE.md updated: §2 sidecar diagram + bullets rewritten to the loopback-engine / forwarder model, new §4.6 "Host ⇆ sidecar engine & nested ports (no guest-L2 dependency)", and a §5 runbook symptom for unreachable mapped ports / Testcontainers.
 
 ## 5. Spec & validation
@@ -31,3 +31,27 @@
 - [x] 5.1 `docker-sidecar` spec deltas in `specs/docker-sidecar/spec.md`: **MODIFIED** "Start the sidecar" (engine reachable over a stable host-local endpoint, never the guest vmnet IP at L2; + scenario "Engine reachable without guest vmnet L2") and **ADDED** "Reach nested published ports from the host" (forward over a stable control channel via an in-guest agent; Testcontainers mapped ports resolve to a host-reachable address). MODIFIED header matches the base requirement exactly (clean archive). Kept at requirement altitude (implementation-agnostic).
 - [x] 5.2 `openspec validate docker-sidecar-host-forwarder --strict` → valid; `openspec validate --all --strict` → 17/17 passed.
 - [x] 5.3 Recorded in `proposal.md` Impact: `host-egress`'s "vmnet stays primary for host reachability" scenario is **affected but not modified** — the sidecar no longer depends on host-routable vmnet, but cluster `containerIP`/kube-API behavior is unchanged, so no host-egress spec change. (Its rationale that vmnet "stays host-routable" is itself questionable post-OQ#2, but re-verifying cluster reachability is out of scope here.)
+
+## 6. External-validation fixes (from findings-feedbackapi-testcontainers.md)
+
+A real Testcontainers consumer surfaced two gaps; the headline engine-socket goal
+worked, but the Phase-2 forwarder was never actually active.
+
+- [x] 6.1 **Ship the forwarder in dev builds.** `make build-unbundled` now also
+  cross-compiles `k3c-docker-fwd` (linux/arm64) next to `$(BINARY)` so
+  `runtime.DockerForwarderBinary()` resolves it as a sibling; `make install`
+  copies it too. (Bundled builds already ship it inside the runtime.)
+- [x] 6.2 **Surface a sidecar that predates `--publish-socket`.** `ensureDockerForwarder`
+  now warns with the fix (`k3c docker rm && k3c docker up`) when the host bridge
+  socket is absent, and warns when the forwarder binary is missing — instead of
+  silently not forwarding nested ports.
+- [x] 6.3 **Stop forcing `TESTCONTAINERS_RYUK_DISABLED=false`** in `k3c docker env`
+  so it no longer clobbers a consumer's `=true` workaround. Ryuk's
+  `failed to create network` (default-bridge pin) is not reproducible on a fresh
+  sidecar; documented `TESTCONTAINERS_RYUK_DISABLED=true` as the standard VM-engine
+  guidance (findings-feedbackapi-testcontainers.md → Resolution).
+- [x] 6.4 Verified the nested-port path end-to-end against the real recreated
+  sidecar (HTTP 200 via the forwarder, guest vmnet IP unreachable).
+- [ ] 6.5 (Consumer) re-run `vehub-feedbackapi-go` integration test against a
+  rebuilt+recreated sidecar with `TESTCONTAINERS_RYUK_DISABLED=true` to confirm
+  the full stack (Kafka + schema-registry readiness probes) passes from the host.
