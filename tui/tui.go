@@ -11,6 +11,7 @@ package tui
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -22,9 +23,11 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/philipparndt/go-logger"
 
 	"k3c/cluster"
 	"k3c/config"
+	"k3c/runtime"
 )
 
 // rowKind distinguishes a top-level machine row from a nested snapshot row.
@@ -157,6 +160,7 @@ type model struct {
 	loading        map[string]bool                   // machine name → snapshot load in flight
 	rows           []treeRow                         // flattened visible tree
 	cur            int                               // cursor into rows
+	loaded         bool                              // first refresh has returned
 
 	lastTraffic  map[string]trafficSample
 	netLine      string // traffic rates of the selected cluster
@@ -168,17 +172,17 @@ type model struct {
 	width  int
 	height int
 
-	spin     spinner.Model
-	busy     string   // running operation, "" when idle
-	busyArgs []string // args of the running operation (recorded into the log)
-	opLine   string   // latest output line of the running operation
-	opCh     chan opEventMsg
+	spin      spinner.Model
+	busy      string   // running operation, "" when idle
+	busyArgs  []string // args of the running operation (recorded into the log)
+	opLine    string   // latest output line of the running operation
+	opCh      chan opEventMsg
 	status    string // last result line
 	failed    bool   // last result was an error
 	statusSeq int    // bumped on every status change; gates the auto-dismiss timer
 
-	commands []commandRun // session-long command history
-	logVP    viewport.Model
+	commands    []commandRun // session-long command history
+	logVP       viewport.Model
 	showLog     bool // command-log dialog open
 	showHelp    bool // keybinding help dialog open
 	showDiagram bool // system data-flow diagram open
@@ -205,6 +209,11 @@ func New(cfg *config.Config) tea.Model {
 
 // Run starts the TUI.
 func Run(cfg *config.Config) error {
+	// The TUI owns the terminal (alt-screen); stray log lines from in-process
+	// calls like runtime.EnsureSystem would corrupt the frame. Silence the
+	// global logger for the session and restore it on exit.
+	logger.LogTo(io.Discard)
+	defer logger.LogTo(os.Stderr)
 	_, err := tea.NewProgram(New(cfg), tea.WithAltScreen()).Run()
 	return err
 }
@@ -345,6 +354,12 @@ func (m model) refresh() tea.Cmd {
 		expanded[k] = v
 	}
 	return func() tea.Msg {
+		// Start the container system first, like `cluster list` does. A stopped
+		// system (e.g. right after a host restart) makes `container ls` fail, so
+		// Clusters would return nothing and the tree would falsely read "no
+		// clusters". EnsureSystem runs its work at most once per process, so the
+		// periodic refreshes that follow are cheap.
+		_ = runtime.EnsureSystem()
 		clusters := cluster.Clusters(cfg)
 		// the docker sidecar is another managed VM: list it after the clusters
 		// so its lifecycle (pause/resume/suspend/up/down) is reachable here too
@@ -507,6 +522,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.ClearScreen
 
 	case dataMsg:
+		m.loaded = true
 		m.clusters = msg.clusters
 		// new machines default to expanded; user toggles are preserved
 		for _, c := range m.clusters {
@@ -1228,7 +1244,13 @@ func (m model) treeView() string {
 	var b strings.Builder
 	b.WriteString(" " + titleSt.Render("Machines") + "\n")
 	if len(m.rows) == 0 {
-		b.WriteString(" " + dimSt.Render("no clusters — k3c cluster create"))
+		// Until the first refresh returns, the container system may still be
+		// starting — don't claim there are no clusters when we haven't looked yet.
+		msg := "no clusters — k3c cluster create"
+		if !m.loaded {
+			msg = "starting container system…"
+		}
+		b.WriteString(" " + dimSt.Render(msg))
 		return paneBox.Width(w).Render(b.String())
 	}
 	for i, r := range m.rows {
