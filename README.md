@@ -91,6 +91,7 @@ k3c snapshot save [CLUSTER] [NAME] --cold
 k3c snapshot restore [CLUSTER] NAME
 k3c snapshot restore [CLUSTER] NAME --cold
 k3c snapshot list [CLUSTER]
+k3c snapshot rename [CLUSTER] OLD NEW
 k3c snapshot delete [CLUSTER] NAME
 ```
 

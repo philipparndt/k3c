@@ -148,6 +148,25 @@ func releaseSnapshotPinIn(cfg *config.Config, pinID string) error {
 	return nil
 }
 
+// renameSnapshotPin moves a snapshot's pin to a new id (called on snapshot
+// rename), preserving its pinned digests. It is not an error if the old pin
+// file is absent (a warm/cold snapshot never pinned anything), so renaming
+// such a snapshot is a no-op here.
+func renameSnapshotPin(oldID, newID string) error {
+	cfg, err := config.Resolve("", "")
+	if err != nil {
+		return err
+	}
+	return renameSnapshotPinIn(cfg, oldID, newID)
+}
+
+func renameSnapshotPinIn(cfg *config.Config, oldID, newID string) error {
+	if err := os.Rename(pinFilePath(cfg, oldID), pinFilePath(cfg, newID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // pinnedDigests returns the union of all snapshots' pinned digests, for
 // pull-cache retention to treat as live. The keys are the same "sha256:..."
 // strings the pull-cache names blobs with, so a caller can test membership

@@ -135,6 +135,22 @@ func newSnapshotCmd() *cobra.Command {
 		},
 	}
 
+	renameCmd := &cobra.Command{
+		Use:     "rename [CLUSTER] OLD NEW",
+		Aliases: []string{"mv"},
+		Short:   "Rename a snapshot",
+		Args:    cobra.RangeArgs(2, 3),
+		Run: func(cmd *cobra.Command, args []string) {
+			// with two args they are OLD NEW on the active cluster; with three
+			// the first is the cluster
+			if len(args) == 2 {
+				fail(cluster.SnapshotRename(loadConfigDefault(nil), args[0], args[1]))
+				return
+			}
+			fail(cluster.SnapshotRename(loadConfigDefault(args[:1]), args[1], args[2]))
+		},
+	}
+
 	exportCmd := &cobra.Command{
 		Use:   "export [CLUSTER] NAME",
 		Short: "Export a snapshot to a portable archive (warm/cold restore cold; frozen exports fat by default)",
@@ -182,7 +198,7 @@ func newSnapshotCmd() *cobra.Command {
 	importCmd.Flags().StringVarP(&importCluster, "cluster", "C", "",
 		"target cluster (default: the active cluster, or the only one)")
 
-	snapshotCmd.AddCommand(saveCmd, restoreCmd, listCmd, deleteCmd, exportCmd, importCmd)
+	snapshotCmd.AddCommand(saveCmd, restoreCmd, listCmd, deleteCmd, renameCmd, exportCmd, importCmd)
 	return snapshotCmd
 }
 

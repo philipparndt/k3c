@@ -254,6 +254,15 @@ func saveFrozen(cfg *config.Config, name, dir string) error {
 		_ = os.RemoveAll(dir)
 		return err
 	}
+	// Surface a cache shortfall now rather than only at restore. This is the
+	// same presence check the thaw runs: it errors only when a genuinely
+	// unrecoverable local-only image lost its bundle (which cannot happen here,
+	// since writeFrozenSnapshot just wrote it), and otherwise warns that the
+	// thaw will need to re-pull remote images from their upstream registries.
+	if err := verifyFrozenBlobs(cfg, dir); err != nil {
+		_ = os.RemoveAll(dir)
+		return err
+	}
 	logger.Info("snapshot '" + name + "' (frozen) saved for cluster '" + cfg.Cluster + "'")
 
 	// Phase 2: read the manifest we just wrote and hand its digest closure
@@ -650,5 +659,52 @@ func SnapshotDelete(cfg *config.Config, name string) error {
 		return err
 	}
 	logger.Info("snapshot '" + name + "' deleted")
+	return nil
+}
+
+// SnapshotRename renames a stored snapshot, moving its directory and its
+// pull-cache pin to the new name. The name is only ever a directory name and
+// a CLI argument — nothing inside the snapshot (meta.yaml, the datastore)
+// references it — so a rename is a directory move plus re-keying the pin.
+func SnapshotRename(cfg *config.Config, oldName, newName string) error {
+	if err := validSnapshotName(oldName); err != nil {
+		return err
+	}
+	if err := validSnapshotName(newName); err != nil {
+		return err
+	}
+	if oldName == newName {
+		return fmt.Errorf("snapshot '%s' already has that name", oldName)
+	}
+	oldDir := snapshotDir(cfg, oldName)
+	if _, err := os.Stat(oldDir); err != nil {
+		return fmt.Errorf("snapshot '%s' not found for cluster '%s'", oldName, cfg.Cluster)
+	}
+	newDir := snapshotDir(cfg, newName)
+	if _, err := os.Stat(newDir); err == nil {
+		return fmt.Errorf("snapshot '%s' already exists for cluster '%s'", newName, cfg.Cluster)
+	}
+
+	// Guard against a background reduction (phase 2) of this snapshot racing
+	// the rename — it still holds the old name and writes into the old dir.
+	key := snapshotPinID(cfg.Cluster, oldName)
+	reducingMu.Lock()
+	reducing := reducingSnapshot[key]
+	reducingMu.Unlock()
+	if reducing {
+		return fmt.Errorf("snapshot '%s' is still being reduced in the background; retry in a moment", oldName)
+	}
+
+	if err := os.Rename(oldDir, newDir); err != nil {
+		return err
+	}
+	// Move the pull-cache pin so a frozen snapshot keeps its image closure
+	// pinned under the new id. Best-effort: the dir move already succeeded
+	// (the snapshot now exists under the new name), and a stale pin only
+	// affects retention, never restorability.
+	if err := renameSnapshotPin(snapshotPinID(cfg.Cluster, oldName), snapshotPinID(cfg.Cluster, newName)); err != nil {
+		logger.Warn("renaming snapshot pin: " + err.Error())
+	}
+	logger.Info("snapshot '" + oldName + "' renamed to '" + newName + "'")
 	return nil
 }

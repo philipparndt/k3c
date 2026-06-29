@@ -824,11 +824,38 @@ func vmRAM(vmName string) string {
 		if strings.Contains(line, "phys_footprint:") {
 			fields := strings.Fields(line)
 			if len(fields) >= 3 {
-				return fields[1] + fields[2]
+				// Convert footprint's binary "<value> <unit>" to bytes and render
+				// it with humanBytes, the same formatter snapshot sizes use, so
+				// every size in the TUI/CLI reads identically.
+				if b, ok := parseFootprintBytes(fields[1], fields[2]); ok {
+					return humanBytes(b)
+				}
 			}
 		}
 	}
 	return "-"
+}
+
+// parseFootprintBytes converts a footprint(1) "<value> <unit>" pair to a byte
+// count. footprint reports binary units (1024-based) labelled KB/MB/GB — a VM's
+// phys_footprint lands on an exact page-size multiple under 1024, not 1000.
+func parseFootprintBytes(value, unit string) (int64, bool) {
+	v, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	mult := map[string]float64{
+		"B":  1,
+		"KB": 1 << 10,
+		"MB": 1 << 20,
+		"GB": 1 << 30,
+		"TB": 1 << 40,
+	}
+	m, ok := mult[strings.ToUpper(unit)]
+	if !ok {
+		return 0, false
+	}
+	return int64(v * m), true
 }
 
 // Status prints daemon, container, and node state for a cluster.

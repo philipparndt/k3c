@@ -234,6 +234,16 @@ var dockerSnapshotDeleteCmd = &cobra.Command{
 	},
 }
 
+var dockerSnapshotRenameCmd = &cobra.Command{
+	Use:     "rename OLD NEW",
+	Aliases: []string{"mv"},
+	Short:   "Rename a sidecar snapshot",
+	Args:    cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		fail(cluster.DockerSnapshotRename(loadConfigDefault(nil), args[0], args[1]))
+	},
+}
+
 func init() {
 	dockerUpCmd.Flags().StringVar(&dockerUpCPUs, "cpus", "", "override sidecar CPU count (re-creates the sidecar)")
 	dockerUpCmd.Flags().StringVar(&dockerUpMemory, "memory", "", "override sidecar memory, e.g. 32G (re-creates the sidecar)")
@@ -242,7 +252,7 @@ func init() {
 	dockerSnapshotRestoreCmd.Flags().BoolVar(&dockerSnapCold, "cold", false, "boot fresh instead of resuming saved machine state")
 	dockerReclaimCmd.Flags().BoolVar(&dockerReclaimRelease, "release", false,
 		"deflate the balloon and give the sidecar its full configured memory again")
-	dockerSnapshotCmd.AddCommand(dockerSnapshotSaveCmd, dockerSnapshotRestoreCmd, dockerSnapshotListCmd, dockerSnapshotDeleteCmd)
+	dockerSnapshotCmd.AddCommand(dockerSnapshotSaveCmd, dockerSnapshotRestoreCmd, dockerSnapshotListCmd, dockerSnapshotDeleteCmd, dockerSnapshotRenameCmd)
 	dockerCmd.AddCommand(dockerUpCmd, dockerActivateCmd, dockerDownCmd, dockerRmCmd, dockerStatusCmd, dockerEnvCmd,
 		dockerPrepareK3dCmd, dockerPauseCmd, dockerResumeCmd, dockerSuspendCmd, dockerReclaimCmd, dockerSnapshotCmd,
 		dockerBuildkitCmd)
