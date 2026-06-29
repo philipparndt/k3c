@@ -138,3 +138,13 @@ cd ~/Dev/vehub-feedbackapi-go && \
 (For a fast unbundled iteration instead of `make build`: `make build-unbundled`
 plus `K3C_GVNET_BINARY=<a built ./cmd/gvnet>` — the `gvnet` sibling name collides
 with the `gvnet/` package dir, so dev builds pass it via env or use the bundle.)
+
+### Confirmed GREEN (2026-06-29)
+
+Re-ran end-to-end against a **freshly recreated** sidecar from the fixed unbundled
+build (k3c + `k3c-docker-fwd` sibling + `K3C_GVNET_BINARY`, `RYUK_DISABLED=true`):
+`TestFeedbackReplayIT` **passed**. Both Kafka and Schema Registry host-side readiness
+probes succeeded (Gap 1's published-port forwarding now works), the consumer caught
+up, and the read API returned every produced record. The `--publish-socket` bridge
+required the **sidecar recreate** (`docker rm && docker up`) — a started-but-old
+sidecar still lacks it, matching the resolution above.

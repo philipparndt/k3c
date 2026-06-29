@@ -52,6 +52,8 @@ worked, but the Phase-2 forwarder was never actually active.
   guidance (findings-feedbackapi-testcontainers.md → Resolution).
 - [x] 6.4 Verified the nested-port path end-to-end against the real recreated
   sidecar (HTTP 200 via the forwarder, guest vmnet IP unreachable).
-- [ ] 6.5 (Consumer) re-run `vehub-feedbackapi-go` integration test against a
-  rebuilt+recreated sidecar with `TESTCONTAINERS_RYUK_DISABLED=true` to confirm
-  the full stack (Kafka + schema-registry readiness probes) passes from the host.
+- [x] 6.5 (Consumer) `vehub-feedbackapi-go` integration test **passed** end-to-end
+  against the rebuilt+recreated sidecar with `TESTCONTAINERS_RYUK_DISABLED=true`:
+  the full Kafka + schema-registry stack's host-side readiness probes (mapped
+  ports) succeed through the in-guest forwarder. The Testcontainers contract is
+  fully met.
