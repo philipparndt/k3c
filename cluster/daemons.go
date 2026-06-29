@@ -140,7 +140,7 @@ func (l *arbListener) Accept() (net.Conn, error) {
 		}
 		go func() {
 			defer conn.Close()
-			upstream, err := net.DialTimeout("tcp", target, connectTimeout)
+			upstream, err := dialTarget(l.cfg, target)
 			if err != nil {
 				return
 			}
@@ -156,7 +156,7 @@ func arbitrate(cfg *config.Config, port int, h func(net.Conn)) func(net.Conn) {
 	return func(conn net.Conn) {
 		if target := sidecarWins(cfg, port, conn.RemoteAddr()); target != "" {
 			defer conn.Close()
-			upstream, err := net.DialTimeout("tcp", target, connectTimeout)
+			upstream, err := dialTarget(cfg, target)
 			if err != nil {
 				return
 			}
@@ -351,7 +351,9 @@ func handleSNIConn(conn net.Conn, cfg *config.Config) {
 	if !isLoopback(conn.RemoteAddr()) && name != "" && !matchesDomain(name, active.IngressDomains) {
 		target = net.JoinHostPort(name, "443")
 	}
-	upstream, err := net.DialTimeout("tcp", target, connectTimeout)
+	// dialTarget routes a "sidecar:<port>" ingress target through the in-guest
+	// forwarder; an external host:443 (egress) stays a plain tcp dial.
+	upstream, err := dialTarget(cfg, target)
 	if err != nil {
 		return
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/philipparndt/go-logger"
 
 	"k3c/config"
+	"k3c/dockerfwd"
 )
 
 // dockerSocketPath is the host-side unix socket the daemon publishes for the
@@ -34,6 +35,55 @@ func dockerSocketPath(cfg *config.Config) string {
 // the runtime republishes the same host port.
 func dockerEngineEndpoint(cfg *config.Config) string {
 	return net.JoinHostPort("127.0.0.1", cfg.DockerPort)
+}
+
+// guestForwardSocket is where the in-guest forwarder listens; --publish-socket
+// bridges dockerForwardSocketPath(host) to this path inside the VM.
+const guestForwardSocket = "/run/k3c-docker-fwd.sock"
+
+// sidecarTargetPrefix marks a dial target served by the sidecar's nested-port
+// forwarder (vs. a plain host:port dialed over tcp). The "|" cannot appear in a
+// hostname nor in net.JoinHostPort output, so a sidecar target can never be
+// confused with a real host:port — e.g. an attacker-chosen SNI "sidecar" in the
+// :443 egress path becomes "sidecar:443", which is NOT this prefix.
+const sidecarTargetPrefix = "sidecar|"
+
+// dockerForwardSocketPath is the host-side unix socket the Apple runtime bridges
+// (via --publish-socket) to the in-guest forwarder. The host dials it to reach
+// any nested published container port through the forwarder, never the guest
+// vmnet IP. Stable for the install lifetime, like dockerSocketPath.
+func dockerForwardSocketPath(cfg *config.Config) string {
+	return filepath.Join(cfg.BaseDir, "docker-fwd.sock")
+}
+
+// dialSidecarPort opens a connection to a nested published port on the sidecar
+// VM through the in-guest forwarder over the published unix socket — with no
+// guest vmnet L2 dependency. The caller splices the returned conn.
+func dialSidecarPort(cfg *config.Config, port int) (net.Conn, error) {
+	c, err := net.DialTimeout("unix", dockerForwardSocketPath(cfg), connectTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := dockerfwd.WriteHeader(c, port); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
+// dialTarget dials an arbitration/forwarding target: a "sidecar:<port>" target
+// goes through the in-guest forwarder (unix socket); anything else is a plain
+// tcp host:port. This is the single place the sidecar data plane is chosen, so
+// every contested-port and nested-port path stays off the guest vmnet IP.
+func dialTarget(cfg *config.Config, target string) (net.Conn, error) {
+	if p, ok := strings.CutPrefix(target, sidecarTargetPrefix); ok {
+		port, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, fmt.Errorf("bad sidecar target %q: %w", target, err)
+		}
+		return dialSidecarPort(cfg, port)
+	}
+	return net.DialTimeout("tcp", target, connectTimeout)
 }
 
 // startDockerSocket serves a host unix socket that forwards to the sidecar's
@@ -75,13 +125,14 @@ func startDockerSocket(cfg *config.Config) {
 }
 
 // sidecarPorts maps every host port the sidecar currently publishes to its
-// "<vm-ip>:port" endpoint. The daemon reads it to route contested ports (a port
-// both it and the sidecar serve) to the sidecar when the sidecar is the active
-// target — including :443 ingress for a nested k3d cluster whose ingress lives
-// on the sidecar VM. Refreshed by the port poll below.
+// "sidecar:<port>" dial target (resolved by dialTarget through the in-guest
+// forwarder). The daemon reads it to route contested ports (a port both it and
+// the sidecar serve) to the sidecar when the sidecar is the active target —
+// including :443 ingress for a nested k3d cluster whose ingress lives on the
+// sidecar VM. Refreshed by the port poll below.
 var sidecarPorts atomic.Pointer[map[int]string]
 
-// sidecarPortTarget returns the sidecar endpoint publishing host port, or "".
+// sidecarPortTarget returns the sidecar dial target for the host port, or "".
 func sidecarPortTarget(port int) string {
 	if m := sidecarPorts.Load(); m != nil {
 		return (*m)[port]
@@ -131,24 +182,22 @@ func startDockerPortForward(cfg *config.Config) {
 // the daemon's contested-port arbitration. Listeners are keyed by host:port so
 // the same port published on different addresses is tracked independently.
 func reconcileDockerPorts(cfg *config.Config, active map[string]net.Listener, owned map[int]bool) {
-	// discovery reads the engine over the stable loopback endpoint (vmnet-
-	// independent); the per-port data plane below still dials the guest VM at
-	// <ip>:<port> — that tunnel is replaced over a control channel in Phase 2.
-	ip := containerIP(dockerName)
+	// Discovery reads the engine over the stable loopback endpoint, and the data
+	// plane reaches each published port through the in-guest forwarder over the
+	// published unix socket (dialTarget → dialSidecarPort) — both independent of
+	// the guest vmnet IP being host-reachable.
 	desired := map[string]portBind{}
 	published := map[int]string{}
-	if ip != "" {
-		for _, b := range dockerPublishedPorts(dockerEngineEndpoint(cfg)) {
-			published[b.port] = fmt.Sprintf("%s:%d", ip, b.port)
-			// daemon-owned ports (:443 ingress, registry, proxy, egress,
-			// pull-cache) are contested: the daemon already holds the host
-			// bind and its arbitration wrapper routes them to the sidecar when
-			// the sidecar is the active target. Don't also bind them here.
-			if owned[b.port] {
-				continue
-			}
-			desired[b.addr()] = b
+	for _, b := range dockerPublishedPorts(dockerEngineEndpoint(cfg)) {
+		published[b.port] = fmt.Sprintf("%s%d", sidecarTargetPrefix, b.port)
+		// daemon-owned ports (:443 ingress, registry, proxy, egress,
+		// pull-cache) are contested: the daemon already holds the host bind and
+		// its arbitration wrapper routes them to the sidecar when the sidecar is
+		// the active target. Don't also bind them here.
+		if owned[b.port] {
+			continue
 		}
+		desired[b.addr()] = b
 	}
 	storeSidecarPorts(published)
 
@@ -163,8 +212,7 @@ func reconcileDockerPorts(cfg *config.Config, active map[string]net.Listener, ow
 		}
 		active[key] = ln
 		logger.Info(fmt.Sprintf("docker: forwarding %s -> sidecar", key))
-		// dial the sidecar's own published port (always on the VM)
-		go acceptDockerForward(ln, fmt.Sprintf("%s:%d", ip, b.port))
+		go acceptDockerForward(cfg, ln, b.port)
 	}
 
 	for key, ln := range active {
@@ -176,14 +224,14 @@ func reconcileDockerPorts(cfg *config.Config, active map[string]net.Listener, ow
 	}
 }
 
-func acceptDockerForward(ln net.Listener, target string) {
+func acceptDockerForward(cfg *config.Config, ln net.Listener, port int) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return // listener closed by reconcile
 		}
 		go func() {
-			upstream, err := net.DialTimeout("tcp", target, connectTimeout)
+			upstream, err := dialSidecarPort(cfg, port)
 			if err != nil {
 				conn.Close()
 				return

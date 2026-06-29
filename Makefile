@@ -164,6 +164,8 @@ bundle: ## tar a container install tree into runtime/payload (STAGING_DIR=...)
 	@echo "container version: $$(cat $(PAYLOAD_VERSION))"
 	@echo "building gvnet transparent-egress netstack helper into the payload"
 	@go build -ldflags "-s -w" -o "$(STAGING_DIR)/bin/gvnet" ./cmd/gvnet
+	@echo "building k3c-docker-fwd in-guest nested-port forwarder (linux/arm64) into the payload"
+	@GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o "$(STAGING_DIR)/bin/k3c-docker-fwd" ./cmd/k3cdockerfwd
 	@if [ -f "$(INIT_TAR)" ]; then \
 		echo "including init image: $(INIT_TAR)"; \
 		if [ "$(INIT_TAR)" != "$(STAGING_DIR)/init.tar" ]; then \

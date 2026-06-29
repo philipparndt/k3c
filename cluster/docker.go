@@ -13,6 +13,7 @@ import (
 	"github.com/philipparndt/go-logger"
 
 	"k3c/config"
+	"k3c/runtime"
 )
 
 // The Docker sidecar: a docker:dind VM managed by k3c, exposing a real
@@ -105,6 +106,10 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		// plain TCP engine API; TLS adds nothing on the local vmnet
 		"-e", "DOCKER_TLS_CERTDIR=",
 		"-p", "127.0.0.1:" + cfg.DockerPort + ":2375",
+		// bridge the in-guest nested-port forwarder's socket to the host (over
+		// vsock, runtime-managed) so the host reaches published container ports
+		// without dialing the guest vmnet IP (Phase 2, see ensureDockerForwarder)
+		"--publish-socket", dockerForwardSocketPath(cfg) + ":" + guestForwardSocket,
 	}
 	if cfg.TransparentEgress {
 		// dual-NIC: vmnet stays primary for the sidecar's gateway services
@@ -337,6 +342,38 @@ func forwardRegistryLoopback(cfg *config.Config) {
 	}
 }
 
+// ensureDockerForwarder injects and (re)launches the in-guest nested-port
+// forwarder. The forwarder binary is staged into the sidecar via the mounted
+// /k3c-ca dir and run detached, listening on the unix socket that
+// --publish-socket bridges to dockerForwardSocketPath on the host (so the host
+// reaches nested published ports without the guest vmnet IP). Best-effort: if
+// the forwarder binary isn't shipped (e.g. an unbundled dev build), nested
+// published ports simply aren't forwarded. Re-run on every `up` — exec'd
+// processes die when the VM stops.
+func ensureDockerForwarder(cfg *config.Config) {
+	src := runtime.DockerForwarderBinary()
+	if src == "" {
+		logger.Debug("docker: in-guest forwarder binary unavailable; nested published ports won't be forwarded")
+		return
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		logger.Warn("docker: reading in-guest forwarder: " + err.Error())
+		return
+	}
+	// stage it where the sidecar already mounts host files (-v certDir:/k3c-ca)
+	dst := filepath.Join(cfg.BaseDir, "docker", "k3c-docker-fwd")
+	if err := writeFileAtomic(dst, data, 0o755); err != nil {
+		logger.Warn("docker: staging in-guest forwarder: " + err.Error())
+		return
+	}
+	// kill any prior instance, then exec the forwarder detached in the VM
+	script := "kill $(pidof k3c-docker-fwd) 2>/dev/null; exec /k3c-ca/k3c-docker-fwd -socket " + guestForwardSocket
+	if out, err := runContainer("exec", "-d", dockerName, "sh", "-c", script); err != nil {
+		logger.Warn("docker: launching in-guest forwarder: " + out)
+	}
+}
+
 // applyDockerSysctls raises the sidecar VM's kernel limits (the configured
 // node sysctls — notably the inotify instance/watch limits, whose defaults are
 // far too low for file-watching workloads) so nested k3d pods get the same
@@ -387,6 +424,9 @@ func dockerReady(cfg *config.Config) error {
 	// so `docker push localhost:<port>/…` (build tooling tags images this way,
 	// the same address the host and node resolve) works from the sidecar engine
 	forwardRegistryLoopback(cfg)
+	// launch the in-guest forwarder so nested published container ports are
+	// reachable from the host (without the guest vmnet IP)
+	ensureDockerForwarder(cfg)
 	// nested-k3d node images are NOT prepared here — starting the engine
 	// shouldn't pay that one-time pull/bake. Run `k3c docker prepare-k3d`
 	// once before using `k3d cluster create` (see PrepareK3sNodeImages).

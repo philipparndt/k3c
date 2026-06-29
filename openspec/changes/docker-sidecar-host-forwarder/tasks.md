@@ -14,10 +14,10 @@
 
 ## 3. Nested published ports: control-channel forwarder (Phase 2, gated on §1)
 
-- [ ] 3.1 Implement the in-guest forwarding agent (gvproxy-style `Expose/Unexpose`, or a minimal TCP mux) and its launch in the sidecar
-- [ ] 3.2 Replace the `dial <vmIP>:<port>` data plane in `reconcileDockerPorts`/`acceptDockerForward` with a tunnel over the chosen stable channel (vsock or the static control port)
-- [ ] 3.3 Keep the existing host-side `127.0.0.1:<published>` listener-per-port model; open/close forwards as discovery diffs the published set
-- [ ] 3.4 Verify a runtime-chosen ephemeral published port is reachable from the host within one poll cycle, with the guest vmnet IP unreachable
+- [x] 3.1 In-guest forwarder implemented as a minimal unix-socket port mux: package `dockerfwd` + `cmd/k3cdockerfwd` (cross-compiled linux/arm64 in the Makefile bundle step, resolved via `runtime.DockerForwarderBinary()`), launched detached in the VM by `ensureDockerForwarder` (`cluster/docker.go`); `--publish-socket <host>:/run/k3c-docker-fwd.sock` bridges its socket to the host.
+- [x] 3.2 Data plane rerouted off the guest vmnet IP: new `dialSidecarPort`/`dialTarget` (`cluster/dockerports.go`) dial the published unix socket with a `"<port>\n"` mux header. Applied to **both** the nested-port mirror (`acceptDockerForward`) **and** the contested-port arbitration (`arbListener`/`arbitrate`/`:443` ingress in `cluster/daemons.go`) via the `sidecar:<port>` target scheme.
+- [x] 3.3 Host-side `127.0.0.1:<published>` listener-per-port model kept; `reconcileDockerPorts` opens/closes listeners as discovery diffs the published set (now fully vmnet-independent — dropped the `containerIP` gate).
+- [x] 3.4 Data path verified: hermetic e2e tests run the real `dockerfwd.Serve` + real `dialSidecarPort`/`acceptDockerForward` against a fake nested port; and a **live** test ran the real cross-compiled forwarder in a throwaway VM — host → `--publish-socket` → forwarder → nested `:9000` returned `NESTED_9000_OK` with no vmnet. (Full e2e against the user's `k3c-docker` needs a bundled build + sidecar recreate; deferred to avoid disrupting the running sidecar.)
 
 ## 4. Testcontainers integration & docs
 
