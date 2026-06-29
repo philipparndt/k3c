@@ -530,9 +530,17 @@ func cachedContentPath(cfg *config.Config, digest string) (string, bool) {
 	return "", false
 }
 
-// verifyFrozenBlobs checks that every digest the manifest pins is present in
-// the host pull-cache (blob or manifest store), so a thaw never silently
-// starts an incomplete cluster. Missing digests are reported by name.
+// verifyFrozenBlobs checks the manifest's pinned digest closure against the
+// host pull-cache (blob or manifest store). A frozen thaw recovers images two
+// ways: local-only images (no remote source) are re-imported from the bundled
+// archive, while remote images are re-pulled through the pull-cache mirror —
+// served from cache when present, otherwise proxied to their upstream registry.
+//
+// So a digest missing from the local cache is only fatal when it belongs to a
+// local-only image whose bundle is gone (genuinely unrecoverable). A missing
+// remote digest merely means the thaw must reach the upstream registry (needs
+// network) — that is a warning, not a failure: the snapshot is not lost, it is
+// just not offline-restorable. Import a fat bundle for an offline copy.
 func verifyFrozenBlobs(cfg *config.Config, dir string) error {
 	m, err := readFrozenManifest(filepath.Join(dir, frozenManifestF))
 	if err != nil {
@@ -546,21 +554,32 @@ func verifyFrozenBlobs(cfg *config.Config, dir string) error {
 			missing = append(missing, d)
 		}
 	}
-	if len(missing) > 0 {
-		// A bundled local-images archive carries images that are intentionally
-		// absent from the pull-cache (locally pushed / imported); remote images
-		// re-pull on boot. So missing digests are not fatal when it is present.
-		if _, err := os.Stat(filepath.Join(dir, frozenLocalImagesTar)); err == nil {
-			logger.Warn(fmt.Sprintf("frozen thaw: %d image digest(s) not in the pull-cache; relying on the bundled local images and a re-pull for the rest", len(missing)))
-			return nil
-		}
-		preview := missing
-		if len(preview) > 5 {
-			preview = preview[:5]
-		}
-		return fmt.Errorf("cannot thaw: %d image digest(s) referenced by this snapshot are absent from the pull-cache (e.g. %s); the images cannot be rehydrated offline — re-pull them or import a fat bundle",
-			len(missing), strings.Join(preview, ", "))
+	if len(missing) == 0 {
+		return nil
 	}
+
+	hasBundle := false
+	if _, err := os.Stat(filepath.Join(dir, frozenLocalImagesTar)); err == nil {
+		hasBundle = true
+	}
+	// Local-only images cannot be recovered from any remote registry, so they
+	// MUST travel in the bundle. If the manifest records local-only images but
+	// the bundle is absent, the snapshot is genuinely unrestorable — fail.
+	if len(m.LocalImages) > 0 && !hasBundle {
+		return fmt.Errorf("cannot thaw: %d local-only image(s) referenced by this snapshot are not recoverable from any remote registry and its %s bundle is missing (e.g. %s)",
+			len(m.LocalImages), frozenLocalImagesTar, strings.Join(m.LocalImages[:min(len(m.LocalImages), 5)], ", "))
+	}
+
+	// Everything still missing is either a bundled local image (re-imported on
+	// thaw) or a remote image (re-pulled from its upstream). Neither is lost, so
+	// warn rather than reject: the thaw just needs the upstream registries
+	// reachable.
+	preview := missing
+	if len(preview) > 5 {
+		preview = preview[:5]
+	}
+	logger.Warn(fmt.Sprintf("frozen: %d image digest(s) are not in the local pull-cache (e.g. %s); the thaw will re-pull them from their upstream registries (needs network). Import a fat bundle for a fully offline-restorable copy.",
+		len(missing), strings.Join(preview, ", ")))
 	return nil
 }
 

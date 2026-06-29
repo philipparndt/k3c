@@ -40,7 +40,9 @@ func TestFrozenManifestRoundTrip(t *testing.T) {
 	}
 }
 
-func TestVerifyFrozenBlobsReportsMissing(t *testing.T) {
+// A remote image digest missing from the cache is re-pullable on thaw, so it is
+// not fatal — verify warns and succeeds rather than rejecting the snapshot.
+func TestVerifyFrozenBlobsRemoteMissingIsNotFatal(t *testing.T) {
 	cfg := &config.Config{BaseDir: t.TempDir()}
 	blobs := filepath.Join(pullCacheDir(cfg), "blobs")
 	if err := os.MkdirAll(blobs, 0o755); err != nil {
@@ -53,18 +55,67 @@ func TestVerifyFrozenBlobsReportsMissing(t *testing.T) {
 	missing := sha256Digest([]byte("missing-blob"))
 
 	dir := t.TempDir()
-	m := frozenManifest{Digests: []string{present, missing}}
+	// only remote images (no LocalImages, no bundle): the missing blob re-pulls
+	m := frozenManifest{Images: []string{"docker.io/library/nginx:1.27"}, Digests: []string{present, missing}}
 	if err := writeFrozenManifest(filepath.Join(dir, frozenManifestF), m); err != nil {
 		t.Fatal(err)
 	}
 
+	if err := verifyFrozenBlobs(cfg, dir); err != nil {
+		t.Fatalf("a missing remote digest should warn, not fail: %v", err)
+	}
+}
+
+// A local-only image whose blobs are missing AND whose bundle is gone is
+// genuinely unrestorable, so verify rejects it and names the lost images.
+func TestVerifyFrozenBlobsLocalWithoutBundleFails(t *testing.T) {
+	cfg := &config.Config{BaseDir: t.TempDir()}
+	blobs := filepath.Join(pullCacheDir(cfg), "blobs")
+	if err := os.MkdirAll(blobs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	missing := sha256Digest([]byte("missing-local-blob"))
+
+	dir := t.TempDir()
+	m := frozenManifest{
+		Images:      []string{"localhost:5000/app:dev"},
+		LocalImages: []string{"localhost:5000/app:dev"},
+		Digests:     []string{missing},
+	}
+	if err := writeFrozenManifest(filepath.Join(dir, frozenManifestF), m); err != nil {
+		t.Fatal(err)
+	}
+	// no frozenLocalImagesTar in dir → the local image cannot be recovered
 	err := verifyFrozenBlobs(cfg, dir)
 	if err == nil {
-		t.Fatal("expected verifyFrozenBlobs to fail on a missing digest")
+		t.Fatal("expected verifyFrozenBlobs to fail when a local image lost its bundle")
 	}
-	// the missing digest must be named; the present one must not be the cause
-	if !bytes.Contains([]byte(err.Error()), []byte(missing)) {
-		t.Fatalf("error should name the missing digest: %v", err)
+	if !bytes.Contains([]byte(err.Error()), []byte("localhost:5000/app:dev")) {
+		t.Fatalf("error should name the unrecoverable local image: %v", err)
+	}
+}
+
+// With the local-images bundle present, missing digests (bundled locals +
+// re-pullable remotes) are not fatal.
+func TestVerifyFrozenBlobsBundlePresentIsNotFatal(t *testing.T) {
+	cfg := &config.Config{BaseDir: t.TempDir()}
+	if err := os.MkdirAll(filepath.Join(pullCacheDir(cfg), "blobs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	m := frozenManifest{
+		Images:      []string{"localhost:5000/app:dev"},
+		LocalImages: []string{"localhost:5000/app:dev"},
+		Digests:     []string{sha256Digest([]byte("missing-blob"))},
+	}
+	if err := writeFrozenManifest(filepath.Join(dir, frozenManifestF), m); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, frozenLocalImagesTar), []byte("tar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyFrozenBlobs(cfg, dir); err != nil {
+		t.Fatalf("a present local-images bundle should make missing digests non-fatal: %v", err)
 	}
 }
 

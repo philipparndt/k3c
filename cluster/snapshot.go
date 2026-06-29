@@ -254,6 +254,15 @@ func saveFrozen(cfg *config.Config, name, dir string) error {
 		_ = os.RemoveAll(dir)
 		return err
 	}
+	// Surface a cache shortfall now rather than only at restore. This is the
+	// same presence check the thaw runs: it errors only when a genuinely
+	// unrecoverable local-only image lost its bundle (which cannot happen here,
+	// since writeFrozenSnapshot just wrote it), and otherwise warns that the
+	// thaw will need to re-pull remote images from their upstream registries.
+	if err := verifyFrozenBlobs(cfg, dir); err != nil {
+		_ = os.RemoveAll(dir)
+		return err
+	}
 	logger.Info("snapshot '" + name + "' (frozen) saved for cluster '" + cfg.Cluster + "'")
 
 	// Phase 2: read the manifest we just wrote and hand its digest closure
