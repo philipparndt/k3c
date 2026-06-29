@@ -30,18 +30,20 @@ abandoned. Full evidence and citations are in `design.md`.
   small)*
 - **Forward nested published ports over a stable channel, not the guest IP.**
   Keep the existing engine-API port discovery, but tunnel each published port to
-  the sidecar over a control channel reachable independently of guest L2 (an
-  in-guest forwarding agent on a statically-published control port, or vsock if
-  Apple `container` exposes it to an arbitrary guest process). *(gated on the
-  spike below)*
-- **Make Testcontainers resolve mapped ports to a host-reachable address** —
-  set `DOCKER_HOST` and, where required, `TESTCONTAINERS_HOST_OVERRIDE`, instead
-  of relying on the guest IP being host-routable.
-- **Prerequisite spike** that gates the architecture decision (is the inertness
-  a dual-NIC bring-up bug or a fundamental Apple-`container` limitation? does it
-  expose guest vsock?), including exercising the single-NIC
-  `egress.transparent: false` path (a supported branch today) to A/B-test vmnet
-  L2 in isolation.
+  the sidecar over a control channel reachable independently of guest L2. *(Spike
+  resolved — see below: a small in-guest forwarding agent reached over a unix
+  socket the runtime bridges to the host with `--publish-socket`, multiplexed by
+  a `"<port>\n"` header; raw guest vsock isn't reachable from k3c's Go, which only
+  shells out to the `container` CLI.)*
+- **Make Testcontainers resolve mapped ports to a host-reachable address** — set
+  `DOCKER_HOST` to the host unix socket; Testcontainers then resolves mapped
+  ports to `localhost`, which the loopback mirror serves, so
+  `TESTCONTAINERS_HOST_OVERRIDE` is **not** needed.
+- **Prerequisite spike — resolved** (full results in `design.md`): the vmnet
+  inertness is a fundamental Apple-`container`/vmnet property, **not** a k3c
+  dual-NIC bug (single-NIC host→guest is equally dead on macOS 26), so both phases
+  are required; and Apple `container` exposes a usable host↔guest channel to an
+  arbitrary in-guest process via `--publish-socket` (verified end-to-end).
 
 ## Capabilities
 

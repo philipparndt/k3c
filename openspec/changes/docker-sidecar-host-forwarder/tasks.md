@@ -28,6 +28,6 @@
 
 ## 5. Spec & validation
 
-- [ ] 5.1 Apply the `docker-sidecar` spec deltas (modified "Start the sidecar" invariant + new nested-published-port requirement)
-- [ ] 5.2 `openspec validate docker-sidecar-host-forwarder --strict` passes
-- [ ] 5.3 Note in `host-egress` impact that the sidecar no longer depends on "vmnet stays primary for host reachability" (no spec change unless cluster behavior shifts)
+- [x] 5.1 `docker-sidecar` spec deltas in `specs/docker-sidecar/spec.md`: **MODIFIED** "Start the sidecar" (engine reachable over a stable host-local endpoint, never the guest vmnet IP at L2; + scenario "Engine reachable without guest vmnet L2") and **ADDED** "Reach nested published ports from the host" (forward over a stable control channel via an in-guest agent; Testcontainers mapped ports resolve to a host-reachable address). MODIFIED header matches the base requirement exactly (clean archive). Kept at requirement altitude (implementation-agnostic).
+- [x] 5.2 `openspec validate docker-sidecar-host-forwarder --strict` → valid; `openspec validate --all --strict` → 17/17 passed.
+- [x] 5.3 Recorded in `proposal.md` Impact: `host-egress`'s "vmnet stays primary for host reachability" scenario is **affected but not modified** — the sidecar no longer depends on host-routable vmnet, but cluster `containerIP`/kube-API behavior is unchanged, so no host-egress spec change. (Its rationale that vmnet "stays host-routable" is itself questionable post-OQ#2, but re-verifying cluster reachability is out of scope here.)
