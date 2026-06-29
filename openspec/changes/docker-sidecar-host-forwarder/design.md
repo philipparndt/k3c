@@ -131,17 +131,16 @@ Adopt the ecosystem pattern, staged by confidence:
    host-local endpoint, never the guest IP — and it makes `docker`/the engine
    work with zero guest-L2 dependency.
 
-2. **Nested ports (Phase 2, gated on the spike):** keep the existing engine-API
-   port discovery, but replace the `dial <vmIP>:<port>` data plane with a tunnel
-   over a control channel that does **not** require guest L2:
-   - **If Apple `container` exposes usable host↔guest vsock to an arbitrary guest
-     process:** run a small in-guest forwarder (gvproxy-style or a minimal mux)
-     and reach it over vsock — the cleanest design.
-   - **Otherwise:** statically `--publish` **one** control port at sidecar
-     creation and multiplex every dynamic container port through an in-guest
-     forwarder over that single stable port.
-   Either way the host opens a `127.0.0.1:<published>` listener per discovered
-   port and proxies through the stable channel.
+2. **Nested ports (Phase 2 — spike resolved, see OQ#1):** keep the existing
+   engine-API port discovery, but replace the `dial <vmIP>:<port>` data plane with
+   a tunnel over a control channel that does **not** require guest L2. The chosen
+   channel is the runtime's **`--publish-socket`** (verified end-to-end): run a
+   small in-guest forwarder (gvproxy-style `Expose/Unexpose` or a minimal mux)
+   that listens on a unix socket, and `--publish-socket` that socket to a stable
+   host path once at sidecar creation. The host opens a `127.0.0.1:<published>`
+   listener per discovered port and multiplexes all of them through that single
+   bridged socket. (No fork/Swift/vsock-API work needed; a static-published TCP
+   control port remains a fallback if `--publish-socket` proves limiting.)
 
 3. **Testcontainers:** surface mapped ports on host loopback and set
    `DOCKER_HOST` (+ `TESTCONTAINERS_HOST_OVERRIDE` only if a non-loopback host is
@@ -149,13 +148,29 @@ Adopt the ecosystem pattern, staged by confidence:
 
 ## Open Questions (the spike gates Phase 2)
 
-1. **Does Apple `containerization` expose a usable host↔guest vsock channel to an
+1. **Does Apple `containerization` expose a usable host↔guest channel to an
    arbitrary in-guest process (a dind sidecar / forwarder), or is vsock reserved
-   for `vminitd`?** Decides vsock vs. static-control-port multiplexing. Note: k3c
-   already vendors `gvisor-tap-vsock` for transparent egress, but only as a
-   host-side netstack with the guest NIC attached over a unixgram socket — not an
-   arbitrary guest *process* speaking vsock — so this question is still open (the
-   library being on hand does lower the cost of the vsock option if it pans out).
+   for `vminitd`? → RESOLVED by experiment: yes, via the runtime's
+   `--publish-socket`.** Findings (macOS 26.5.1, bundled runtime `7ed75e1`,
+   2026-06-29):
+   - At the framework level, `VZVirtioSocketDevice` supports the host dialing an
+     *arbitrary* guest vsock port and the guest listening on one (`vminitd` only
+     reserves port 1024 + I/O ports), but k3c shells out to the `container` CLI and
+     never writes Swift, so raw vsock isn't directly reachable from Go.
+   - The `container` CLI **does** expose the needed channel: `--publish-socket
+     host_path:container_path` bridges a guest unix socket to a host path (unix
+     socket relaying over vsock under the hood); `--ssh` does the reverse
+     (host→guest). **End-to-end verified:** an `alpine/socat` container listening
+     on `/run/sk.sock`, published to `/tmp/k3c-sk.sock`, returned a banner to a
+     host `nc -U` — an arbitrary in-guest process, reached from the host with **no
+     vmnet involvement**.
+   - This means Phase 2 needs **no fork/Swift changes**: run an in-guest forwarder
+     that listens on a unix socket and `--publish-socket` it once at sidecar
+     creation. (k3c's existing `gvisor-tap-vsock` use is unrelated — it serves the
+     guest NIC over a *unixgram* socket, `gvnetctl.go:111`, and does not speak
+     vsock.) **Decision: prefer the `--publish-socket` unix-socket channel over a
+     static-published TCP control port** — it is simpler and has zero guest-L2
+     dependency.
 2. **Is the guest vmnet L2 inertness a k3c dual-NIC bring-up bug or a fundamental
    Apple-`container` limitation? → RESOLVED by experiment: it is an Apple-
    `container`/vmnet property, NOT a k3c dual-NIC bug.** Measured on macOS 26.5.1
