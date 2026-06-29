@@ -539,6 +539,16 @@ func DockerHostTCP(cfg *config.Config) (string, error) {
 }
 
 // DockerEnv prints shell exports for the sidecar engine.
+//
+// DOCKER_HOST is the host unix socket. Testcontainers resolves the address it
+// connects mapped ports on from DOCKER_HOST: a unix socket (or npipe) means
+// "localhost", a tcp/ssh URL means that URL's host. Because the daemon mirrors
+// every published container port onto host loopback (startDockerPortForward →
+// the in-guest forwarder), "localhost" reaches them — so TESTCONTAINERS_HOST_-
+// OVERRIDE is deliberately NOT set: loopback surfacing makes it unnecessary, and
+// the guest vmnet IP it would otherwise name is not host-reachable on macOS 26
+// (see the docker-sidecar-host-forwarder change). Ryuk (the reaper) is left
+// enabled; it maps a port that surfaces on loopback the same way.
 func DockerEnv(cfg *config.Config) error {
 	host, err := DockerHost(cfg)
 	if err != nil {

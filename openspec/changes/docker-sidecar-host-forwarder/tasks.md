@@ -21,10 +21,10 @@
 
 ## 4. Testcontainers integration & docs
 
-- [ ] 4.1 Ensure mapped ports surface on host loopback; set `DOCKER_HOST` accordingly in `DockerEnv`/context
-- [ ] 4.2 Only if loopback surfacing is impossible, set `TESTCONTAINERS_HOST_OVERRIDE` to a host-reachable address; document the precedence
-- [ ] 4.3 End-to-end: run a real Testcontainers test (e.g. a Postgres container) against the sidecar from the host with vmnet L2 inert
-- [ ] 4.4 Update ARCHITECTURE.md / runbook with the new host-reachability model
+- [x] 4.1 Mapped ports surface on host loopback (Phase 2 mirror) and `DOCKER_HOST`/the docker context point at the host unix socket (`DockerHost`). With a unix-socket `DOCKER_HOST`, Testcontainers resolves mapped-port connections to `localhost`, which the mirror serves. Verified: a `-p 18080:80` container on the real sidecar engine surfaces in `/containers/json` over the loopback endpoint (`PublicPort 18080`), the source for Testcontainers' `GetMappedPort`.
+- [x] 4.2 `TESTCONTAINERS_HOST_OVERRIDE` deliberately **not** set — loopback surfacing makes it unnecessary, and the vmnet IP it would name isn't host-reachable on macOS 26. Precedence documented in `DockerEnv` (the host-resolution rule) and ARCHITECTURE.md §4.6.
+- [~] 4.3 Data path verified component-wise against real components: discovery over the loopback engine API (real sidecar, above) + the in-guest forwarder data plane (live throwaway-VM test in §3.4). A full Testcontainers *client* run against `k3c-docker` needs the forwarder shipped in a bundled build + sidecar recreate (`make bundle` Swift toolchain) — deferred to avoid disrupting the running sidecar; offered as the rollout step.
+- [x] 4.4 ARCHITECTURE.md updated: §2 sidecar diagram + bullets rewritten to the loopback-engine / forwarder model, new §4.6 "Host ⇆ sidecar engine & nested ports (no guest-L2 dependency)", and a §5 runbook symptom for unreachable mapped ports / Testcontainers.
 
 ## 5. Spec & validation
 

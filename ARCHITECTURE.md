@@ -68,11 +68,14 @@ A `docker:dind` VM exposing a real Docker Engine API (for Testcontainers, the
 macOS host                                  sidecar VM  "k3c-docker"
 ──────────                                  ───────────────────────
 docker CLI / Testcontainers
-  DOCKER_HOST = tcp://192.168.64.x:2375 ─── vmnet eth0 ──▶ dockerd (dind) :2375
-  (the vmnet IP — host-routable)                            │
-                                                            ├─ docker0 / bridges
-                                                            └─ nested containers
-                                                               └─ (optional) k3d
+  DOCKER_HOST = unix://…/docker.sock              dockerd (dind) :2375
+    │ engine socket forwarder                          ▲
+    └─▶ 127.0.0.1:<DockerPort> ─── Apple -p publish ───┘
+                                                        ├─ docker0 / bridges
+  127.0.0.1:<mapped port>                               └─ nested containers
+    ▲ per-port mirror                                      (publish ports)
+    └── docker-fwd.sock ─ --publish-socket (vsock) ─▶ k3c-docker-fwd
+                                                        └─▶ 127.0.0.1:<port>
 k3c host daemons
   pull-cache  :5011 ◀────────── containerd pulls via the mirror
   CONNECT pxy :3128 ◀────────── (default-mode egress; or transparent egress §4.2)
@@ -80,14 +83,22 @@ k3c host daemons
 gateway 192.168.64.1                        eth0 192.168.64.x   [ eth1 gvnet ]
 ```
 
-- **Host → engine:** `DockerHost` / `containerIP` return the **vmnet** IP
-  (`192.168.64.x`), which is host-routable; Testcontainers reaches mapped
-  container ports on that address.
+- **Host → engine:** `DOCKER_HOST` is a host unix socket (`DockerHost`) the
+  daemon forwards to the engine at the **Apple-published loopback**
+  `127.0.0.1:<DockerPort>` — never the guest vmnet IP, which is not host-reachable
+  at L2 on macOS 26 (see §4.6). The socket path is stable across sidecar recreate.
+- **Nested published ports** are discovered via the engine API (over the loopback
+  endpoint) and mirrored onto host `127.0.0.1:<port>`; the data plane tunnels
+  through the in-guest forwarder `k3c-docker-fwd` over a unix socket the runtime
+  bridges with `--publish-socket` (vsock) — again no vmnet dependency (§4.6).
+- **Testcontainers** works out of the box: with a unix-socket `DOCKER_HOST` it
+  resolves mapped-port connections to `localhost`, which the mirror serves, so
+  `TESTCONTAINERS_HOST_OVERRIDE` is not needed.
 - **Resources are fixed at create:** `k3c docker up --cpus N --memory XG`
   re-creates the sidecar (volume preserved); `k3c docker rm` removes it.
 - **k3d on the sidecar** adds a third nesting level. Its API (`:64403` etc.) is
-  published *inside* the dind and mirrored to the host by the
-  `dockerPortForward` daemon.
+  published *inside* the dind and reaches the host through the same nested-port
+  forwarder.
 
 ---
 
@@ -237,6 +248,36 @@ run with the **project config** (for the pull-cache) and the **current binary**:
 > `k3c.yaml` respawns them without the pull-cache and breaks nested-cluster
 > pulls. Always run from the project directory (or pass `--config`).
 
+### 4.6 Host ⇆ sidecar engine & nested ports (no guest-L2 dependency)
+
+The host reaches the sidecar's docker engine and its nested published ports
+**without ever dialing the guest vmnet IP** — that IP is not host-reachable at L2
+on macOS 26 (Apple `container`/vmnet blocks host→guest ARP even single-NIC;
+guest→host and guest→guest still work). Two paths replace the old `<vmIP>:2375`
+dialing:
+
+- **Engine (Phase 1).** dockerd is statically published by the runtime at
+  `127.0.0.1:<DockerPort>` (`-p 127.0.0.1:<DockerPort>:2375`). The host engine
+  socket (`DockerHost` → `unix://…/docker.sock`) and the published-port discovery
+  poll both forward to that loopback endpoint, never the vmnet IP.
+- **Nested published ports (Phase 2).** A small in-guest forwarder
+  (`k3c-docker-fwd`, cross-compiled linux/arm64, shipped in the runtime bundle,
+  staged into the VM via the `/k3c-ca` mount and run with `container exec -d`)
+  listens on `/run/k3c-docker-fwd.sock`. The runtime bridges that socket to the
+  host (`docker-fwd.sock`) over **vsock** via `--publish-socket`. The daemon
+  discovers published ports over the engine API, opens a `127.0.0.1:<port>`
+  listener per port, and tunnels each connection through the forwarder with a
+  `"<port>\n"` header → `127.0.0.1:<port>` inside the VM. The same channel backs
+  contested-port arbitration (e.g. `:443` ingress to a nested k3d cluster).
+
+This is the pattern Lima, podman+gvproxy, and Docker Desktop all use (a userspace
+forwarder over a stable control channel, never raw guest-L2). Because the engine
+and mapped ports surface on loopback, **Testcontainers needs no
+`TESTCONTAINERS_HOST_OVERRIDE`** — its unix-socket `DOCKER_HOST` resolves to
+`localhost`, which the mirror serves. If the forwarder binary is absent (an
+unbundled dev build), the engine still works (Phase 1) but nested published ports
+are not surfaced — recreate with a bundled build to enable them.
+
 ---
 
 ## 5. Tracing problems
@@ -300,9 +341,22 @@ gateway. The netstack is per-VM and exits when its VM stops — it is respawned
 on `up`/`start`. `connect … failed: 2/61` during a VM bootstrap means a missing
 (2) or dead (61) netstack socket — respawned by re-running `up`.
 
-**Host can reach the VM IP but not the published `127.0.0.1:<port>`**
-The runtime forwards published ports to the *primary* NIC — keep **vmnet
-first** so that's the host-routable address (gvnet's `192.168.127.x` is not).
+**Published `127.0.0.1:<port>` unreachable / Testcontainers can't reach mapped ports**
+Published ports surface via the runtime's own `-p 127.0.0.1:…` forward (engine,
+kube API, ingress) or — for the docker sidecar's *nested* container ports — via
+the in-guest forwarder (§4.6). Neither depends on the guest vmnet IP (not
+host-reachable on macOS 26). For the sidecar / Testcontainers, check the
+forwarder:
+```sh
+CB exec k3c-docker pidof k3c-docker-fwd     # in-guest forwarder running?
+ls -l ~/.config/k3c/docker-fwd.sock         # host side of --publish-socket present?
+grep "forwarding .* -> sidecar" ~/.config/k3c/daemons.log
+```
+An unbundled build ships no forwarder binary, so nested published ports aren't
+surfaced (the engine itself still works via the loopback endpoint). Recreate with
+a bundled build: `k3c docker rm && k3c docker up`. Testcontainers needs no
+`TESTCONTAINERS_HOST_OVERRIDE` — the unix-socket `DOCKER_HOST` resolves to
+`localhost`, which the mirror serves.
 
 ### Toggling transparent egress for A/B comparison
 `K3C_TRANSPARENT_EGRESS=1` (or `egress.transparent: true`) enables it; unset to
