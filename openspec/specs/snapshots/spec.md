@@ -14,8 +14,10 @@ snapshot` (the sidecar's whole image store).
 `k3c snapshot save [CLUSTER] [NAME]` SHALL save a snapshot of cluster state
 using APFS copy-on-write; NAME SHALL default to a timestamp, and the save SHALL
 be warm by default (taken against a running cluster). `k3c snapshot restore
-[CLUSTER] NAME` SHALL restore a snapshot and start the cluster. `list` and
-`delete` SHALL manage saved snapshots.
+[CLUSTER] NAME` SHALL restore a snapshot and start the cluster. `list`,
+`rename`, and `delete` SHALL manage saved snapshots; `rename [CLUSTER] OLD NEW`
+SHALL rename a stored snapshot, carrying its pull-cache image pin to the new
+name.
 
 #### Scenario: Save a warm snapshot
 
@@ -28,6 +30,12 @@ be warm by default (taken against a running cluster). `k3c snapshot restore
 - **WHEN** the user runs `k3c snapshot restore mysnap`
 - **THEN** the cluster state is restored from `mysnap` and the cluster is
   started
+
+#### Scenario: Rename a snapshot
+
+- **WHEN** the user runs `k3c snapshot rename mysnap golden`
+- **THEN** the stored snapshot `mysnap` is renamed to `golden` and its pinned
+  image closure remains pinned under the new name
 
 ### Requirement: Export and import cluster snapshots
 
@@ -48,7 +56,7 @@ an exported archive into an already-created cluster.
 image store (every nested k3d cluster) to a named, restorable state; `restore
 NAME` SHALL replace the current image store with the snapshot. `--cold` SHALL
 quiesce with a stop (save) or boot fresh (restore) instead of using warm
-suspend/resume. `list` and `delete` SHALL manage sidecar snapshots.
+suspend/resume. `list`, `rename`, and `delete` SHALL manage sidecar snapshots.
 
 #### Scenario: Snapshot the whole image store
 

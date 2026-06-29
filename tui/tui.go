@@ -106,6 +106,14 @@ func modeDesc(mode cluster.SnapshotMode) string {
 	}
 }
 
+// renameInput is the open "rename snapshot" dialog.
+type renameInput struct {
+	input   textinput.Model
+	cluster string
+	oldName string
+	docker  bool // rename a docker sidecar snapshot instead of a cluster's
+}
+
 // exportPick is the open frozen-export tier chooser (slim/fat/thin). Only
 // frozen snapshots offer it; warm/cold export their disk image directly.
 type exportPick struct {
@@ -189,6 +197,7 @@ type model struct {
 
 	confirm    *confirm
 	input      *nameInput
+	rename     *renameInput
 	exportPick *exportPick
 }
 
@@ -773,6 +782,43 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// the rename dialog eats every key
+	if m.rename != nil {
+		switch msg.Type {
+		case tea.KeyEscape:
+			m.rename = nil
+			m.status = "cancelled"
+			m.failed = false
+			m.statusSeq++
+			return m, nil
+		case tea.KeyCtrlC:
+			return m, tea.Quit
+		case tea.KeyEnter:
+			rn := *m.rename
+			m.rename = nil
+			// snapshot names are directory names and CLI arguments; normalize
+			// typed spaces to dashes like the create wizard does
+			name := strings.TrimSpace(rn.input.Value())
+			name = strings.Join(strings.Fields(name), "-")
+			if name == "" || name == rn.oldName {
+				m.status = "cancelled"
+				m.failed = false
+				m.statusSeq++
+				return m, nil
+			}
+			args := []string{"snapshot", "rename", rn.cluster, rn.oldName, name}
+			if rn.docker {
+				args = []string{"docker", "snapshot", "rename", rn.oldName, name}
+			}
+			return m.startOp(fmt.Sprintf("rename snapshot %q to %q", rn.oldName, name), args...)
+		}
+		var cmd tea.Cmd
+		rn := *m.rename
+		rn.input, cmd = rn.input.Update(msg)
+		m.rename = &rn
+		return m, cmd
+	}
+
 	// global navigation and dialogs
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -819,7 +865,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "u", "m", "M":
 			return m, nil // not applicable to the docker sidecar
 		}
-		// enter / c / d / x / e fall through to the snapshot logic below
+		// enter / c / d / x / e / R fall through to the snapshot logic below
 	}
 
 	switch msg.String() {
@@ -892,6 +938,20 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.startOp("export of "+snap+" to "+out,
 			"snapshot", "export", name, snap, "-o", out)
+
+	case "R":
+		if !m.onSnapshot() {
+			return m, nil // rename targets a snapshot, not a machine
+		}
+		snap := m.curSnapshot()
+		in := textinput.New()
+		in.SetValue(snap)
+		in.Placeholder = snap
+		in.Focus()
+		in.CharLimit = 64
+		in.Width = 24
+		m.rename = &renameInput{input: in, cluster: name, oldName: snap, docker: kind == "docker"}
+		return m, textinput.Blink
 
 	case "d", "x":
 		if !m.onSnapshot() {
@@ -1127,6 +1187,8 @@ func (m model) View() string {
 		return m.confirmScreen()
 	case m.input != nil:
 		return m.inputScreen()
+	case m.rename != nil:
+		return m.renameScreen()
 	case m.exportPick != nil:
 		return m.exportScreen()
 	}
@@ -1364,6 +1426,15 @@ func (m model) inputScreen() string {
 	return m.center(dialogBox.Width(64).Render(content))
 }
 
+func (m model) renameScreen() string {
+	rn := m.rename
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		titleSt.Render("Rename snapshot "+rn.oldName), "",
+		dimSt.Render("name  ")+rn.input.View(), "",
+		dimSt.Render("enter rename · esc cancel · spaces → dashes"))
+	return m.center(dialogBox.Width(64).Render(content))
+}
+
 func (m model) exportScreen() string {
 	p := m.exportPick
 	sel := lipgloss.NewStyle().Bold(true).Foreground(accent)
@@ -1416,6 +1487,7 @@ func snapshotBinds() []helpBind {
 	return []helpBind{
 		{"↵", "restore"},
 		{"c", "create"},
+		{"R", "rename"},
 		{"e", "export"},
 		{"d/x", "delete"},
 	}

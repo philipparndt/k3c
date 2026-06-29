@@ -254,3 +254,28 @@ func DockerSnapshotDelete(cfg *config.Config, name string) error {
 	logger.Info("snapshot '" + name + "' of docker deleted")
 	return nil
 }
+
+// DockerSnapshotRename renames a saved sidecar snapshot. The name is only the
+// directory name, so a rename is a directory move (the sidecar uses no
+// pull-cache pins).
+func DockerSnapshotRename(cfg *config.Config, oldName, newName string) error {
+	if err := validSnapshotName(newName); err != nil {
+		return err
+	}
+	if oldName == newName {
+		return fmt.Errorf("snapshot '%s' already has that name", oldName)
+	}
+	oldDir := dockerSnapshotDir(cfg, oldName)
+	if _, err := os.Stat(oldDir); err != nil {
+		return fmt.Errorf("no snapshot '%s' of docker", oldName)
+	}
+	newDir := dockerSnapshotDir(cfg, newName)
+	if _, err := os.Stat(newDir); err == nil {
+		return fmt.Errorf("snapshot '%s' of docker already exists", newName)
+	}
+	if err := os.Rename(oldDir, newDir); err != nil {
+		return err
+	}
+	logger.Info("snapshot '" + oldName + "' of docker renamed to '" + newName + "'")
+	return nil
+}
