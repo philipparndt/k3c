@@ -30,9 +30,13 @@ is failing:
 
 Observed failure: ARP for the sidecar's guest vmnet IP is incomplete (the guest
 vmnet NIC is inert on `bridge100` while the host gateway `.1` resolves cleanly),
-so (B) and (C) both fail; only (A) survives. `egress.transparent: false` (the
-single-NIC legacy path) panics, so we cannot yet A/B-test whether vmnet L2 works
-without the second gvnet NIC — i.e. whether the inertness is a k3c dual-NIC
+so (B) and (C) both fail; only (A) survives. The single-NIC legacy path
+(`egress.transparent: false`) is a guarded, supported branch in the code today
+(`docker.go` skips every gvnet call and falls back to the SNI/CONNECT proxy;
+`gvnetctl.go` returns early), so the spike must first reproduce the reported
+single-NIC failure or confirm the path runs, before it can A/B-test whether
+vmnet L2 works without the second gvnet NIC — i.e. whether the inertness is a
+k3c dual-NIC
 bring-up bug or a fundamental Apple-`container` limitation.
 
 ## Goals / Non-Goals
@@ -138,11 +142,16 @@ Adopt the ecosystem pattern, staged by confidence:
 
 1. **Does Apple `containerization` expose a usable host↔guest vsock channel to an
    arbitrary in-guest process (a dind sidecar / forwarder), or is vsock reserved
-   for `vminitd`?** Decides vsock vs. static-control-port multiplexing.
+   for `vminitd`?** Decides vsock vs. static-control-port multiplexing. Note: k3c
+   already vendors `gvisor-tap-vsock` for transparent egress, but only as a
+   host-side netstack with the guest NIC attached over a unixgram socket — not an
+   arbitrary guest *process* speaking vsock — so this question is still open (the
+   library being on hand does lower the cost of the vsock option if it pans out).
 2. **Is the guest vmnet L2 inertness a k3c dual-NIC bring-up bug or a fundamental
-   Apple-`container` limitation?** Cheapest experiment: fix the
-   `egress.transparent: false` panic, then test single-NIC vmnet reachability. If
-   it's a bug, Phase 1 may suffice and Phase 2 shrinks.
+   Apple-`container` limitation?** Cheapest experiment: exercise the
+   `egress.transparent: false` single-NIC path (reproduce the reported failure or
+   confirm it runs), then test single-NIC vmnet reachability. If it's a bug,
+   Phase 1 may suffice and Phase 2 shrinks.
 3. Did Lima's PR #4066 (successor to the eBPF #3067) land and solve k8s
    iptables-churn detection? (Informs the discovery mechanism only.)
 

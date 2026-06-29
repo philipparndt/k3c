@@ -1,7 +1,7 @@
 ## 1. Decision spike (prerequisite — gates Phase 2)
 
-- [ ] 1.1 Fix the `egress.transparent: false` panic so the single-NIC legacy path runs (`cluster/gvnetctl.go` / `cluster/docker.go` / `config/config.go`)
-- [ ] 1.2 With the panic fixed, test single-NIC vmnet reachability: does the host resolve+reach the guest vmnet IP at L2 when no gvnet NIC is attached? Record whether inertness is a dual-NIC bring-up bug or fundamental
+- [ ] 1.1 Exercise the `egress.transparent: false` single-NIC legacy path — it is a guarded, supported branch today, so reproduce the reported single-NIC failure or confirm the path runs (`cluster/gvnetctl.go` / `cluster/docker.go` / `config/config.go`)
+- [ ] 1.2 With the single-NIC path exercised, test single-NIC vmnet reachability: does the host resolve+reach the guest vmnet IP at L2 when no gvnet NIC is attached? Record whether inertness is a dual-NIC bring-up bug or fundamental
 - [ ] 1.3 Determine whether Apple `container`/`containerization` exposes a usable host↔guest **vsock** channel to an arbitrary in-guest process (not just `vminitd`); spike a minimal guest listener + host dial
 - [ ] 1.4 Decide Phase 2 transport from 1.2/1.3: vsock (preferred) vs. static-published control port + in-guest mux; write the decision back into `design.md`
 

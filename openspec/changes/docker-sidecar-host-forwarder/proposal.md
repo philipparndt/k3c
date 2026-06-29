@@ -37,9 +37,11 @@ abandoned. Full evidence and citations are in `design.md`.
 - **Make Testcontainers resolve mapped ports to a host-reachable address** —
   set `DOCKER_HOST` and, where required, `TESTCONTAINERS_HOST_OVERRIDE`, instead
   of relying on the guest IP being host-routable.
-- **Prerequisite spike + the `egress.transparent: false` panic fix** that gates
-  the architecture decision (is the inertness a dual-NIC bring-up bug or a
-  fundamental Apple-`container` limitation? does it expose guest vsock?).
+- **Prerequisite spike** that gates the architecture decision (is the inertness
+  a dual-NIC bring-up bug or a fundamental Apple-`container` limitation? does it
+  expose guest vsock?), including exercising the single-NIC
+  `egress.transparent: false` path (a supported branch today) to A/B-test vmnet
+  L2 in isolation.
 
 ## Capabilities
 
@@ -55,8 +57,8 @@ abandoned. Full evidence and citations are in `design.md`.
 
 - **Code:** `cluster/dockerports.go` (socket + port-forward target resolution),
   `cluster/docker.go` (`DockerHost`/context wiring, sidecar control-port publish),
-  `cluster/gvnetctl.go` + `config/config.go` (NIC bring-up, the `transparent:false`
-  panic), possibly a new in-guest forwarder agent + its launch.
+  `cluster/gvnetctl.go` + `config/config.go` (NIC bring-up, the single-NIC
+  `transparent:false` path), possibly a new in-guest forwarder agent + its launch.
 - **Affected but not modified:** `host-egress`'s "vmnet stays primary for host
   reachability" scenario — the sidecar will no longer *depend* on host-routable
   vmnet, though clusters may still use it for `containerIP`/kube-API.
