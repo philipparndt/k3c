@@ -1,7 +1,7 @@
 ## 1. Decision spike (prerequisite — gates Phase 2)
 
-- [ ] 1.1 Exercise the `egress.transparent: false` single-NIC legacy path — it is a guarded, supported branch today, so reproduce the reported single-NIC failure or confirm the path runs (`cluster/gvnetctl.go` / `cluster/docker.go` / `config/config.go`)
-- [ ] 1.2 With the single-NIC path exercised, test single-NIC vmnet reachability: does the host resolve+reach the guest vmnet IP at L2 when no gvnet NIC is attached? Record whether inertness is a dual-NIC bring-up bug or fundamental
+- [x] 1.1 ~~Fix the `egress.transparent: false` panic~~ — **N/A: there is no panic** (it is a guarded, supported branch). Verified no `panic(` in `cluster/`/`config/`/`proxy/`/`gvnet/`; `egress.transparent: false` degrades cleanly to the single-NIC CONNECT-proxy path (`gvnetctl.go:61`, `docker.go:120`). Design doc claim corrected.
+- [x] 1.2 Single-NIC vmnet reachability tested (macOS 26.5.1, bundled runtime `7ed75e1`, 2026-06-29): **host→guest vmnet L2 is dead by Apple-`container`/vmnet design, NOT a dual-NIC bug.** A plain single-NIC `container run` (`192.168.64.8`, default network only) is as host-unreachable (ARP `(incomplete)` on `bridge100`) as the dual-NIC sidecar; isolation is directional (guest→gateway and guest→guest work). Optimistic "Phase 1 suffices" branch falsified → Phase 1 + Phase 2 both required. See `design.md` OQ#2.
 - [ ] 1.3 Determine whether Apple `container`/`containerization` exposes a usable host↔guest **vsock** channel to an arbitrary in-guest process (not just `vminitd`); spike a minimal guest listener + host dial
 - [ ] 1.4 Decide Phase 2 transport from 1.2/1.3: vsock (preferred) vs. static-published control port + in-guest mux; write the decision back into `design.md`
 
