@@ -229,6 +229,7 @@ type model struct {
 
 	commands    []commandRun // session-long command history
 	logVP       viewport.Model
+	helpVP      viewport.Model
 	showLog     bool // command-log dialog open
 	showHelp    bool // keybinding help dialog open
 	showDiagram bool // system data-flow diagram open
@@ -566,6 +567,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showLog {
 			m.sizeLog()
 		}
+		if m.showHelp {
+			m.sizeHelp()
+		}
 		m.clampScroll()
 		// Force a full repaint: on resize Bubble Tea's frame diff can leave
 		// stale cells from the previous (larger) layout on screen.
@@ -708,15 +712,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// the full-screen help eats every key: any key closes it (q/ctrl+c quits)
+	// the help dialog: scrolling keys drive the viewport, ? / esc close it
 	if m.showHelp {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		default:
+		case "?", "esc":
 			m.showHelp = false
 			return m, nil
 		}
+		var cmd tea.Cmd
+		m.helpVP, cmd = m.helpVP.Update(msg)
+		return m, cmd
 	}
 
 	// the full-screen system diagram: D or esc closes it (q/ctrl+c quits)
@@ -919,7 +926,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openLog()
 		return m, nil
 	case "?":
-		m.showHelp = true
+		m.openHelp()
 		return m, nil
 	case "D":
 		m.showDiagram = true
@@ -2060,33 +2067,116 @@ func (m model) anyRunning() bool {
 
 // helpScreen renders the full keybinding reference dialog (toggled with ?).
 func (m model) helpScreen() string {
-	general := helpCol("GENERAL", []helpBind{
-		{"↑↓ / jk", "move"},
-		{"←→", "expand / collapse"},
-		{"g / F5", "refresh"},
-		{"l", "logs / output"},
-		{"D", "system diagram"},
-		{"? / esc", "close help"},
-		{"q / ^C", "quit"},
-	})
-	machines := helpCol("MACHINE", machineBinds())
-	snapshots := helpCol("SNAPSHOT", snapshotBinds())
-	docker := helpCol("DOCKER SIDECAR", dockerBinds())
-
 	title := titleSt.Render(" k3c ") + dimSt.Render("· keybindings")
-	footer := dimSt.Render(" ? or esc to close")
-
-	gap := "    "
-	topRow := lipgloss.JoinHorizontal(lipgloss.Top, general, gap, machines, gap, snapshots)
-	var content string
-	if lipgloss.Width(topRow) <= m.width-8 {
-		content = lipgloss.JoinVertical(lipgloss.Left, title, "", topRow, "", docker, "", footer)
-	} else {
-		// too narrow for the side-by-side grid: stack the columns vertically.
-		stacked := lipgloss.JoinVertical(lipgloss.Left, general, "", machines, "", snapshots, "", docker)
-		content = lipgloss.JoinVertical(lipgloss.Left, title, "", stacked, "", footer)
+	footer := dimSt.Render(" ↑↓ scroll · ? / esc close")
+	content := lipgloss.JoinVertical(lipgloss.Left, title, "", m.helpVP.View(), "", footer)
+	if m.compact() {
+		// drop the frame on a small screen to reclaim every column.
+		return content
 	}
-	return m.fitDialog(content, 0)
+	return m.center(dialogBox.Render(content))
+}
+
+// helpBody is the scrollable keybinding reference. The sections are packed into
+// as many columns as fit width — a side-by-side grid on a wide terminal,
+// collapsing to fewer columns (down to one) as it narrows.
+func (m model) helpBody(width int) string {
+	sections := []string{
+		helpCol("GENERAL", []helpBind{
+			{"↑↓ / jk", "move"},
+			{"←→", "expand / collapse"},
+			{"g / F5", "refresh"},
+			{"l", "logs / output"},
+			{"D", "system diagram"},
+			{"? / esc", "close help"},
+			{"q / ^C", "quit"},
+		}),
+		helpCol("MACHINE", machineBinds()),
+		helpCol("SNAPSHOT", snapshotBinds()),
+		helpCol("DOCKER SIDECAR", dockerBinds()),
+	}
+	return packColumns(sections, width)
+}
+
+// packColumns lays out blocks left-to-right in rows of as many uniform-width
+// columns as fit within width, separated by a gap, with a blank line between
+// rows.
+func packColumns(cols []string, width int) string {
+	const gap = "    "
+	gapW := lipgloss.Width(gap)
+	colW := 0
+	for _, c := range cols {
+		if w := lipgloss.Width(c); w > colW {
+			colW = w
+		}
+	}
+	n := 1
+	if colW > 0 {
+		n = (width + gapW) / (colW + gapW)
+	}
+	if n < 1 {
+		n = 1
+	}
+	if n > len(cols) {
+		n = len(cols)
+	}
+	var rows []string
+	for i := 0; i < len(cols); i += n {
+		end := i + n
+		if end > len(cols) {
+			end = len(cols)
+		}
+		parts := make([]string, 0, (end-i)*2-1)
+		for j := i; j < end; j++ {
+			if j > i {
+				parts = append(parts, gap)
+			}
+			parts = append(parts, cols[j])
+		}
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, parts...))
+	}
+	return strings.Join(rows, "\n\n")
+}
+
+func (m *model) openHelp() {
+	m.showHelp = true
+	m.sizeHelp()
+}
+
+// helpContentWidth is the width available to the help body: the full terminal
+// when frameless (compact), otherwise the space inside the box border+padding.
+func (m model) helpContentWidth() int {
+	if m.compact() {
+		return m.width
+	}
+	return m.width - 8
+}
+
+// sizeHelp (re)builds the help viewport for the current terminal size so the
+// keybinding reference scrolls when it is taller than the screen and re-packs
+// its columns to the available width.
+func (m *model) sizeHelp() {
+	avail := m.helpContentWidth()
+	body := m.helpBody(avail)
+	w := lipgloss.Width(body)
+	if w > avail {
+		w = avail
+	}
+	if w < 10 {
+		w = 10
+	}
+	// title + 2 blank separators + footer sit around the body (4 lines); the
+	// framed layout also spends the box border + vertical padding (4 more).
+	h := m.height - 4
+	if !m.compact() {
+		h -= 4
+	}
+	if h < 3 {
+		h = 3
+	}
+	vp := viewport.New(w, h)
+	vp.SetContent(body)
+	m.helpVP = vp
 }
 
 func helpCol(title string, binds []helpBind) string {

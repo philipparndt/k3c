@@ -38,4 +38,11 @@ in the compact presentation.
 - **WHEN** a dialog (e.g. a confirmation prompt or the keybinding help) would be
   wider than the terminal
 - **THEN** the dialog box shrinks to fit the terminal width, wrapping long text
-  lines and stacking multi-column content vertically rather than overflowing
+  lines, and the keybinding help packs its sections into as many columns as fit
+  the width (down to one) rather than overflowing
+
+#### Scenario: Scrolling a dialog taller than the terminal
+
+- **WHEN** the keybinding help is open on a terminal too short to show all of it
+- **THEN** the help drops its frame to reclaim space and scrolls with the
+  cursor/scroll keys, and only `?` or `esc` close it (scroll keys do not)

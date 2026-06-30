@@ -22,7 +22,7 @@
 ## 5. Compact dialogs
 
 - [x] 5.1 Add a `fitDialog(content, preferred)` helper that sizes the dialog box to the preferred width but caps it to the terminal, letting lipgloss wrap long lines; route the confirm/input/rename/export dialogs through it.
-- [x] 5.2 Stack the help dialog's columns vertically when the side-by-side grid is too wide for the terminal.
+- [x] 5.2 Pack the help dialog's sections into as many columns as fit the width (`packColumns`), make it scrollable via a viewport, drop its frame on a small screen, and route scroll keys to the viewport so only `?`/`esc` close it.
 
 ## 6. Tests & verification
 

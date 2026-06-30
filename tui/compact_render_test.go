@@ -141,14 +141,46 @@ func TestConfirmDialogWrapsOnNarrowTerminal(t *testing.T) {
 	}
 }
 
-// The help dialog stacks its columns and fits a narrow terminal.
+// The help dialog packs into the available width, drops its frame, and scrolls
+// rather than overflowing a small terminal.
 func TestHelpDialogFitsNarrowTerminal(t *testing.T) {
-	const w = 50
-	m := model{width: w, height: 40}
+	const w, h = 56, 16
+	m := model{width: w, height: h}
+	m.openHelp()
 	out := m.helpScreen()
-	for i, ln := range strings.Split(out, "\n") {
+	lines := strings.Split(out, "\n")
+	if len(lines) > h {
+		t.Errorf("help is %d lines, exceeds height %d\n%s", len(lines), h, out)
+	}
+	for i, ln := range lines {
 		if lw := lipgloss.Width(ln); lw > w {
 			t.Errorf("help line %d width %d exceeds %d: %q", i, lw, w, ln)
 		}
+	}
+	if strings.Contains(out, "╭") {
+		t.Errorf("compact help should drop its frame\n%s", out)
+	}
+	if !strings.Contains(out, "GENERAL") {
+		t.Errorf("help body missing\n%s", out)
+	}
+}
+
+// Scrolling keys drive the help viewport instead of closing the dialog.
+func TestHelpScrollKeysDoNotClose(t *testing.T) {
+	m := model{width: 56, height: 16}
+	m.openHelp()
+	top := m.helpVP.YOffset
+	next, _ := m.Update(key("j"))
+	nm := next.(model)
+	if !nm.showHelp {
+		t.Fatal("scroll key closed the help dialog; want scroll")
+	}
+	if nm.helpVP.YOffset <= top {
+		t.Errorf("help did not scroll: offset %d -> %d", top, nm.helpVP.YOffset)
+	}
+	// esc still closes.
+	closed, _ := nm.Update(key("esc"))
+	if closed.(model).showHelp {
+		t.Error("esc did not close the help dialog")
 	}
 }
