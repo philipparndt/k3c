@@ -43,6 +43,8 @@ in the compact presentation.
 
 #### Scenario: Scrolling a dialog taller than the terminal
 
-- **WHEN** the keybinding help is open on a terminal too short to show all of it
-- **THEN** the help drops its frame to reclaim space and scrolls with the
-  cursor/scroll keys, and only `?` or `esc` close it (scroll keys do not)
+- **WHEN** the keybinding help or the system diagram is open on a terminal too
+  short to show all of it
+- **THEN** the dialog drops its frame to reclaim space and scrolls with the
+  cursor/scroll keys, and only its close keys (`?`/`esc` for help, `D`/`esc` for
+  the diagram) close it — scroll keys do not

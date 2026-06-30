@@ -230,6 +230,7 @@ type model struct {
 	commands    []commandRun // session-long command history
 	logVP       viewport.Model
 	helpVP      viewport.Model
+	diagramVP   viewport.Model
 	showLog     bool // command-log dialog open
 	showHelp    bool // keybinding help dialog open
 	showDiagram bool // system data-flow diagram open
@@ -570,6 +571,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showHelp {
 			m.sizeHelp()
 		}
+		if m.showDiagram {
+			m.sizeDiagram()
+		}
 		m.clampScroll()
 		// Force a full repaint: on resize Bubble Tea's frame diff can leave
 		// stale cells from the previous (larger) layout on screen.
@@ -726,7 +730,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// the full-screen system diagram: D or esc closes it (q/ctrl+c quits)
+	// the system diagram: scrolling keys drive the viewport, D / esc close it
 	if m.showDiagram {
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -735,7 +739,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.showDiagram = false
 			return m, nil
 		}
-		return m, nil
+		// refresh bounds against the current diagram before scrolling.
+		m.diagramVP.SetContent(m.diagramContent())
+		var cmd tea.Cmd
+		m.diagramVP, cmd = m.diagramVP.Update(msg)
+		return m, cmd
 	}
 
 	// a pending confirmation eats every key: arrows/tab move between buttons,
@@ -929,7 +937,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openHelp()
 		return m, nil
 	case "D":
-		m.showDiagram = true
+		m.openDiagram()
 		return m, nil
 	}
 
@@ -1850,17 +1858,36 @@ func colGlyph(col int, glyph string) string {
 // and its listeners bridge the guest VMs (the k3s clusters and the docker
 // sidecar) that run on the container runtime; image pulls flow through the
 // pull-cache. Toggled with D, refreshed on the same tick as the main view.
+const diagramMinWidth = 46
+
 func (m model) diagramScreen() string {
 	title := titleSt.Render(" k3c ") + dimSt.Render("· system")
-	footer := dimSt.Render("D or esc to close")
+	footer := dimSt.Render(" ↑↓ scroll · D / esc close")
 
-	const minWidth = 46
-	if m.width < minWidth {
+	if m.width < diagramMinWidth {
 		body := lipgloss.JoinVertical(lipgloss.Left,
 			title, "", dimSt.Render(" resize wider to view the diagram"), "", footer)
+		if m.compact() {
+			return body
+		}
 		return m.center(dialogBox.Render(body))
 	}
 
+	// rebuild the body from current state every frame so the diagram stays live;
+	// the viewport keeps only the scroll offset (set in Update) and dimensions.
+	vp := m.diagramVP
+	vp.SetContent(m.diagramContent())
+	content := lipgloss.JoinVertical(lipgloss.Left, title, "", vp.View(), "", footer)
+	if m.compact() {
+		// drop the frame on a small screen to reclaim space.
+		return content
+	}
+	return m.center(dialogBox.Render(content))
+}
+
+// diagramContent builds the scrollable region of the system diagram: the
+// daemon/runtime/VM spine with its connectors, plus the centered legend.
+func (m model) diagramContent() string {
 	legend := dimSt.Render(" ") + stateDot("running") + dimSt.Render(" running  ") +
 		stateDot("paused") + dimSt.Render(" paused  ") +
 		stateDot("suspended") + dimSt.Render(" suspended  ") +
@@ -1897,9 +1924,41 @@ func (m model) diagramScreen() string {
 
 	bw := lipgloss.Width(body)
 	ctr := func(s string) string { return lipgloss.PlaceHorizontal(bw, lipgloss.Center, s) }
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		ctr(title), "", body, "", ctr(legend), "", ctr(footer))
-	return m.center(dialogBox.Render(content))
+	return lipgloss.JoinVertical(lipgloss.Left, body, "", ctr(legend))
+}
+
+func (m *model) openDiagram() {
+	m.showDiagram = true
+	m.sizeDiagram()
+}
+
+// sizeDiagram (re)builds the diagram viewport for the current terminal size so
+// the diagram scrolls when it is taller than the screen.
+func (m *model) sizeDiagram() {
+	content := m.diagramContent()
+	w := lipgloss.Width(content)
+	avail := m.width
+	if !m.compact() {
+		avail = m.width - 8 // border (2) + horizontal padding (6)
+	}
+	if w > avail {
+		w = avail
+	}
+	if w < 10 {
+		w = 10
+	}
+	// title + 2 blank separators + footer sit around the body (4 lines); the
+	// framed layout also spends the box border + vertical padding (4 more).
+	h := m.height - 4
+	if !m.compact() {
+		h -= 4
+	}
+	if h < 3 {
+		h = 3
+	}
+	vp := viewport.New(w, h)
+	vp.SetContent(content)
+	m.diagramVP = vp
 }
 
 // vmBranch draws the connector from the runtime down to the VM boxes: a single

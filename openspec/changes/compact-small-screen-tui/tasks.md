@@ -23,6 +23,7 @@
 
 - [x] 5.1 Add a `fitDialog(content, preferred)` helper that sizes the dialog box to the preferred width but caps it to the terminal, letting lipgloss wrap long lines; route the confirm/input/rename/export dialogs through it.
 - [x] 5.2 Pack the help dialog's sections into as many columns as fit the width (`packColumns`), make it scrollable via a viewport, drop its frame on a small screen, and route scroll keys to the viewport so only `?`/`esc` close it.
+- [x] 5.3 Make the system diagram scrollable via a viewport (content rebuilt live each frame, offset persisted), drop its frame on a small screen, and route scroll keys to the viewport so only `D`/`esc` close it.
 
 ## 6. Tests & verification
 
