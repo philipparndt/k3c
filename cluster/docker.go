@@ -13,6 +13,7 @@ import (
 	"github.com/philipparndt/go-logger"
 
 	"k3c/config"
+	"k3c/runtime"
 )
 
 // The Docker sidecar: a docker:dind VM managed by k3c, exposing a real
@@ -105,12 +106,18 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		// plain TCP engine API; TLS adds nothing on the local vmnet
 		"-e", "DOCKER_TLS_CERTDIR=",
 		"-p", "127.0.0.1:" + cfg.DockerPort + ":2375",
+		// bridge the in-guest nested-port forwarder's socket to the host (over
+		// vsock, runtime-managed) so the host reaches published container ports
+		// without dialing the guest vmnet IP (Phase 2, see ensureDockerForwarder)
+		"--publish-socket", dockerForwardSocketPath(cfg) + ":" + guestForwardSocket,
 	}
 	if cfg.TransparentEgress {
-		// dual-NIC: vmnet stays primary (host<->VM: published 2375 + the
-		// DockerHost IP keep targeting the host-routable vmnet NIC); the gvnet
-		// NIC is added second and the entrypoint repoints the default route at
-		// it for transparent egress. No CONNECT proxy needed.
+		// dual-NIC: vmnet stays primary for the sidecar's gateway services
+		// (proxy, pull-cache, registry at the vmnet gateway) and the cluster's
+		// containerIP/kube-API; the gvnet NIC is added second and the entrypoint
+		// repoints the default route at it for transparent egress. No CONNECT
+		// proxy needed. The host reaches the engine via the Apple-published
+		// 127.0.0.1:<DockerPort> loopback, not the guest vmnet IP (startDockerSocket).
 		nets, err := gvnetNetworks(cfg, dockerName)
 		if err != nil {
 			return err
@@ -335,6 +342,50 @@ func forwardRegistryLoopback(cfg *config.Config) {
 	}
 }
 
+// ensureDockerForwarder injects and (re)launches the in-guest nested-port
+// forwarder. The forwarder binary is staged into the sidecar via the mounted
+// /k3c-ca dir and run detached, listening on the unix socket that
+// --publish-socket bridges to dockerForwardSocketPath on the host (so the host
+// reaches nested published ports without the guest vmnet IP). Best-effort: if
+// the forwarder binary isn't shipped (e.g. an unbundled dev build), nested
+// published ports simply aren't forwarded. Re-run on every `up` — exec'd
+// processes die when the VM stops.
+func ensureDockerForwarder(cfg *config.Config) {
+	src := runtime.DockerForwarderBinary()
+	if src == "" {
+		logger.Warn("docker: in-guest forwarder binary not found, so nested published ports " +
+			"(e.g. Testcontainers mapped ports) won't be reachable from the host. Build it next " +
+			"to k3c (make build / make docker-fwd) or set K3C_DOCKER_FWD_BINARY.")
+		return
+	}
+	// The forwarder only helps if the runtime actually bridges its socket to the
+	// host — which happens only for sidecars created WITH --publish-socket. A
+	// sidecar created before this feature has no bridge; surface that with the
+	// fix rather than silently not forwarding nested ports.
+	if _, err := os.Stat(dockerForwardSocketPath(cfg)); err != nil {
+		logger.Warn("docker: this sidecar predates the nested-port bridge, so published container " +
+			"ports (e.g. Testcontainers mapped ports) are not reachable from the host. Recreate it " +
+			"to enable them: k3c docker rm && k3c docker up")
+		return
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		logger.Warn("docker: reading in-guest forwarder: " + err.Error())
+		return
+	}
+	// stage it where the sidecar already mounts host files (-v certDir:/k3c-ca)
+	dst := filepath.Join(cfg.BaseDir, "docker", "k3c-docker-fwd")
+	if err := writeFileAtomic(dst, data, 0o755); err != nil {
+		logger.Warn("docker: staging in-guest forwarder: " + err.Error())
+		return
+	}
+	// kill any prior instance, then exec the forwarder detached in the VM
+	script := "kill $(pidof k3c-docker-fwd) 2>/dev/null; exec /k3c-ca/k3c-docker-fwd -socket " + guestForwardSocket
+	if out, err := runContainer("exec", "-d", dockerName, "sh", "-c", script); err != nil {
+		logger.Warn("docker: launching in-guest forwarder: " + out)
+	}
+}
+
 // applyDockerSysctls raises the sidecar VM's kernel limits (the configured
 // node sysctls — notably the inotify instance/watch limits, whose defaults are
 // far too low for file-watching workloads) so nested k3d pods get the same
@@ -385,6 +436,9 @@ func dockerReady(cfg *config.Config) error {
 	// so `docker push localhost:<port>/…` (build tooling tags images this way,
 	// the same address the host and node resolve) works from the sidecar engine
 	forwardRegistryLoopback(cfg)
+	// launch the in-guest forwarder so nested published container ports are
+	// reachable from the host (without the guest vmnet IP)
+	ensureDockerForwarder(cfg)
 	// nested-k3d node images are NOT prepared here — starting the engine
 	// shouldn't pay that one-time pull/bake. Run `k3c docker prepare-k3d`
 	// once before using `k3d cluster create` (see PrepareK3sNodeImages).
@@ -485,25 +539,41 @@ func DockerHost(cfg *config.Config) (string, error) {
 	return "unix://" + dockerSocketPath(cfg), nil
 }
 
-// DockerHostTCP returns the direct tcp endpoint on the sidecar VM, for tools
-// that cannot use a unix socket or need to reach published ports on the VM
-// address itself rather than the mirrored host loopback.
+// DockerHostTCP returns the engine's tcp endpoint for tools that cannot use a
+// unix socket. It is the stable Apple-published loopback (127.0.0.1:<DockerPort>),
+// not the guest vmnet IP — the latter is not host-reachable (see
+// startDockerSocket / the docker-sidecar-host-forwarder change).
 func DockerHostTCP(cfg *config.Config) (string, error) {
-	ip := containerIP(dockerName)
-	if ip == "" {
+	if !containerExists(dockerName, true) {
 		return "", fmt.Errorf("docker sidecar is not running (k3c docker up)")
 	}
-	return "tcp://" + ip + ":2375", nil
+	return "tcp://" + dockerEngineEndpoint(cfg), nil
 }
 
 // DockerEnv prints shell exports for the sidecar engine.
+//
+// DOCKER_HOST is the host unix socket. Testcontainers resolves the address it
+// connects mapped ports on from DOCKER_HOST: a unix socket (or npipe) means
+// "localhost", a tcp/ssh URL means that URL's host. Because the daemon mirrors
+// every published container port onto host loopback (startDockerPortForward →
+// the in-guest forwarder), "localhost" reaches them — so TESTCONTAINERS_HOST_-
+// OVERRIDE is deliberately NOT set: loopback surfacing makes it unnecessary, and
+// the guest vmnet IP it would otherwise name is not host-reachable on macOS 26
+// (see the docker-sidecar-host-forwarder change).
+//
+// We do NOT force TESTCONTAINERS_RYUK_DISABLED. Ryuk (the reaper) is the one
+// container Testcontainers pins to the engine's default `bridge` network, which
+// can intermittently fail to start on VM-backed engines (as documented for
+// colima/podman). Leaving it unset means `eval $(k3c docker env)` won't clobber a
+// consumer's `TESTCONTAINERS_RYUK_DISABLED=true` workaround; mapped ports still
+// surface on loopback either way (the test cleans up via t.Cleanup when Ryuk is
+// off).
 func DockerEnv(cfg *config.Config) error {
 	host, err := DockerHost(cfg)
 	if err != nil {
 		return err
 	}
 	fmt.Println("export DOCKER_HOST=" + host)
-	fmt.Println("export TESTCONTAINERS_RYUK_DISABLED=false")
 	return nil
 }
 

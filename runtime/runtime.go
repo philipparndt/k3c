@@ -184,6 +184,34 @@ func GvnetBinary() string {
 	return "gvnet"
 }
 
+// DockerForwarderBinary resolves the linux/arm64 in-guest docker port forwarder
+// (cmd/k3cdockerfwd), shipped in the bundled runtime. k3c copies it into the
+// sidecar VM and runs it there; it is never executed on the host. Returns "" if
+// it cannot be located (e.g. an unbundled dev build), so the caller degrades
+// gracefully — nested published ports just aren't forwarded. Resolution:
+//
+//  1. K3C_DOCKER_FWD_BINARY — explicit path.
+//  2. <bundle>/bin/k3c-docker-fwd — bundled next to the container runtime.
+//  3. <dir of k3c executable>/k3c-docker-fwd — a sibling of the running k3c.
+func DockerForwarderBinary() string {
+	if p := os.Getenv("K3C_DOCKER_FWD_BINARY"); p != "" {
+		return p
+	}
+	if HasBundle() {
+		if dir, err := extractBundle(); err == nil {
+			if bin := filepath.Join(dir, "bin", "k3c-docker-fwd"); fileExists(bin) {
+				return bin
+			}
+		}
+	}
+	if exe, err := os.Executable(); err == nil {
+		if bin := filepath.Join(filepath.Dir(exe), "k3c-docker-fwd"); fileExists(bin) {
+			return bin
+		}
+	}
+	return ""
+}
+
 func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && !info.IsDir()

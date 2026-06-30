@@ -1,5 +1,7 @@
 .idea/
 k3c
+k3c-local
+k3c-docker-fwd
 dist/
 # but DO commit the web UI bundle: it is small, content-hashed, and embedded
 # into the binary via go:embed, so `go build ./...` works without a node step.

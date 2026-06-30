@@ -185,10 +185,10 @@ func DockerSidecarInfo(cfg *config.Config) (ClusterInfo, bool) {
 		// Measured live footprint via humanBytes, exactly like cluster servers
 		// ("-" when stopped) — not the raw configured DockerMemory, which
 		// rendered differently (e.g. "48G" vs "25.8 GB").
-		RAM:      vmRAM(dockerName),
-		Context:  cfg.DockerContext,
-		Kind:     "docker",
-		Active:   readActive(cfg).Sidecar,
+		RAM:     vmRAM(dockerName),
+		Context: cfg.DockerContext,
+		Kind:    "docker",
+		Active:  readActive(cfg).Sidecar,
 	}, true
 }
 

@@ -64,9 +64,19 @@ build: web runtime ## build k3c bundled (clones+builds the fork runtime into ./t
 	go build -tags bundled -ldflags "$(LDFLAGS)" -o $(BINARY) .
 	@echo "built bundled $(BINARY)"
 
-build-unbundled: web ## build k3c without the runtime (fast dev build; drives a host container)
+build-unbundled: web docker-fwd ## build k3c without the runtime (fast dev build; drives a host container)
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 	@echo "built $(BINARY) (no bundled runtime — needs a host-installed container)"
+
+# The in-guest nested-port forwarder (Phase 2). Cross-compiled for the linux/arm64
+# guest and placed next to $(BINARY): DockerForwarderBinary() resolves it as a
+# sibling for unbundled dev builds (bundled builds ship it inside the runtime, so
+# `build` gets it via the `bundle` target instead).
+FWD_BIN := $(dir $(BINARY))k3c-docker-fwd
+
+docker-fwd: ## cross-compile the in-guest nested-port forwarder (linux/arm64) next to $(BINARY)
+	GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o "$(FWD_BIN)" ./cmd/k3cdockerfwd
+	@echo "built $(FWD_BIN) (linux/arm64 in-guest nested-port forwarder)"
 
 # build the web UI into web/dist. Installs node deps on first run. If npm is
 # unavailable, fall back to the committed bundle so the Go build still works.
@@ -164,6 +174,8 @@ bundle: ## tar a container install tree into runtime/payload (STAGING_DIR=...)
 	@echo "container version: $$(cat $(PAYLOAD_VERSION))"
 	@echo "building gvnet transparent-egress netstack helper into the payload"
 	@go build -ldflags "-s -w" -o "$(STAGING_DIR)/bin/gvnet" ./cmd/gvnet
+	@echo "building k3c-docker-fwd in-guest nested-port forwarder (linux/arm64) into the payload"
+	@GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o "$(STAGING_DIR)/bin/k3c-docker-fwd" ./cmd/k3cdockerfwd
 	@if [ -f "$(INIT_TAR)" ]; then \
 		echo "including init image: $(INIT_TAR)"; \
 		if [ "$(INIT_TAR)" != "$(STAGING_DIR)/init.tar" ]; then \
@@ -192,6 +204,7 @@ clean-forks: ## remove the cloned fork repos + runtime stage (./tmp)
 install: ## install k3c to GOPATH/bin (no sudo; ensure it is on PATH)
 	@test -f $(BINARY) || { echo "no ./$(BINARY) — run 'make build' first"; exit 1; }
 	install -m 0755 $(BINARY) $(GOBIN)/$(BINARY)
+	@if [ -f "$(FWD_BIN)" ]; then install -m 0755 "$(FWD_BIN)" "$(GOBIN)/k3c-docker-fwd"; echo "installed: $(GOBIN)/k3c-docker-fwd"; fi
 	@echo "installed: $(GOBIN)/$(BINARY)"
 
 install-system: ## install system-wide to $(PREFIX)/bin (sudo if needed)

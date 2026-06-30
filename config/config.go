@@ -477,22 +477,22 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		// build containers) real DNS + egress, so `RUN`/npm/`ADD http://…` work
 		// like a normal Docker host. Set egress.transparent:false for the legacy
 		// SNI-gateway / CONNECT-proxy mode.
-		TransparentEgress:    fc.Egress.Transparent == nil || *fc.Egress.Transparent || truthyEnv("K3C_TRANSPARENT_EGRESS"),
-		PullCacheEnabled:     fc.PullCache.Enabled != nil && *fc.PullCache.Enabled,
-		PullCachePort:        port(fc.PullCache.Port, 5011),
-		PullCacheRetention:   pullCacheRetention(fc.PullCache.RetentionDays),
-		DockerEnabled:        fc.Docker.Enabled != nil && *fc.Docker.Enabled,
-		DockerCPUs:           strconv.Itoa(dockerCPUs),
-		DockerMemory:         def(fc.Docker.Memory, "8G"),
-		DockerPort:           port(fc.Docker.Port, 2375),
-		DockerContext:        def(fc.Docker.Context, "k3c"),
-		DockerK3sNodeImages:  fc.Docker.K3sNodeImages,
-		Registries:           fc.Registries,
-		ContainerBinary:      def(fc.ContainerBinary, "container"),
-		AutoReclaim:          def(fc.Cluster.AutoReclaim, "10m"),
-		CPUPriority:          def(fc.Cluster.CPUPriority, "low"),
-		BaseDir:              baseDir,
-		ConfigFile:           configFile,
+		TransparentEgress:   fc.Egress.Transparent == nil || *fc.Egress.Transparent || truthyEnv("K3C_TRANSPARENT_EGRESS"),
+		PullCacheEnabled:    fc.PullCache.Enabled != nil && *fc.PullCache.Enabled,
+		PullCachePort:       port(fc.PullCache.Port, 5011),
+		PullCacheRetention:  pullCacheRetention(fc.PullCache.RetentionDays),
+		DockerEnabled:       fc.Docker.Enabled != nil && *fc.Docker.Enabled,
+		DockerCPUs:          strconv.Itoa(dockerCPUs),
+		DockerMemory:        def(fc.Docker.Memory, "8G"),
+		DockerPort:          port(fc.Docker.Port, 2375),
+		DockerContext:       def(fc.Docker.Context, "k3c"),
+		DockerK3sNodeImages: fc.Docker.K3sNodeImages,
+		Registries:          fc.Registries,
+		ContainerBinary:     def(fc.ContainerBinary, "container"),
+		AutoReclaim:         def(fc.Cluster.AutoReclaim, "10m"),
+		CPUPriority:         def(fc.Cluster.CPUPriority, "low"),
+		BaseDir:             baseDir,
+		ConfigFile:          configFile,
 	}, nil
 }
 
