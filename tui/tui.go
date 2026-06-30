@@ -1318,7 +1318,9 @@ func (m model) compactView() string {
 	title := truncate(" "+titleSt.Render("Machines"), m.width)
 	list := m.compactListView()
 	status := truncate(m.statusView(), m.width)
-	return lipgloss.JoinVertical(lipgloss.Left, header, title, list, status)
+	// a blank line separates the header from the content, mirroring the gap the
+	// wide layout's bordered boxes create.
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", title, list, status)
 }
 
 // compactHeaderView stacks the info-panel rows and a one-line key hint, each
@@ -1351,8 +1353,9 @@ func (m model) compactKeyHint() string {
 // status line. When the list is taller than that, one line is reserved for the
 // scroll indicator.
 func (m model) listVisible() int {
-	// title line + status line sit around the list, plus the header block.
-	area := m.height - lipgloss.Height(m.compactHeaderView()) - 2
+	// blank separator + title line + status line sit around the list, plus the
+	// header block.
+	area := m.height - lipgloss.Height(m.compactHeaderView()) - 3
 	if area < 1 {
 		area = 1
 	}
