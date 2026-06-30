@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bufio"
 	"io"
 	"net"
 	"net/http"
@@ -71,11 +72,74 @@ func TestDockerPublishedPortsQueriesEndpointAndParses(t *testing.T) {
 	}
 }
 
-// TestStartDockerSocketForwardsToLoopbackEngine exercises the real
-// startDockerSocket: the host unix socket must forward to the loopback engine
-// endpoint (127.0.0.1:<DockerPort>), the Apple-published port — proving the
-// engine is reachable without dialing the guest vmnet IP.
-func TestStartDockerSocketForwardsToLoopbackEngine(t *testing.T) {
+// TestStartDockerSocketPrefersForwarder pins the fix: when the in-guest
+// forwarder bridge is present, the host engine socket routes through it (a
+// full-duplex unix path that carries Docker's hijacked exec/attach streams,
+// which the Apple TCP publish drops), selecting the guest engine port.
+func TestStartDockerSocketPrefersForwarder(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "k3c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(base)
+	// DockerPort points at a closed port so a fallback to the loopback engine
+	// would fail — the test only passes if the forwarder path is taken.
+	cfg := &config.Config{BaseDir: base, DockerPort: "1"}
+
+	// fake in-guest forwarder bridge: read the one-line port header, then echo a
+	// marker proving both that the route went through it and which port it asked.
+	fwd, err := net.Listen("unix", dockerForwardSocketPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fwd.Close()
+	go func() {
+		c, err := fwd.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		br := bufio.NewReader(c)
+		hdr, err := br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(br, buf); err != nil {
+			return
+		}
+		_, _ = c.Write([]byte("FWD" + strings.TrimSpace(hdr) + ":" + string(buf)))
+	}()
+
+	startDockerSocket(cfg)
+	path := dockerSocketPath(cfg)
+	var conn net.Conn
+	for i := 0; i < 100; i++ {
+		if conn, err = net.Dial("unix", path); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("dial host docker socket %s: %v", path, err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("PING")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	out, _ := io.ReadAll(conn)
+	want := "FWD2375:PING" // guestEnginePort selected, routed through the forwarder
+	if string(out) != want {
+		t.Fatalf("forwarded response = %q, want %q (engine did not route through the in-guest forwarder)", out, want)
+	}
+}
+
+// TestStartDockerSocketFallsBackToLoopbackEngine exercises the fallback: with no
+// forwarder bridge present (a sidecar created before --publish-socket), the host
+// unix socket falls back to the loopback engine endpoint (127.0.0.1:<DockerPort>,
+// the Apple-published port) — still without dialing the guest vmnet IP.
+func TestStartDockerSocketFallsBackToLoopbackEngine(t *testing.T) {
 	// a fake engine on loopback, standing in for the Apple-published
 	// 127.0.0.1:<DockerPort> forward of the sidecar's dockerd.
 	engine, err := net.Listen("tcp", "127.0.0.1:0")

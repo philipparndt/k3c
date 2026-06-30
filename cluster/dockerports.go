@@ -41,6 +41,12 @@ func dockerEngineEndpoint(cfg *config.Config) string {
 // bridges dockerForwardSocketPath(host) to this path inside the VM.
 const guestForwardSocket = "/run/k3c-docker-fwd.sock"
 
+// guestEnginePort is the port dockerd listens on inside the sidecar VM
+// (docker.go launches it with --host=tcp://0.0.0.0:2375). The in-guest
+// forwarder dials it on the guest loopback, so the engine reaches the host
+// over the same full-duplex unix bridge as nested ports.
+const guestEnginePort = 2375
+
 // sidecarTargetPrefix marks a dial target served by the sidecar's nested-port
 // forwarder (vs. a plain host:port dialed over tcp). The "|" cannot appear in a
 // hostname nor in net.JoinHostPort output, so a sidecar target can never be
@@ -86,10 +92,25 @@ func dialTarget(cfg *config.Config, target string) (net.Conn, error) {
 	return net.DialTimeout("tcp", target, connectTimeout)
 }
 
+// dialDockerEngine opens a connection to the sidecar's docker engine. It
+// prefers the in-guest forwarder over the published unix socket — that path is
+// full-duplex, so Docker's hijacked streams (exec, attach, interactive run,
+// `logs -f`) survive, with no guest vmnet L2 dependency. It falls back to the
+// Apple-published loopback endpoint (127.0.0.1:<DockerPort>) when the bridge is
+// absent — a sidecar created before --publish-socket: the engine still answers
+// plain request/response there, but hijacked streams are dropped by Apple's
+// TCP publish, so such a sidecar should be recreated to regain exec/attach.
+func dialDockerEngine(cfg *config.Config) (net.Conn, error) {
+	if c, err := dialSidecarPort(cfg, guestEnginePort); err == nil {
+		return c, nil
+	}
+	return net.DialTimeout("tcp", dockerEngineEndpoint(cfg), connectTimeout)
+}
+
 // startDockerSocket serves a host unix socket that forwards to the sidecar's
-// docker engine via the stable Apple-published loopback endpoint
-// (127.0.0.1:<DockerPort>), so it keeps working across sidecar recreation and
-// when the guest vmnet IP is unreachable; connections made while no sidecar is
+// docker engine via the in-guest forwarder (falling back to the Apple-published
+// loopback endpoint), so it keeps working across sidecar recreation and when
+// the guest vmnet IP is unreachable; connections made while no sidecar is
 // running fail to dial and are closed. Idle (just an unused listener) until
 // something dials it.
 func startDockerSocket(cfg *config.Config) {
@@ -110,10 +131,11 @@ func startDockerSocket(cfg *config.Config) {
 				return
 			}
 			go func() {
-				// dial the stable host-local engine endpoint, never the guest
-				// vmnet IP (not host-reachable); a stopped sidecar has no
-				// published port, so the dial fails fast and we close.
-				upstream, err := net.DialTimeout("tcp", dockerEngineEndpoint(cfg), connectTimeout)
+				// reach the engine over the in-guest forwarder (full-duplex,
+				// carries hijacked exec/attach streams), falling back to the
+				// Apple-published loopback; never the guest vmnet IP. A stopped
+				// sidecar has neither, so the dial fails fast and we close.
+				upstream, err := dialDockerEngine(cfg)
 				if err != nil {
 					_ = conn.Close()
 					return
