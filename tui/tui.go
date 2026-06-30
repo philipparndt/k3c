@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/philipparndt/go-logger"
 
 	"k3c/cluster"
@@ -213,8 +214,9 @@ type model struct {
 
 	daemons cluster.DaemonsInfo // host-daemon process and listener state
 
-	width  int
-	height int
+	width   int
+	height  int
+	listTop int // index of the first visible list row when scrolling (compact view)
 
 	spin      spinner.Model
 	busy      string   // running operation, "" when idle
@@ -564,6 +566,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showLog {
 			m.sizeLog()
 		}
+		m.clampScroll()
 		// Force a full repaint: on resize Bubble Tea's frame diff can leave
 		// stale cells from the previous (larger) layout on screen.
 		return m, tea.ClearScreen
@@ -585,6 +588,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cur >= len(m.rows) {
 			m.cur = max(0, len(m.rows)-1)
 		}
+		m.clampScroll()
 		m.netLine = ""
 		m.netTotalLine = ""
 		if msg.traffic != nil {
@@ -619,6 +623,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cur >= len(m.rows) {
 			m.cur = max(0, len(m.rows)-1)
 		}
+		m.clampScroll()
 		return m, nil
 
 	case askMsg:
@@ -1086,6 +1091,7 @@ func (m model) move(delta int) (tea.Model, tea.Cmd) {
 		m.netLine = ""
 		m.netTotalLine = ""
 	}
+	m.clampScroll()
 	return m, nil
 }
 
@@ -1106,6 +1112,7 @@ func (m model) expand() (tea.Model, tea.Cmd) {
 		cmd = m.refreshSnapshots(c.Name, c.Kind)
 	}
 	m.rebuildRows()
+	m.clampScroll()
 	return m, cmd
 }
 
@@ -1123,6 +1130,7 @@ func (m model) collapse() (tea.Model, tea.Cmd) {
 				break
 			}
 		}
+		m.clampScroll()
 		return m, nil
 	}
 	c := m.clusters[r.machine]
@@ -1133,6 +1141,7 @@ func (m model) collapse() (tea.Model, tea.Cmd) {
 			m.cur = max(0, len(m.rows)-1)
 		}
 	}
+	m.clampScroll()
 	return m, nil
 }
 
@@ -1260,6 +1269,21 @@ func lastLine(out string, err error) string {
 	return err.Error()
 }
 
+// compactWidth/compactHeight are the smallest terminal the normal side-by-side
+// layout renders cleanly in; below either, View switches to the compact,
+// scrollable presentation. compactWidth tracks the wide header's natural width
+// (info panel beside the menu columns) plus a little slack.
+const (
+	compactWidth  = 80
+	compactHeight = 18
+)
+
+// compact reports whether the terminal is too small for the normal layout and
+// the stacked, non-wrapping, scrollable presentation should be used instead.
+func (m model) compact() bool {
+	return m.width < compactWidth || m.height < compactHeight
+}
+
 func (m model) View() string {
 	if m.width == 0 {
 		return "loading…"
@@ -1280,7 +1304,136 @@ func (m model) View() string {
 	case m.exportPick != nil:
 		return m.exportScreen()
 	}
+	if m.compact() {
+		return m.compactView()
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.treeView(), m.statusView())
+}
+
+// compactView is the small-terminal layout: the header fields stacked
+// vertically (never side-by-side), a scrolled machine/snapshot list, and the
+// status line — every row truncated to the terminal width so nothing wraps.
+func (m model) compactView() string {
+	header := m.compactHeaderView()
+	title := truncate(" "+titleSt.Render("Machines"), m.width)
+	list := m.compactListView()
+	status := truncate(m.statusView(), m.width)
+	return lipgloss.JoinVertical(lipgloss.Left, header, title, list, status)
+}
+
+// compactHeaderView stacks the info-panel rows and a one-line key hint, each
+// truncated to the terminal width. No box border — every column is precious on
+// a small terminal.
+func (m model) compactHeaderView() string {
+	var b strings.Builder
+	for _, l := range strings.Split(m.infoPanelView(), "\n") {
+		b.WriteString(truncate(l, m.width) + "\n")
+	}
+	b.WriteString(truncate(m.compactKeyHint(), m.width))
+	return b.String()
+}
+
+// compactKeyHint condenses the navigation keys and the contextual verbs into a
+// single dotted line; it is truncated to width, with the full set still in the
+// ? help dialog.
+func (m model) compactKeyHint() string {
+	binds := append([]helpBind{
+		{"↑↓", "move"}, {"←→", "expand"}, {"l", "logs"}, {"?", "help"}, {"q", "quit"},
+	}, m.menuBinds()...)
+	parts := make([]string, 0, len(binds))
+	for _, b := range binds {
+		parts = append(parts, keySt.Render(b.key)+" "+dimSt.Render(b.desc))
+	}
+	return strings.Join(parts, dimSt.Render(" · "))
+}
+
+// listVisible is how many list rows fit below the compact header and above the
+// status line. When the list is taller than that, one line is reserved for the
+// scroll indicator.
+func (m model) listVisible() int {
+	// title line + status line sit around the list, plus the header block.
+	area := m.height - lipgloss.Height(m.compactHeaderView()) - 2
+	if area < 1 {
+		area = 1
+	}
+	if len(m.rows) > area && area >= 2 {
+		return area - 1
+	}
+	return area
+}
+
+// scrollTop resolves the first visible row for a window of vis rows, biased by
+// the persisted listTop but always clamped so the selected row is on screen.
+func (m model) scrollTop(vis int) int {
+	top := m.listTop
+	if top > m.cur {
+		top = m.cur
+	}
+	if m.cur >= top+vis {
+		top = m.cur - vis + 1
+	}
+	if maxTop := len(m.rows) - vis; top > maxTop {
+		top = maxTop
+	}
+	if top < 0 {
+		top = 0
+	}
+	return top
+}
+
+// compactListView renders the scrolled, truncated machine/snapshot list.
+func (m model) compactListView() string {
+	w := m.width
+	if len(m.rows) == 0 {
+		msg := "no clusters — k3c cluster create"
+		if !m.loaded {
+			msg = "starting container system…"
+		}
+		return truncate(" "+dimSt.Render(msg), w)
+	}
+	vis := m.listVisible()
+	top := m.scrollTop(vis)
+	end := top + vis
+	if end > len(m.rows) {
+		end = len(m.rows)
+	}
+	var b strings.Builder
+	for i := top; i < end; i++ {
+		b.WriteString(truncate(m.renderRow(m.rows[i], w, i == m.cur), w))
+		if i < end-1 {
+			b.WriteString("\n")
+		}
+	}
+	if ind := scrollIndicator(top, end, len(m.rows)); ind != "" {
+		b.WriteString("\n" + truncate(ind, w))
+	}
+	return b.String()
+}
+
+// scrollIndicator notes how many rows are hidden above/below the window, or ""
+// when the whole list is visible.
+func scrollIndicator(top, end, total int) string {
+	var parts []string
+	if top > 0 {
+		parts = append(parts, fmt.Sprintf("↑ %d more", top))
+	}
+	if end < total {
+		parts = append(parts, fmt.Sprintf("↓ %d more", total-end))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + dimSt.Render(strings.Join(parts, " · "))
+}
+
+// clampScroll persists the scroll offset so list movement is sticky between
+// frames; the render path re-clamps regardless, so this only affects smoothness.
+func (m *model) clampScroll() {
+	if !m.compact() {
+		m.listTop = 0
+		return
+	}
+	m.listTop = m.scrollTop(m.listVisible())
 }
 
 // headerView is the k9s-style top bar: a bordered context info panel beside the
@@ -1929,6 +2082,19 @@ func padRight(s string, width int) string {
 		return s + strings.Repeat(" ", width-w)
 	}
 	return s
+}
+
+// truncate clips s to at most w display columns, appending an ellipsis when it
+// has to cut. It is ANSI/width aware, so styled rows are measured by their
+// visible width rather than byte length and never wrap onto a second line.
+func truncate(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	return ansi.Truncate(s, w, "…")
 }
 
 func humanBytes(b int64) string {
