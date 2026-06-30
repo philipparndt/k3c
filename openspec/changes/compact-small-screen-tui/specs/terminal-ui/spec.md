@@ -32,3 +32,10 @@ in the compact presentation.
 - **WHEN** the UI is in the compact presentation
 - **THEN** the same keybindings and lifecycle actions available in the normal
   layout continue to work
+
+#### Scenario: Dialogs fit a narrow terminal
+
+- **WHEN** a dialog (e.g. a confirmation prompt or the keybinding help) would be
+  wider than the terminal
+- **THEN** the dialog box shrinks to fit the terminal width, wrapping long text
+  lines and stacking multi-column content vertically rather than overflowing

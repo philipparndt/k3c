@@ -115,3 +115,40 @@ func TestWideTerminalNotCompact(t *testing.T) {
 		t.Fatal("120x40 should not be compact")
 	}
 }
+
+// A long confirm prompt must wrap to fit a narrow terminal rather than overflow.
+func TestConfirmDialogWrapsOnNarrowTerminal(t *testing.T) {
+	const w = 56
+	m := model{width: w, height: 24}
+	m.confirm = &confirm{
+		prompt:      `Restore snapshot "before-model" into "vehub"? Its current state is replaced and host daemons restart.`,
+		yesLabel:    "Restore",
+		destructive: true,
+	}
+	out := m.confirmScreen()
+	lines := strings.Split(out, "\n")
+	wrapped := false
+	for i, ln := range lines {
+		if lw := lipgloss.Width(ln); lw > w {
+			t.Errorf("confirm line %d width %d exceeds %d: %q", i, lw, w, ln)
+		}
+		if strings.Contains(ln, "current state") && !strings.Contains(ln, "Restore snapshot") {
+			wrapped = true // the prompt spilled onto a second line
+		}
+	}
+	if !wrapped {
+		t.Errorf("expected the long prompt to wrap across lines\n%s", out)
+	}
+}
+
+// The help dialog stacks its columns and fits a narrow terminal.
+func TestHelpDialogFitsNarrowTerminal(t *testing.T) {
+	const w = 50
+	m := model{width: w, height: 40}
+	out := m.helpScreen()
+	for i, ln := range strings.Split(out, "\n") {
+		if lw := lipgloss.Width(ln); lw > w {
+			t.Errorf("help line %d width %d exceeds %d: %q", i, lw, w, ln)
+		}
+	}
+}

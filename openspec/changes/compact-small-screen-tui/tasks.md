@@ -19,7 +19,12 @@
 - [x] 4.3 Render only `m.rows[listTop:listTop+visible]`, truncating each row to width so no row wraps.
 - [x] 4.4 Show `↑ more` / `↓ more` indicators when rows are hidden above/below.
 
-## 5. Tests & verification
+## 5. Compact dialogs
 
-- [x] 5.1 Add render tests at small sizes asserting (a) no output line exceeds `m.width`, (b) total output height ≤ `m.height`, and (c) the selected row appears for selection at first / middle / last row.
-- [x] 5.2 Run `gofmt`, `go build ./...`, and `go test ./tui/...`; manually run `k3c ui` and shrink the terminal below the threshold to confirm the compact, scrollable view.
+- [x] 5.1 Add a `fitDialog(content, preferred)` helper that sizes the dialog box to the preferred width but caps it to the terminal, letting lipgloss wrap long lines; route the confirm/input/rename/export dialogs through it.
+- [x] 5.2 Stack the help dialog's columns vertically when the side-by-side grid is too wide for the terminal.
+
+## 6. Tests & verification
+
+- [x] 6.1 Add render tests at small sizes asserting (a) no output line exceeds `m.width`, (b) total output height ≤ `m.height`, (c) the selected row appears for selection at first / middle / last row, and (d) a long confirm prompt wraps and the help dialog fits a narrow terminal.
+- [x] 6.2 Run `gofmt`, `go build ./...`, and `go test ./tui/...`; manually run `k3c ui` and shrink the terminal below the threshold to confirm the compact, scrollable view and the wrapped dialogs.

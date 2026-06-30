@@ -1641,6 +1641,22 @@ func (m model) center(box string) string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
+// fitDialog centers the dialog content in a box sized to preferred content
+// width, but never wider than the terminal — on a small screen the box shrinks
+// and lipgloss wraps long lines (e.g. a confirm prompt) instead of overflowing.
+// preferred == 0 sizes the box to its content. The width passed to the box
+// already includes its horizontal padding, so +6 reserves room for it.
+func (m model) fitDialog(content string, preferred int) string {
+	w := preferred
+	if w == 0 {
+		w = lipgloss.Width(content) + 6
+	}
+	if maxW := m.width - 2; w > maxW {
+		w = maxW
+	}
+	return m.center(dialogBox.Width(w).Render(content))
+}
+
 // renderButton draws one confirm-dialog button. The focused button is filled
 // (accent, or red when it is the destructive affirmative action); an unfocused
 // destructive action keeps red text so the consequence reads even before it is
@@ -1677,7 +1693,7 @@ func (m model) confirmScreen() string {
 		c.prompt, "",
 		row, "",
 		dimSt.Render("← → select · enter confirm · esc cancel"))
-	return m.center(dialogBox.Render(content))
+	return m.fitDialog(content, 0)
 }
 
 func (m model) inputScreen() string {
@@ -1697,7 +1713,7 @@ func (m model) inputScreen() string {
 		dimSt.Render("mode  ")+strings.Join(segs, dimSt.Render(" / ")),
 		dimSt.Render("      "+modeDesc(in.mode)), "",
 		dimSt.Render("enter save · tab cycle mode · esc cancel · spaces → dashes"))
-	return m.center(dialogBox.Width(64).Render(content))
+	return m.fitDialog(content, 64)
 }
 
 func (m model) renameScreen() string {
@@ -1706,7 +1722,7 @@ func (m model) renameScreen() string {
 		titleSt.Render("Rename snapshot "+rn.oldName), "",
 		dimSt.Render("name  ")+rn.input.View(), "",
 		dimSt.Render("enter rename · esc cancel · spaces → dashes"))
-	return m.center(dialogBox.Width(64).Render(content))
+	return m.fitDialog(content, 64)
 }
 
 func (m model) exportScreen() string {
@@ -1726,7 +1742,7 @@ func (m model) exportScreen() string {
 		dimSt.Render("mode  ")+strings.Join(segs, dimSt.Render(" / ")),
 		dimSt.Render("      "+exportModeDesc(p.mode)), "",
 		dimSt.Render("enter export · tab cycle mode · esc cancel"))
-	return m.center(dialogBox.Width(72).Render(content))
+	return m.fitDialog(content, 72)
 }
 
 func (m model) logScreen() string {
@@ -2057,12 +2073,20 @@ func (m model) helpScreen() string {
 	snapshots := helpCol("SNAPSHOT", snapshotBinds())
 	docker := helpCol("DOCKER SIDECAR", dockerBinds())
 
-	gap := "    "
-	topRow := lipgloss.JoinHorizontal(lipgloss.Top, general, gap, machines, gap, snapshots)
 	title := titleSt.Render(" k3c ") + dimSt.Render("· keybindings")
 	footer := dimSt.Render(" ? or esc to close")
-	content := lipgloss.JoinVertical(lipgloss.Left, title, "", topRow, "", docker, "", footer)
-	return m.center(dialogBox.Render(content))
+
+	gap := "    "
+	topRow := lipgloss.JoinHorizontal(lipgloss.Top, general, gap, machines, gap, snapshots)
+	var content string
+	if lipgloss.Width(topRow) <= m.width-8 {
+		content = lipgloss.JoinVertical(lipgloss.Left, title, "", topRow, "", docker, "", footer)
+	} else {
+		// too narrow for the side-by-side grid: stack the columns vertically.
+		stacked := lipgloss.JoinVertical(lipgloss.Left, general, "", machines, "", snapshots, "", docker)
+		content = lipgloss.JoinVertical(lipgloss.Left, title, "", stacked, "", footer)
+	}
+	return m.fitDialog(content, 0)
 }
 
 func helpCol(title string, binds []helpBind) string {
