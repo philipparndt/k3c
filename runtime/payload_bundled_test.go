@@ -72,6 +72,54 @@ func TestBundledPayloadHasRequiredPlugins(t *testing.T) {
 	}
 }
 
+// requiredHelperBinaries are k3c's own helper binaries (built by `make bundle`,
+// not part of the Apple `container` fork) that the runtime stages into guest
+// VMs. They live at bin/ in the payload, distinct from the plugin tree checked
+// above. A release missing one breaks at runtime, not at build — k3c-docker-fwd
+// most painfully: without it the docker sidecar's engine is unreachable over the
+// host socket and Testcontainers cannot start (it was silently absent from the
+// v0.18.0/v0.19.0 bundles a user already had extracted).
+var requiredHelperBinaries = []string{
+	"bin/gvnet",
+	"bin/k3c-docker-fwd",
+}
+
+func TestBundledPayloadHasHelperBinaries(t *testing.T) {
+	if len(bundlePayload) == 0 {
+		t.Fatal("embedded bundle payload is empty (built with -tags bundled but no payload?)")
+	}
+
+	gz, err := gzip.NewReader(bytes.NewReader(bundlePayload))
+	if err != nil {
+		t.Fatalf("gunzip payload: %v", err)
+	}
+	defer gz.Close()
+
+	have := map[string]bool{}
+	tr := tar.NewReader(gz)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading payload tar: %v", err)
+		}
+		name := strings.TrimPrefix(h.Name, "./")
+		for _, b := range requiredHelperBinaries {
+			if name == b || strings.HasSuffix(name, "/"+b) {
+				have[b] = true
+			}
+		}
+	}
+
+	for _, b := range requiredHelperBinaries {
+		if !have[b] {
+			t.Errorf("bundled runtime is missing helper binary: %s", b)
+		}
+	}
+}
+
 // virtualizationEntitledPlugins are the plugins that drive
 // Virtualization.framework and therefore MUST ship codesigned with the
 // com.apple.security.virtualization entitlement. Without it they fail to launch,

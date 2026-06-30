@@ -8,7 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"k3c/version"
 
 	"github.com/philipparndt/go-logger"
 )
@@ -49,6 +52,29 @@ func bundleVersion() string {
 	return safe
 }
 
+// payloadFingerprint identifies the embedded payload of *this* k3c binary,
+// not just the container-runtime version. It is written into the extraction's
+// `.complete` marker and compared on every run so an upgrade that changes only
+// k3c's own helper binaries (e.g. adding bin/k3c-docker-fwd while keeping the
+// same container fork) forces a clean re-extraction instead of reusing a stale
+// tree. The k3c GitCommit/Version are injected via ldflags on release builds,
+// so every release is distinct; len(bundlePayload) is a cheap content signal
+// that also invalidates `dev` builds when the rebuilt payload changes size
+// (no hashing of the ~300MB payload on the runtime-resolution hot path).
+func payloadFingerprint() string {
+	return version.GitCommit + " " + version.Version + " " + strconv.Itoa(len(bundlePayload))
+}
+
+// extractionIsFresh reports whether a completed extraction can be reused: its
+// `.complete` marker must exist and its contents must equal the running
+// binary's payload fingerprint. A missing, unreadable, or mismatched marker
+// means the extraction was written by a different binary (or is partial) and
+// must be redone.
+func extractionIsFresh(marker, fp string) bool {
+	got, err := os.ReadFile(marker)
+	return err == nil && strings.TrimSpace(string(got)) == fp
+}
+
 // cacheRoot is ~/.cache/k3c/runtime (honoring XDG_CACHE_HOME).
 func cacheRoot() (string, error) {
 	base := os.Getenv("XDG_CACHE_HOME")
@@ -63,9 +89,13 @@ func cacheRoot() (string, error) {
 }
 
 // extractBundle extracts the embedded runtime to
-// ~/.cache/k3c/runtime/<version>/ exactly once. A `.complete` marker records
-// a finished extraction so subsequent runs skip the work. Returns the
-// extraction directory (the CONTAINER_INSTALL_ROOT).
+// ~/.cache/k3c/runtime/<version>/. The directory is keyed by the bundled
+// container version (so one tree is reused, not multiplied per upgrade), but a
+// `.complete` marker records the payloadFingerprint of the binary that wrote
+// it. An extraction is reused only when the marker matches the running binary's
+// fingerprint; otherwise it is treated as stale and re-extracted cleanly. This
+// is what heals a cache written by an older k3c that lacked a helper binary.
+// Returns the extraction directory (the CONTAINER_INSTALL_ROOT).
 func extractBundle() (string, error) {
 	root, err := cacheRoot()
 	if err != nil {
@@ -74,11 +104,12 @@ func extractBundle() (string, error) {
 	dir := filepath.Join(root, bundleVersion())
 	marker := filepath.Join(dir, ".complete")
 
-	if _, err := os.Stat(marker); err == nil {
+	fp := payloadFingerprint()
+	if extractionIsFresh(marker, fp) {
 		return dir, nil
 	}
 
-	// Stale or partial extraction: start clean.
+	// Stale (different binary), partial, or missing extraction: start clean.
 	if err := os.RemoveAll(dir); err != nil {
 		return "", err
 	}
@@ -92,7 +123,7 @@ func extractBundle() (string, error) {
 		return "", fmt.Errorf("extracting bundled runtime: %w", err)
 	}
 
-	if err := os.WriteFile(marker, []byte(bundleVersion()+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(marker, []byte(fp+"\n"), 0o644); err != nil {
 		return "", err
 	}
 	return dir, nil
