@@ -1629,6 +1629,24 @@ func (m model) headerView() string {
 
 func panelLabel(s string) string { return dimSt.Render(fmt.Sprintf("%-8s", s)) }
 
+// cpuPrioLine renders the selected machine's CPU-deprioritization state. nice
+// is a stable signal (unlike scheduling priority, which floats with load), so
+// "drifted" reliably means a respawn reset it — not sampling noise. The daemon
+// re-asserts within a minute.
+func cpuPrioLine(c cluster.ClusterInfo) string {
+	if c.Server != "running" {
+		return dimSt.Render("—")
+	}
+	switch c.CPUPrio {
+	case "low":
+		return statusOk.Render("deprioritized") + dimSt.Render(" (nice 20, yields to apps)")
+	case "drifted":
+		return lipgloss.NewStyle().Foreground(warn).Render("⚠ drifted") + dimSt.Render(" (reasserting…)")
+	default:
+		return dimSt.Render("normal (competes with apps)")
+	}
+}
+
 // infoPanelView shows the selected machine plus the contextual net line and the
 // global pull-cache line.
 func (m model) infoPanelView() string {
@@ -1641,6 +1659,7 @@ func (m model) infoPanelView() string {
 		rows = append(rows,
 			panelLabel("machine")+mc.Name+dimSt.Render("  ("+typeLabel(mc.Kind)+" · "+mc.Server+")"),
 			panelLabel("context")+ctx,
+			panelLabel("cpu")+cpuPrioLine(mc),
 		)
 	}
 	net := m.netLine

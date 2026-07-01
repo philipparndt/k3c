@@ -178,6 +178,10 @@ func DockerSidecarInfo(cfg *config.Config) (ClusterInfo, bool) {
 	if !ok {
 		return ClusterInfo{}, false
 	}
+	cpuPrio := ""
+	if state == "running" {
+		cpuPrio = cpuPrioState(cfg.CPUPriority, dockerName)
+	}
 	return ClusterInfo{
 		Name:     "docker",
 		Server:   state,
@@ -189,6 +193,7 @@ func DockerSidecarInfo(cfg *config.Config) (ClusterInfo, bool) {
 		Context: cfg.DockerContext,
 		Kind:    "docker",
 		Active:  readActive(cfg).Sidecar,
+		CPUPrio: cpuPrio,
 	}, true
 }
 

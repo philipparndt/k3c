@@ -20,6 +20,12 @@ type ClusterInfo struct {
 	Context  string `json:"context"`
 	Active   bool   `json:"active"`
 	Kind     string `json:"kind,omitempty"` // "" for a cluster, "docker" for the docker sidecar
+	// CPUPrio is the CPU-deprioritization state of a running VM: "low" when it
+	// is deprioritized (renice'd so interactive apps win CPU contention),
+	// "drifted" when deprioritization is enabled but not currently in effect (a
+	// respawn reset it; the daemon re-asserts within a minute), or "" when
+	// disabled (cpuPriority: normal) or the VM is not running.
+	CPUPrio string `json:"cpuPrio,omitempty"`
 }
 
 // SnapshotInfo describes one saved snapshot.
@@ -95,8 +101,14 @@ func Clusters(cfg *config.Config) []ClusterInfo {
 		}
 		// resolve per cluster: picks up its persisted project config
 		context := cfg.ContextPrefix() + cluster
+		cpuPriority := cfg.CPUPriority
 		if clusterCfg, err := config.Resolve(cluster, ""); err == nil {
 			context = clusterCfg.KubeContext
+			cpuPriority = clusterCfg.CPUPriority
+		}
+		cpuPrio := ""
+		if server == "running" {
+			cpuPrio = cpuPrioState(cpuPriority, cluster+"-server")
 		}
 		infos = append(infos, ClusterInfo{
 			Name:     cluster,
@@ -105,6 +117,7 @@ func Clusters(cfg *config.Config) []ClusterInfo {
 			RAM:      clusterRAM(cluster),
 			Context:  context,
 			Active:   cluster == active,
+			CPUPrio:  cpuPrio,
 		})
 	}
 	return infos
