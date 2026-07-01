@@ -185,6 +185,15 @@ docker:                        # docker:dind sidecar VM: real engine API for
   # memory: 8G                 # so docker just works; `down` restores default
   # context: k3c               # context name ("off" to not manage one)
 
+ui:                            # terminal UI (`k3c ui`) appearance
+  theme:                       # any unset color falls back to the default
+    accent: "#89D7FB"          # main color: title, selection, borders
+    # dim:  "#5C5C5C"          # muted text and separators
+    # good: "#42C883"          # ok / running
+    # warn: "#E2C04A"          # warning / paused
+    # cool: "#56B2F2"          # secondary accent: keys, suspended
+    # bad:  "#F2637E"          # error / stopped
+
 caCerts:                       # added to the node's registry CA bundle
   - certs/*.crt                # relative to this file
 

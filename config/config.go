@@ -124,6 +124,18 @@ type FileConfig struct {
 	// Path to the Apple `container` CLI (default: container from PATH).
 	// Point this at a fork to use features like pause/resume/suspend.
 	ContainerBinary string `yaml:"containerBinary"`
+	// Terminal UI appearance. Every color is optional; an unset color falls
+	// back to the built-in default palette (see tui.newTheme).
+	UI struct {
+		Theme struct {
+			Accent string `yaml:"accent"` // main/accent: title, selection, borders
+			Dim    string `yaml:"dim"`    // muted text and separators
+			Good   string `yaml:"good"`   // ok / running
+			Warn   string `yaml:"warn"`   // warning / paused
+			Cool   string `yaml:"cool"`   // secondary accent: keys, suspended
+			Bad    string `yaml:"bad"`    // error / stopped
+		} `yaml:"theme"`
+	} `yaml:"ui"`
 }
 
 // Config is the effective, resolved configuration.
@@ -188,6 +200,22 @@ type Config struct {
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
+
+	// Theme overrides for the terminal UI. Empty fields mean "use the
+	// built-in default" and are resolved by the TUI (tui.newTheme).
+	Theme UITheme
+}
+
+// UITheme holds the optional terminal-UI color overrides. Each value is a
+// lipgloss color string (hex "#RRGGBB" or an ANSI index); empty means the
+// built-in default is used.
+type UITheme struct {
+	Accent string `json:"accent"`
+	Dim    string `json:"dim"`
+	Good   string `json:"good"`
+	Warn   string `json:"warn"`
+	Cool   string `json:"cool"`
+	Bad    string `json:"bad"`
 }
 
 // truthyEnv reports whether an environment variable is set to a truthy value.
@@ -309,6 +337,12 @@ func merge(dst *FileConfig, src FileConfig) {
 		dst.Egress.Transparent = src.Egress.Transparent
 	}
 	s(&dst.Registries, src.Registries)
+	s(&dst.UI.Theme.Accent, src.UI.Theme.Accent)
+	s(&dst.UI.Theme.Dim, src.UI.Theme.Dim)
+	s(&dst.UI.Theme.Good, src.UI.Theme.Good)
+	s(&dst.UI.Theme.Warn, src.UI.Theme.Warn)
+	s(&dst.UI.Theme.Cool, src.UI.Theme.Cool)
+	s(&dst.UI.Theme.Bad, src.UI.Theme.Bad)
 }
 
 // UserConfigDir returns ~/.config/k3c (honoring XDG_CONFIG_HOME). It holds
@@ -493,6 +527,14 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		CPUPriority:         def(fc.Cluster.CPUPriority, "low"),
 		BaseDir:             baseDir,
 		ConfigFile:          configFile,
+		Theme: UITheme{
+			Accent: fc.UI.Theme.Accent,
+			Dim:    fc.UI.Theme.Dim,
+			Good:   fc.UI.Theme.Good,
+			Warn:   fc.UI.Theme.Warn,
+			Cool:   fc.UI.Theme.Cool,
+			Bad:    fc.UI.Theme.Bad,
+		},
 	}, nil
 }
 
@@ -761,6 +803,7 @@ type ConfigView struct {
 	StateDir        string   `json:"stateDir"`
 	ProjectConfig   string   `json:"projectConfig"`
 	ContainerBinary string   `json:"containerBinary"`
+	Theme           UITheme  `json:"theme"`
 }
 
 // View returns the curated configuration for JSON output.
@@ -784,6 +827,7 @@ func (c *Config) View() ConfigView {
 		StateDir:        c.BaseDir,
 		ProjectConfig:   c.ConfigFile,
 		ContainerBinary: c.ContainerBinary,
+		Theme:           c.Theme,
 	}
 }
 
@@ -823,6 +867,20 @@ func (c *Config) Print() {
 	ui.KV("ca certs", list(c.CACertGlobs), w)
 	ui.KV("state", c.BaseDir, w)
 	ui.KV("project", orNone(c.ConfigFile), w)
+
+	orDefault := func(s string) string {
+		if strings.TrimSpace(s) == "" {
+			return ui.Muted("default")
+		}
+		return s
+	}
+	ui.Section("ui theme")
+	ui.KV("accent", orDefault(c.Theme.Accent), w)
+	ui.KV("dim", orDefault(c.Theme.Dim), w)
+	ui.KV("good", orDefault(c.Theme.Good), w)
+	ui.KV("warn", orDefault(c.Theme.Warn), w)
+	ui.KV("cool", orDefault(c.Theme.Cool), w)
+	ui.KV("bad", orDefault(c.Theme.Bad), w)
 }
 
 // boolWord renders a bool as enabled/disabled for State colorization.
