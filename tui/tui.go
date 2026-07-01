@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -196,8 +197,26 @@ type commandRun struct {
 	when   time.Time
 }
 
+// sortMode is how each machine's snapshots are ordered. The machine order
+// itself is always stable (name order, as the cluster package returns it).
+type sortMode int
+
+const (
+	sortByName sortMode = iota // alphabetical (default)
+	sortByDate                 // newest snapshot first
+)
+
+func (s sortMode) label() string {
+	if s == sortByDate {
+		return "by date"
+	}
+	return "by name"
+}
+
 type model struct {
 	cfg *config.Config
+
+	sortMode sortMode // snapshot ordering within each machine (name | date)
 
 	clusters       []cluster.ClusterInfo
 	snapsByMachine map[string][]cluster.SnapshotInfo // snapshots of every loaded machine
@@ -241,9 +260,10 @@ type model struct {
 	exportPick *exportPick
 }
 
-// New builds the TUI model. cfg is only used for state-dir lookups; every
-// operation re-resolves its own config in the subprocess.
+// New builds the TUI model. cfg supplies state-dir lookups and the color
+// theme; every operation re-resolves its own config in the subprocess.
 func New(cfg *config.Config) tea.Model {
+	applyTheme(cfg.Theme)
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	sp.Style = lipgloss.NewStyle().Foreground(accent)
 	return model{
@@ -465,6 +485,34 @@ func (m model) refreshSnapshots(name, kind string) tea.Cmd {
 	}
 }
 
+// sortedSnaps returns a machine's snapshots ordered by the active sort mode: by
+// name (alphabetical) or by date (newest first). Created is an RFC3339 string;
+// unparseable/empty values sort last so the mode degrades to name order. The
+// returned slice is a copy, so the stored order is left untouched.
+func (m model) sortedSnaps(machine string) []cluster.SnapshotInfo {
+	snaps := append([]cluster.SnapshotInfo(nil), m.snapsByMachine[machine]...)
+	if m.sortMode == sortByDate {
+		when := func(s cluster.SnapshotInfo) (time.Time, bool) {
+			t, err := time.Parse(time.RFC3339, s.Created)
+			return t, err == nil
+		}
+		sort.SliceStable(snaps, func(i, j int) bool {
+			ti, oki := when(snaps[i])
+			tj, okj := when(snaps[j])
+			if oki != okj {
+				return oki // parseable dates before unknown
+			}
+			if oki && !ti.Equal(tj) {
+				return ti.After(tj) // newest first
+			}
+			return snaps[i].Name < snaps[j].Name
+		})
+		return snaps
+	}
+	sort.SliceStable(snaps, func(i, j int) bool { return snaps[i].Name < snaps[j].Name })
+	return snaps
+}
+
 // rebuildRows recomputes the flattened visible tree from clusters, the
 // expanded set, and the loaded snapshots.
 func (m *model) rebuildRows() {
@@ -480,7 +528,7 @@ func (m *model) rebuildRows() {
 		case len(m.snapsByMachine[c.Name]) == 0:
 			rows = append(rows, treeRow{kind: rowSnapshot, machine: i, placeholder: "no snapshots — press c to create one"})
 		default:
-			for _, s := range m.snapsByMachine[c.Name] {
+			for _, s := range m.sortedSnaps(c.Name) {
 				rows = append(rows, treeRow{
 					kind: rowSnapshot, machine: i,
 					snapName: s.Name, snapMode: s.Mode, snapWhen: s.Created,
@@ -930,6 +978,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.collapse()
 	case "g", "f5":
 		return m, m.refresh()
+	case "o":
+		return m.cycleSort()
 	case "l":
 		m.openLog()
 		return m, nil
@@ -1093,6 +1143,42 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// cycleSort switches the snapshot ordering (name ↔ date) and rebuilds the tree.
+// Machine order is untouched; the cursor follows the previously selected row —
+// the same snapshot when one was selected, otherwise its machine.
+func (m model) cycleSort() (tea.Model, tea.Cmd) {
+	selMachine := m.curName()
+	selSnap := ""
+	if r, ok := m.curRow(); ok && r.kind == rowSnapshot {
+		selSnap = r.snapName
+	}
+	if m.sortMode == sortByName {
+		m.sortMode = sortByDate
+	} else {
+		m.sortMode = sortByName
+	}
+	m.rebuildRows()
+	// reposition the cursor on the previously selected snapshot, else its machine
+	for i, r := range m.rows {
+		if r.machine < 0 || r.machine >= len(m.clusters) || m.clusters[r.machine].Name != selMachine {
+			continue
+		}
+		if selSnap == "" && r.kind == rowMachine {
+			m.cur = i
+			break
+		}
+		if selSnap != "" && r.kind == rowSnapshot && r.snapName == selSnap {
+			m.cur = i
+			break
+		}
+	}
+	if m.cur >= len(m.rows) {
+		m.cur = max(0, len(m.rows)-1)
+	}
+	m.clampScroll()
+	return m, nil
+}
+
 func (m model) move(delta int) (tea.Model, tea.Cmd) {
 	next := m.cur + delta
 	if next < 0 || next >= len(m.rows) {
@@ -1225,23 +1311,61 @@ func (m model) logContent() string {
 
 // --- view ---
 
+// Color roles. The defaults are the built-in light-blue theme; applyTheme
+// overrides any role from the resolved config. The derived styles below are
+// (re)built by rebuildStyles whenever the colors change.
 var (
-	accent    = lipgloss.AdaptiveColor{Light: "#5A56E0", Dark: "#7D79F6"}
-	dim       = lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
-	good      = lipgloss.AdaptiveColor{Light: "#0F8A4C", Dark: "#42C883"}
-	warn      = lipgloss.AdaptiveColor{Light: "#B58A00", Dark: "#E2C04A"}
-	cool      = lipgloss.AdaptiveColor{Light: "#0072C6", Dark: "#56B2F2"}
-	bad       = lipgloss.AdaptiveColor{Light: "#C5283D", Dark: "#F2637E"}
-	titleSt   = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	keySt     = lipgloss.NewStyle().Bold(true).Foreground(cool)
-	dimSt     = lipgloss.NewStyle().Foreground(dim)
-	selectSt  = lipgloss.NewStyle().Bold(true).Background(accent).Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#1A1A1A"})
-	statusOk  = lipgloss.NewStyle().Foreground(good)
-	statusBad = lipgloss.NewStyle().Foreground(bad)
-	panelBox  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(0, 1)
-	paneBox   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent)
-	dialogBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(1, 3)
+	accent = lipgloss.AdaptiveColor{Light: "#0E86C7", Dark: "#89D7FB"}
+	dim    = lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
+	good   = lipgloss.AdaptiveColor{Light: "#0F8A4C", Dark: "#42C883"}
+	warn   = lipgloss.AdaptiveColor{Light: "#B58A00", Dark: "#E2C04A"}
+	cool   = lipgloss.AdaptiveColor{Light: "#0072C6", Dark: "#56B2F2"}
+	bad    = lipgloss.AdaptiveColor{Light: "#C5283D", Dark: "#F2637E"}
+
+	// derived styles, (re)built by rebuildStyles from the colors above
+	titleSt   lipgloss.Style
+	keySt     lipgloss.Style
+	dimSt     lipgloss.Style
+	selectSt  lipgloss.Style
+	statusOk  lipgloss.Style
+	statusBad lipgloss.Style
+	paneBox   lipgloss.Style
+	dialogBox lipgloss.Style
 )
+
+func init() { rebuildStyles() }
+
+// rebuildStyles recomputes the derived lipgloss styles from the current color
+// roles. Called at init and after applyTheme changes the palette.
+func rebuildStyles() {
+	titleSt = lipgloss.NewStyle().Bold(true).Foreground(accent)
+	keySt = lipgloss.NewStyle().Bold(true).Foreground(cool)
+	dimSt = lipgloss.NewStyle().Foreground(dim)
+	selectSt = lipgloss.NewStyle().Bold(true).Background(accent).Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#1A1A1A"})
+	statusOk = lipgloss.NewStyle().Foreground(good)
+	statusBad = lipgloss.NewStyle().Foreground(bad)
+	paneBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent)
+	dialogBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(1, 3)
+}
+
+// applyTheme overrides the color roles from the resolved config (an empty
+// field keeps the built-in default) and rebuilds the derived styles. The TUI
+// is a single instance per process, so a package-level palette is safe.
+func applyTheme(t config.UITheme) {
+	set := func(dst *lipgloss.AdaptiveColor, v string) {
+		if v != "" {
+			// a single configured color applies to both light and dark terminals
+			*dst = lipgloss.AdaptiveColor{Light: v, Dark: v}
+		}
+	}
+	set(&accent, t.Accent)
+	set(&dim, t.Dim)
+	set(&good, t.Good)
+	set(&warn, t.Warn)
+	set(&cool, t.Cool)
+	set(&bad, t.Bad)
+	rebuildStyles()
+}
 
 // dotChar is the uncolored state glyph (used in the selection bar, which can't
 // carry per-segment color).
@@ -1330,7 +1454,7 @@ func (m model) View() string {
 // status line — every row truncated to the terminal width so nothing wraps.
 func (m model) compactView() string {
 	header := m.compactHeaderView()
-	title := truncate(" "+titleSt.Render("Machines"), m.width)
+	title := truncate(" "+m.machinesTitle(), m.width)
 	list := m.compactListView()
 	status := truncate(m.statusView(), m.width)
 	// a blank line separates the header from the content, mirroring the gap the
@@ -1355,7 +1479,7 @@ func (m model) compactHeaderView() string {
 // ? help dialog.
 func (m model) compactKeyHint() string {
 	binds := append([]helpBind{
-		{"↑↓", "move"}, {"←→", "expand"}, {"l", "logs"}, {"?", "help"}, {"q", "quit"},
+		{"↑↓", "move"}, {"←→", "expand"}, {"o", "sort"}, {"l", "logs"}, {"?", "help"}, {"q", "quit"},
 	}, m.menuBinds()...)
 	parts := make([]string, 0, len(binds))
 	for _, b := range binds {
@@ -1415,9 +1539,10 @@ func (m model) compactListView() string {
 	if end > len(m.rows) {
 		end = len(m.rows)
 	}
+	nameW := m.snapNameWidth()
 	var b strings.Builder
 	for i := top; i < end; i++ {
-		b.WriteString(truncate(m.renderRow(m.rows[i], w, i == m.cur), w))
+		b.WriteString(truncate(m.renderRow(m.rows[i], w, nameW, i == m.cur), w))
 		if i < end-1 {
 			b.WriteString("\n")
 		}
@@ -1454,16 +1579,14 @@ func (m *model) clampScroll() {
 	m.listTop = m.scrollTop(m.listVisible())
 }
 
-// headerView is the k9s-style top bar: a bordered context info panel beside the
-// shortcut menu.
+// headerView is the k9s-style top bar: the context info panel beside the
+// shortcut menu. The panel is frameless so the header stays compact; the two
+// columns top-align directly.
 func (m model) headerView() string {
-	// The info panel's box border takes the first line, so its content starts
-	// on the second. Offset the menu by a blank line to align its first row
-	// with the panel content instead of with the box's top border.
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		panelBox.Render(m.infoPanelView()),
+		m.infoPanelView(),
 		"   ",
-		"\n"+m.keyMenuView(),
+		m.keyMenuView(),
 	)
 }
 
@@ -1505,6 +1628,7 @@ func (m model) keyMenuView() string {
 	parts := []string{renderMenuCol([]helpBind{
 		{"↑↓", "move"},
 		{"←→", "expand"},
+		{"o", "sort"},
 		{"l", "logs"},
 		{"?", "help"},
 		{"q", "quit"},
@@ -1560,10 +1684,15 @@ func typeLabel(kind string) string {
 	return "k3s"
 }
 
+// machinesTitle is the list pane heading with the current snapshot sort mode.
+func (m model) machinesTitle() string {
+	return titleSt.Render("Machines") + dimSt.Render("   snapshots "+m.sortMode.label())
+}
+
 func (m model) treeView() string {
 	w := m.width - 2
 	var b strings.Builder
-	b.WriteString(" " + titleSt.Render("Machines") + "\n")
+	b.WriteString(" " + m.machinesTitle() + "\n")
 	if len(m.rows) == 0 {
 		// Until the first refresh returns, the container system may still be
 		// starting — don't claim there are no clusters when we haven't looked yet.
@@ -1574,15 +1703,32 @@ func (m model) treeView() string {
 		b.WriteString(" " + dimSt.Render(msg))
 		return paneBox.Width(w).Render(b.String())
 	}
+	nameW := m.snapNameWidth()
 	for i, r := range m.rows {
-		b.WriteString(m.renderRow(r, w, i == m.cur) + "\n")
+		b.WriteString(m.renderRow(r, w, nameW, i == m.cur) + "\n")
 	}
 	return paneBox.Width(w).Render(strings.TrimRight(b.String(), "\n"))
 }
 
+// snapNameWidth is the width of the snapshot-name column: the longest visible
+// snapshot name, but never below a sensible minimum. Padding every snapshot row
+// to this keeps the mode/size/date columns aligned even when one name is longer
+// than the default field width.
+func (m model) snapNameWidth() int {
+	w := 24
+	for _, r := range m.rows {
+		if r.kind == rowSnapshot && r.snapName != "" {
+			if n := lipgloss.Width(r.snapName); n > w {
+				w = n
+			}
+		}
+	}
+	return w
+}
+
 // renderRow draws one tree line; the selected row is a solid bar (uncolored
 // glyphs, so the highlight background reads cleanly).
-func (m model) renderRow(r treeRow, w int, selected bool) string {
+func (m model) renderRow(r treeRow, w, nameW int, selected bool) string {
 	if r.kind == rowMachine {
 		c := m.clusters[r.machine]
 		caret := "▸"
@@ -1618,7 +1764,7 @@ func (m model) renderRow(r treeRow, w int, selected bool) string {
 		return dimSt.Render(indent + r.placeholder)
 	}
 	if selected {
-		plain := fmt.Sprintf("%s%-24s %-6s %9s  %s", indent, r.snapName, r.snapMode, r.snapSize, r.snapWhen)
+		plain := fmt.Sprintf("%s%-*s %-6s %9s  %s", indent, nameW, r.snapName, r.snapMode, r.snapSize, r.snapWhen)
 		return selectSt.Render(padRight(plain, w))
 	}
 	label := fmt.Sprintf("%-6s", r.snapMode)
@@ -1629,7 +1775,7 @@ func (m model) renderRow(r treeRow, w int, selected bool) string {
 	case "frozen":
 		mode = lipgloss.NewStyle().Foreground(cool).Render(label)
 	}
-	return fmt.Sprintf("%s%-24s %s %s  %s", indent, r.snapName, mode,
+	return fmt.Sprintf("%s%-*s %s %s  %s", indent, nameW, r.snapName, mode,
 		dimSt.Render(fmt.Sprintf("%9s", r.snapSize)), dimSt.Render(r.snapWhen))
 }
 
@@ -2147,6 +2293,7 @@ func (m model) helpBody(width int) string {
 		helpCol("GENERAL", []helpBind{
 			{"↑↓ / jk", "move"},
 			{"←→", "expand / collapse"},
+			{"o", "sort snapshots (name / date)"},
 			{"g / F5", "refresh"},
 			{"l", "logs / output"},
 			{"D", "system diagram"},

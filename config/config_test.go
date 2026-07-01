@@ -43,6 +43,52 @@ func TestK3sCommandContainsSysctls(t *testing.T) {
 // A project k3c.yaml found in the working directory must only apply to its
 // own cluster: resolving a different named cluster from that directory must
 // not inherit (or later overwrite) the project's settings.
+func TestUIThemeResolution(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "k3c.yaml"),
+		[]byte("cluster:\n  name: themed\nui:\n  theme:\n    accent: \"#89D7FB\"\n    bad: \"#FF0000\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+	t.Setenv("K3C_BASE_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("K3C_CONFIG", "")
+
+	cfg, err := Resolve("themed", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Theme.Accent != "#89D7FB" {
+		t.Errorf("accent = %q, want #89D7FB", cfg.Theme.Accent)
+	}
+	if cfg.Theme.Bad != "#FF0000" {
+		t.Errorf("bad = %q, want #FF0000", cfg.Theme.Bad)
+	}
+	// unset colors stay empty so the TUI falls back to its built-in defaults
+	if cfg.Theme.Dim != "" || cfg.Theme.Good != "" || cfg.Theme.Warn != "" || cfg.Theme.Cool != "" {
+		t.Errorf("unset theme colors should be empty (default), got %+v", cfg.Theme)
+	}
+	// the effective theme is surfaced in config view
+	if v := cfg.View(); v.Theme.Accent != "#89D7FB" {
+		t.Errorf("config view theme accent = %q, want #89D7FB", v.Theme.Accent)
+	}
+}
+
+func TestUIThemeDefaultsEmpty(t *testing.T) {
+	t.Chdir(t.TempDir()) // empty dir: no ./k3c.yaml to pick up
+	t.Setenv("K3C_BASE_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("K3C_CONFIG", "")
+
+	cfg, err := Resolve("plain", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Theme != (UITheme{}) {
+		t.Errorf("with no config, theme should be all-empty (defaults), got %+v", cfg.Theme)
+	}
+}
+
 func TestProjectConfigForeignCluster(t *testing.T) {
 	project := t.TempDir()
 	if err := os.WriteFile(filepath.Join(project, "k3c.yaml"),
