@@ -102,6 +102,13 @@ func (c confirm) buttons() []confirmButton {
 // askMsg opens a (follow-up) confirmation.
 type askMsg struct{ c confirm }
 
+// openSnapshotWizardMsg opens the "new snapshot" create wizard. It lets a dialog
+// button (the New/Recreate choice) open the wizard, which is not a plain op.
+type openSnapshotWizardMsg struct {
+	cluster string
+	docker  bool
+}
+
 // nameInput is the open "new snapshot" wizard.
 type nameInput struct {
 	input   textinput.Model
@@ -142,6 +149,20 @@ func modeDesc(mode cluster.SnapshotMode) string {
 	default:
 		return "memory + disk; resumes instantly (largest)"
 	}
+}
+
+// newSnapshotWizard builds the "new snapshot" create wizard for a cluster, or
+// for the docker sidecar when docker is set.
+func newSnapshotWizard(clusterName string, docker bool) *nameInput {
+	in := textinput.New()
+	in.Placeholder = time.Now().Format("2006-01-02-1504")
+	in.Focus()
+	in.CharLimit = 64
+	in.Width = 24
+	if docker {
+		clusterName = "docker"
+	}
+	return &nameInput{input: in, cluster: clusterName, docker: docker, mode: cluster.ModeWarm}
 }
 
 // renameInput is the open "rename snapshot" dialog.
@@ -397,12 +418,7 @@ func (m model) dockerKey(key string) (tea.Model, tea.Cmd) {
 	case "z":
 		return m.startOp("docker sidecar suspend", "docker", "suspend")
 	case "c", "n":
-		in := textinput.New()
-		in.Placeholder = time.Now().Format("2006-01-02-1504")
-		in.Focus()
-		in.CharLimit = 64
-		in.Width = 24
-		m.input = &nameInput{input: in, cluster: "docker", docker: true, mode: cluster.ModeWarm}
+		m.input = newSnapshotWizard("docker", true)
 		return m, textinput.Blink
 	case "d", "x":
 		m.confirm = &confirm{
@@ -685,6 +701,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askMsg:
 		m.confirm = &msg.c
 		return m, nil
+
+	case openSnapshotWizardMsg:
+		m.input = newSnapshotWizard(msg.cluster, msg.docker)
+		return m, textinput.Blink
 
 	case opStartMsg:
 		m.busy = msg.desc
@@ -1060,17 +1080,34 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startOp("memory release of "+name, "cluster", "reclaim", name, "--release")
 
 	case "c", "n":
-		in := textinput.New()
-		in.Placeholder = time.Now().Format("2006-01-02-1504")
-		in.Focus()
-		in.CharLimit = 64
-		in.Width = 24
-		ni := &nameInput{input: in, cluster: name, mode: cluster.ModeWarm}
-		if kind == "docker" {
-			ni.cluster = "docker"
-			ni.docker = true
+		// On a snapshot row, offer New vs Recreate; on a machine row, go straight
+		// to the create wizard.
+		if m.onSnapshot() {
+			snap := m.curSnapshot()
+			r, _ := m.curRow()
+			args := []string{"snapshot", "save", name, snap, "--replace"}
+			if kind == "docker" {
+				args = []string{"docker", "snapshot", "save", snap, "--replace"}
+			}
+			switch r.snapMode {
+			case string(cluster.ModeCold):
+				args = append(args, "--cold")
+			case string(cluster.ModeFrozen):
+				args = append(args, "--frozen")
+			}
+			docker := kind == "docker"
+			m.confirm = &confirm{
+				prompt:      fmt.Sprintf("Create a new snapshot, or recreate %q in place?", snap),
+				noCmd:       func() tea.Msg { return openSnapshotWizardMsg{cluster: name, docker: docker} },
+				noLabel:     "New snapshot",
+				cmd:         m.opCmd(fmt.Sprintf("recreate snapshot %q of %s", snap, name), args...),
+				yesLabel:    "Recreate",
+				destructive: true,
+				focus:       1, // default to the non-destructive "New snapshot"
+			}
+			return m, nil
 		}
-		m.input = ni
+		m.input = newSnapshotWizard(name, kind == "docker")
 		return m, textinput.Blink
 
 	case "e":

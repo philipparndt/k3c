@@ -52,18 +52,27 @@ func dockerVolumePath() (string, error) {
 // named snapshot. Warm (the default, when suspend is supported) saves the
 // suspended machine state too, so a restore resumes instantly; cold quiesces
 // with a stop. The sidecar is returned to its prior running state afterward.
-func DockerSnapshotSave(cfg *config.Config, name string, cold bool) error {
+func DockerSnapshotSave(cfg *config.Config, name string, cold, replace bool) error {
 	if !containerExists(dockerName, false) {
 		return fmt.Errorf("docker sidecar does not exist (k3c docker up)")
 	}
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("snapshot name required")
 	}
+	dir := dockerSnapshotDir(cfg, name)
+	if _, err := os.Stat(dir); err == nil {
+		if !replace {
+			return fmt.Errorf("docker snapshot '%s' already exists", name)
+		}
+		// --replace: recreate in place — drop the existing snapshot first.
+		if err := DockerSnapshotDelete(cfg, name); err != nil {
+			return fmt.Errorf("replacing docker snapshot '%s': %w", name, err)
+		}
+	}
 	dockerResumeIfPaused(cfg)
 	wasRunning := containerExists(dockerName, true)
 	warm := !cold && wasRunning && capabilities().suspend
 
-	dir := dockerSnapshotDir(cfg, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

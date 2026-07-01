@@ -192,14 +192,17 @@ var dockerSnapshotCmd = &cobra.Command{
 	Short: "Save/restore the sidecar (the whole image store: every nested k3d cluster)",
 }
 
-var dockerSnapCold bool
+var (
+	dockerSnapCold    bool
+	dockerSnapReplace bool
+)
 
 var dockerSnapshotSaveCmd = &cobra.Command{
 	Use:   "save NAME",
 	Short: "Snapshot the sidecar (rootfs + image store) to a named, restorable state",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fail(cluster.DockerSnapshotSave(loadConfigDefault(nil), args[0], dockerSnapCold))
+		fail(cluster.DockerSnapshotSave(loadConfigDefault(nil), args[0], dockerSnapCold, dockerSnapReplace))
 	},
 }
 
@@ -249,6 +252,7 @@ func init() {
 	dockerUpCmd.Flags().StringVar(&dockerUpMemory, "memory", "", "override sidecar memory, e.g. 32G (re-creates the sidecar)")
 	dockerRmCmd.Flags().BoolVar(&dockerRmVolume, "volume", false, "also remove the image-store volume (deletes all sidecar data)")
 	dockerSnapshotSaveCmd.Flags().BoolVar(&dockerSnapCold, "cold", false, "quiesce with a stop instead of a warm suspend")
+	dockerSnapshotSaveCmd.Flags().BoolVar(&dockerSnapReplace, "replace", false, "recreate a same-named snapshot: delete the existing one, then save in its place")
 	dockerSnapshotRestoreCmd.Flags().BoolVar(&dockerSnapCold, "cold", false, "boot fresh instead of resuming saved machine state")
 	dockerReclaimCmd.Flags().BoolVar(&dockerReclaimRelease, "release", false,
 		"deflate the balloon and give the sidecar its full configured memory again")

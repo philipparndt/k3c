@@ -35,6 +35,7 @@ func snapshotArgs(args []string) (clusterArgs []string, snapshot string) {
 var (
 	snapshotSaveCold    bool
 	snapshotSaveFrozen  bool
+	snapshotSaveReplace bool
 	snapshotRestoreCold bool
 	snapshotExportOut   string
 	snapshotExportThin  bool
@@ -81,17 +82,19 @@ func newSnapshotCmd() *cobra.Command {
 			fail(err)
 			// with a single argument it is the snapshot name
 			if len(args) == 1 {
-				fail(cluster.SnapshotSave(loadConfigDefault(nil), args[0], mode))
+				fail(cluster.SnapshotSave(loadConfigDefault(nil), args[0], mode, snapshotSaveReplace))
 				return
 			}
 			clusterArgs, name := snapshotArgs(args)
-			fail(cluster.SnapshotSave(loadConfigDefault(clusterArgs), name, mode))
+			fail(cluster.SnapshotSave(loadConfigDefault(clusterArgs), name, mode, snapshotSaveReplace))
 		},
 	}
 	saveCmd.Flags().BoolVar(&snapshotSaveCold, "cold", false,
 		"stop the cluster for a clean-shutdown snapshot instead of suspending it")
 	saveCmd.Flags().BoolVar(&snapshotSaveFrozen, "frozen", false,
 		"smallest tier: a logical extract (datastore + all PVC data + image manifest); minutes to thaw")
+	saveCmd.Flags().BoolVar(&snapshotSaveReplace, "replace", false,
+		"recreate a same-named snapshot: delete the existing one, then save in its place")
 
 	restoreCmd := &cobra.Command{
 		Use:   "restore [CLUSTER] NAME",

@@ -147,7 +147,7 @@ func validSnapshotName(name string) error {
 // (pull-cache pinning, then rootfs re-sparsify) is dispatched detached after
 // the cluster resumes. The snapshot is valid and restorable the instant
 // phase 1 completes — see reduceSnapshot.
-func SnapshotSave(cfg *config.Config, name string, mode SnapshotMode) error {
+func SnapshotSave(cfg *config.Config, name string, mode SnapshotMode, replace bool) error {
 	if name == "" {
 		name = time.Now().Format("20060102-150405")
 	}
@@ -161,8 +161,8 @@ func SnapshotSave(cfg *config.Config, name string, mode SnapshotMode) error {
 		return fmt.Errorf("cluster '%s' does not exist", cfg.Cluster)
 	}
 	dir := snapshotDir(cfg, name)
-	if _, err := os.Stat(dir); err == nil {
-		return fmt.Errorf("snapshot '%s' already exists for cluster '%s'", name, cfg.Cluster)
+	if err := prepareSnapshotSlot(cfg, name, replace); err != nil {
+		return err
 	}
 
 	resumeIfPaused(cfg)
@@ -635,6 +635,23 @@ func SnapshotList(cfg *config.Config) error {
 	fmt.Printf("%-24s %-6s %9s  %s\n", "NAME", "MODE", "SIZE", "CREATED")
 	for _, s := range snapshots {
 		fmt.Printf("%-24s %-6s %9s  %s\n", s.Name, s.Mode, humanBytes(s.Size), s.Created)
+	}
+	return nil
+}
+
+// prepareSnapshotSlot ensures the snapshot directory for name is free to write.
+// If a snapshot of that name already exists: without replace it errors (as a
+// plain save does); with replace it is deleted first, so the save recreates it
+// in place.
+func prepareSnapshotSlot(cfg *config.Config, name string, replace bool) error {
+	if _, err := os.Stat(snapshotDir(cfg, name)); err != nil {
+		return nil // no existing snapshot: the slot is free
+	}
+	if !replace {
+		return fmt.Errorf("snapshot '%s' already exists for cluster '%s'", name, cfg.Cluster)
+	}
+	if err := SnapshotDelete(cfg, name); err != nil {
+		return fmt.Errorf("replacing snapshot '%s': %w", name, err)
 	}
 	return nil
 }
