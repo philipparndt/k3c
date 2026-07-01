@@ -462,6 +462,7 @@ func RunDaemons(cfg *config.Config) error {
 	}
 	_ = os.WriteFile(daemonsVersionFile(cfg), []byte(daemonsVersion(cfg)+"\n"), 0o644)
 	startAutoReclaim(cfg)
+	startPriorityReconcile(cfg)
 	// Buffer one slot per listener goroutine so a crashing listener never
 	// blocks forever on send (leaking its goroutine) once we return after the
 	// first error. 5 covers proxy + SNI + registry + pull-cache + webhook;
