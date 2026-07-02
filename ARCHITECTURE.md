@@ -84,9 +84,22 @@ gateway 192.168.64.1                        eth0 192.168.64.x   [ eth1 gvnet ]
 ```
 
 - **Host → engine:** `DOCKER_HOST` is a host unix socket (`DockerHost`) the
-  daemon forwards to the engine at the **Apple-published loopback**
-  `127.0.0.1:<DockerPort>` — never the guest vmnet IP, which is not host-reachable
-  at L2 on macOS 26 (see §4.6). The socket path is stable across sidecar recreate.
+  daemon forwards to the engine — never the guest vmnet IP, which is not
+  host-reachable at L2 on macOS 26 (see §4.6). The socket path is stable across
+  sidecar recreate. Each connection is **routed by request type** (peek the first
+  HTTP head, `routeEngineConn`): hijacked/interactive streams (`docker
+  exec`/`attach`, `Connection: Upgrade`) go over the full-duplex
+  `--publish-socket` bridge, which carries hijacks; everything else (inspect,
+  logs, `docker cp` archive PUT, build, …) goes over the **Apple-published
+  loopback** `127.0.0.1:<DockerPort>`. This split exists because the
+  `--publish-socket` bridge **head-of-line-blocks** — a single open-but-undrained
+  streaming response stalls the next request on it (Apple's mux, not k3c code) —
+  while the loopback publish does not but drops hijacked streams. Routing the
+  common request/response path to the HOL-free loopback is what lets
+  Testcontainers' `wait.ForLog` (open logs → concurrent Inspect, undrained) reach
+  readiness. The whole connection follows its first request's type: moby dials a
+  dedicated, unpooled connection per hijack, so pooled connections only ever
+  carry non-hijack requests.
 - **Nested published ports** are discovered via the engine API (over the loopback
   endpoint) and mirrored onto host `127.0.0.1:<port>`; the data plane tunnels
   through the in-guest forwarder `k3c-docker-fwd` over a unix socket the runtime

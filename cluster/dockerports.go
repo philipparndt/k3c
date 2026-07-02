@@ -1,8 +1,11 @@
 package cluster
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -92,14 +95,17 @@ func dialTarget(cfg *config.Config, target string) (net.Conn, error) {
 	return net.DialTimeout("tcp", target, connectTimeout)
 }
 
-// dialDockerEngine opens a connection to the sidecar's docker engine. It
-// prefers the in-guest forwarder over the published unix socket — that path is
-// full-duplex, so Docker's hijacked streams (exec, attach, interactive run,
-// `logs -f`) survive, with no guest vmnet L2 dependency. It falls back to the
-// Apple-published loopback endpoint (127.0.0.1:<DockerPort>) when the bridge is
-// absent — a sidecar created before --publish-socket: the engine still answers
-// plain request/response there, but hijacked streams are dropped by Apple's
-// TCP publish, so such a sidecar should be recreated to regain exec/attach.
+// dialDockerEngine opens a connection to the sidecar's docker engine over the
+// in-guest forwarder (the --publish-socket bridge) — full-duplex, so Docker's
+// hijacked streams (exec, attach, interactive run) survive, with no guest vmnet
+// L2 dependency. It falls back to the Apple-published loopback endpoint
+// (127.0.0.1:<DockerPort>) when the bridge is absent — a sidecar created before
+// --publish-socket: the engine still answers plain request/response there, but
+// hijacked streams are dropped by Apple's TCP publish, so such a sidecar should
+// be recreated to regain exec/attach. This is the transport for hijacked and
+// unrecognized engine traffic; non-hijacked traffic prefers the loopback
+// endpoint (routeEngineConn) because the bridge head-of-line-blocks a
+// back-pressured stream (see the docker-engine-api-stream-hol-blocking change).
 func dialDockerEngine(cfg *config.Config) (net.Conn, error) {
 	if c, err := dialSidecarPort(cfg, guestEnginePort); err == nil {
 		return c, nil
@@ -107,11 +113,19 @@ func dialDockerEngine(cfg *config.Config) (net.Conn, error) {
 	return net.DialTimeout("tcp", dockerEngineEndpoint(cfg), connectTimeout)
 }
 
+// engineHeadPeekMax bounds how many leading bytes routeEngineConn inspects to
+// find the end of the HTTP request head. Well over a normal Docker request head;
+// anything larger is treated as unrecognized and routed to the bridge.
+const engineHeadPeekMax = 64 << 10
+
 // startDockerSocket serves a host unix socket that forwards to the sidecar's
-// docker engine via the in-guest forwarder (falling back to the Apple-published
-// loopback endpoint), so it keeps working across sidecar recreation and when
-// the guest vmnet IP is unreachable; connections made while no sidecar is
-// running fail to dial and are closed. Idle (just an unused listener) until
+// docker engine. Each accepted connection is routed by request type
+// (routeEngineConn): hijacked/interactive streams go over the full-duplex
+// --publish-socket bridge, everything else over the Apple-published loopback
+// endpoint, which — unlike the bridge — does not head-of-line-block a
+// back-pressured streaming response. It keeps working across sidecar recreation
+// and when the guest vmnet IP is unreachable; connections made while no sidecar
+// is running fail to dial and are closed. Idle (just an unused listener) until
 // something dials it.
 func startDockerSocket(cfg *config.Config) {
 	path := dockerSocketPath(cfg)
@@ -130,20 +144,147 @@ func startDockerSocket(cfg *config.Config) {
 			if err != nil {
 				return
 			}
-			go func() {
-				// reach the engine over the in-guest forwarder (full-duplex,
-				// carries hijacked exec/attach streams), falling back to the
-				// Apple-published loopback; never the guest vmnet IP. A stopped
-				// sidecar has neither, so the dial fails fast and we close.
-				upstream, err := dialDockerEngine(cfg)
-				if err != nil {
-					_ = conn.Close()
-					return
-				}
-				splice(conn, upstream)
-			}()
+			go routeEngineConn(cfg, conn)
 		}
 	}()
+}
+
+// routeEngineConn forwards one host connection to the sidecar's docker engine,
+// choosing the transport by peeking the first HTTP request head:
+//
+//   - A clearly non-hijacked request (inspect, logs, wait, events, build,
+//     archive PUT / `docker cp`, …) is spliced to the Apple-published loopback
+//     endpoint, which handles a back-pressured stream + concurrent request
+//     without head-of-line blocking (proven; the bridge does not).
+//   - A hijacked/upgrade stream (`docker exec`/`attach`, interactive run), or any
+//     head we cannot confidently classify, is spliced over the full-duplex
+//     --publish-socket bridge (dialDockerEngine), which carries hijacks; Apple's
+//     loopback publish drops them.
+//
+// Routing the whole connection by its FIRST request is sound: the moby client
+// dials a dedicated, unpooled connection for every hijack and never reuses the
+// upgraded connection, so a pooled keep-alive connection only ever carries
+// non-hijack requests — a connection's first request type is its type for life.
+func routeEngineConn(cfg *config.Config, conn net.Conn) {
+	br := bufio.NewReaderSize(conn, engineHeadPeekMax)
+	// Bound the head read so a client that connects but never sends a request
+	// can't pin this goroutine; cleared before splicing the stream.
+	_ = conn.SetReadDeadline(time.Now().Add(connectTimeout))
+	head, parsed, hijack := readEngineHead(br)
+	_ = conn.SetReadDeadline(time.Time{})
+
+	// Only divert to loopback when we are SURE it is a non-hijack HTTP request;
+	// hijacks and anything unrecognized keep today's bridge-first behavior.
+	if parsed && !hijack {
+		if upstream, err := net.DialTimeout("tcp", dockerEngineEndpoint(cfg), connectTimeout); err == nil {
+			spliceEngine(conn, head, br, upstream)
+			return
+		}
+		// loopback unexpectedly unavailable — fall through to the bridge
+	}
+	upstream, err := dialDockerEngine(cfg)
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	spliceEngine(conn, head, br, upstream)
+}
+
+// readEngineHead consumes the leading HTTP request head from br (up to and
+// including the blank line that ends it), returning the exact head bytes so the
+// caller can replay them to the chosen upstream, plus whether they parse as an
+// HTTP request and, if so, whether it is a hijacked/upgrade stream. A read error
+// or an oversized head yields the bytes read so far and parsed=false (→ bridge).
+//
+// Hijack signals (either is sufficient): a `Connection: Upgrade` / `Upgrade:`
+// request header (moby sets `Connection: Upgrade` + `Upgrade: tcp` for hijacks),
+// or a hijack request path (`/exec/{id}/start`, `.../attach`, `.../attach/ws`).
+func readEngineHead(br *bufio.Reader) (head []byte, parsed, hijack bool) {
+	var buf bytes.Buffer
+	for {
+		line, err := br.ReadString('\n')
+		buf.WriteString(line)
+		if err != nil || buf.Len() > engineHeadPeekMax {
+			return buf.Bytes(), false, false // short/half-open, non-HTTP, or oversized
+		}
+		if line == "\r\n" || line == "\n" { // blank line ends the head
+			parsed, hijack = classifyEngineHead(buf.Bytes())
+			return buf.Bytes(), parsed, hijack
+		}
+	}
+}
+
+// classifyEngineHead inspects an HTTP request head (request line + headers, no
+// trailing CRLFCRLF) and reports (parsed, hijack).
+func classifyEngineHead(head []byte) (parsed, hijack bool) {
+	lines := strings.Split(string(head), "\r\n")
+	if len(lines) == 0 {
+		return false, false
+	}
+	// Request line: METHOD SP REQUEST-URI SP HTTP/x.y
+	fields := strings.Fields(lines[0])
+	if len(fields) < 3 || !strings.HasPrefix(fields[2], "HTTP/") {
+		return false, false // not an HTTP request head
+	}
+	uri := fields[1]
+	if strings.Contains(uri, "/attach") ||
+		(strings.Contains(uri, "/exec/") && strings.Contains(uri, "/start")) {
+		return true, true
+	}
+	for _, ln := range lines[1:] {
+		name, val, ok := strings.Cut(ln, ":")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "upgrade":
+			return true, true
+		case "connection":
+			if strings.Contains(strings.ToLower(val), "upgrade") {
+				return true, true
+			}
+		}
+	}
+	return true, false
+}
+
+// spliceEngine copies bidirectionally between a host engine connection and
+// upstream, after first replaying head (the request head already consumed from
+// the client for routing) to upstream. The client→upstream side then continues
+// from cr (the buffered reader, which may still hold body/pipelined bytes). Each
+// write side is half-closed on EOF so hijacked half-duplex streams are not torn
+// down early (mirroring splice).
+func spliceEngine(conn net.Conn, head []byte, cr io.Reader, upstream net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		if len(head) > 0 {
+			if _, err := upstream.Write(head); err != nil {
+				closeWrite(upstream)
+				done <- struct{}{}
+				return
+			}
+		}
+		_, _ = io.Copy(upstream, cr)
+		closeWrite(upstream)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(conn, upstream)
+		closeWrite(conn)
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+	_ = conn.Close()
+	_ = upstream.Close()
+}
+
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	_ = c.Close()
 }
 
 // sidecarPorts maps every host port the sidecar currently publishes to its
