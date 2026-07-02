@@ -32,11 +32,14 @@ once, `--release` deflates.
 
 With `cluster.memoryPolicy: auto` (the default) on a policy-capable
 container build, `k3c cluster create` SHALL create the server VM with the
-runtime's automatic memory policy enabled and SHALL convert the freshly
-created VM with one suspend/restore cycle, so memory touched during the k3s
-boot returns to the host immediately (the hypervisor frees ballooned pages
-only for VMs restored from saved state). `k3c cluster start` SHALL re-arm
-the policy on VMs created before policy support.
+runtime's automatic memory policy enabled. With `cluster.memoryConvert:
+on-create` it SHALL additionally convert the freshly created VM with one
+suspend/restore cycle, so memory touched during the k3s boot returns to the
+host immediately (the hypervisor frees ballooned pages only for VMs
+restored from saved state; without the conversion, the first regular
+suspend or snapshot converts). A failed post-conversion restore SHALL fail
+the create visibly. `k3c cluster start` SHALL re-arm the policy on VMs
+created before policy support.
 
 #### Scenario: Create leaves a lean cluster
 

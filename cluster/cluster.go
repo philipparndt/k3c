@@ -533,7 +533,9 @@ func Create(cfg *config.Config) error {
 	if err := setupCoreDNS(cfg); err != nil {
 		return err
 	}
-	convertClusterMemory(cfg)
+	if err := convertClusterMemory(cfg); err != nil {
+		return err
+	}
 	if err := setActive(cfg); err != nil {
 		return err
 	}

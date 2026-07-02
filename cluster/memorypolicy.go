@@ -1,6 +1,8 @@
 package cluster
 
 import (
+	"fmt"
+
 	"github.com/philipparndt/go-logger"
 
 	"k3c/config"
@@ -51,24 +53,33 @@ func applyMemoryPolicy(cfg *config.Config, name string) {
 	}
 }
 
+// memoryConvertEnabled reports whether freshly created VMs are converted
+// with a suspend/restore cycle right after creation. Off by default: the
+// cycle adds a failure surface to create (a wedged runtime suspend leaves
+// the cluster suspended), and the first regular suspend or snapshot
+// converts the VM anyway.
+func memoryConvertEnabled(cfg *config.Config) bool {
+	return cfg.MemoryConvert == "on-create" && memoryPolicyEnabled(cfg) && capabilities().suspend
+}
+
 // convertClusterMemory converts a freshly created cluster's VMs with one
 // suspend/restore cycle: the hypervisor does not free ballooned pages of a
 // freshly booted virtual machine — only of one restored from saved state.
 // Without the cycle, memory touched during the k3s boot storm stays resident
-// on the host until the first snapshot or suspend. Best-effort: the cluster
-// works identically if the conversion fails, it just reclaims lazily.
-func convertClusterMemory(cfg *config.Config) {
-	if !memoryPolicyEnabled(cfg) || !capabilities().suspend {
-		return
+// on the host until the first snapshot or suspend. A failed suspend is a
+// harmless skip; a failed restore is fatal — the cluster must not be left
+// suspended behind a "cluster is up".
+func convertClusterMemory(cfg *config.Config) error {
+	if !memoryConvertEnabled(cfg) {
+		return nil
 	}
 	logger.Info("converting VM memory (one suspend/restore cycle enables host page reclaim)")
 	if out, err := runContainer("suspend", cfg.ServerName); err != nil {
 		logger.Warn("memory conversion skipped: " + firstLine(out))
-		return
+		return nil
 	}
 	if out, err := startServerVM(cfg); err != nil {
-		logger.Warn("restoring server after memory conversion failed: " + firstLine(out))
-		return
+		return fmt.Errorf("restoring the server after memory conversion failed (recover with: k3c cluster start %s): %s", cfg.Cluster, firstLine(out))
 	}
 	applyCPUPriority(cfg)
 	repairVirtiofs(cfg)
@@ -77,9 +88,7 @@ func convertClusterMemory(cfg *config.Config) {
 			_, _ = runContainer("start", cfg.RegistryName)
 		}
 	}
-	if err := waitReady(cfg); err != nil {
-		logger.Warn("cluster not ready after memory conversion: " + err.Error())
-	}
+	return waitReady(cfg)
 }
 
 // convertDockerMemory converts the freshly created docker sidecar with one
@@ -87,7 +96,7 @@ func convertClusterMemory(cfg *config.Config) {
 // the regular start path, which re-wires the engine socket, forwarder, and
 // published ports.
 func convertDockerMemory(cfg *config.Config) error {
-	if !memoryPolicyEnabled(cfg) || !capabilities().suspend {
+	if !memoryConvertEnabled(cfg) {
 		return nil
 	}
 	logger.Info("converting sidecar memory (one suspend/restore cycle enables host page reclaim)")

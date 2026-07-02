@@ -55,6 +55,10 @@ type FileConfig struct {
 		// memory kept available for a VM above its workload with
 		// memoryPolicy auto, e.g. "1500M" (default: the runtime's 1G)
 		MemoryHeadroom string `yaml:"memoryHeadroom"`
+		// convert freshly created VMs with one suspend/restore cycle so
+		// boot-time memory returns to the host immediately: "on-create",
+		// or "off" (default: off — the first suspend/snapshot converts)
+		MemoryConvert string `yaml:"memoryConvert"`
 		// scheduling priority of the cluster VMs relative to interactive
 		// apps: "low" (clamped below GUI apps, default) or "normal"
 		CPUPriority string `yaml:"cpuPriority"`
@@ -196,6 +200,7 @@ type Config struct {
 	AutoReclaim     string // auto-reclaim interval ("off" disables)
 	MemoryPolicy    string // "auto" (default) or "off"
 	MemoryHeadroom  string // guest memory kept available above the workload ("" = runtime default)
+	MemoryConvert   string // "on-create" or "off" (default)
 	CPUPriority     string // "low" (default) or "normal"
 
 	PullCacheEnabled   bool
@@ -325,6 +330,7 @@ func merge(dst *FileConfig, src FileConfig) {
 	s(&dst.Cluster.AutoReclaim, src.Cluster.AutoReclaim)
 	s(&dst.Cluster.MemoryPolicy, src.Cluster.MemoryPolicy)
 	s(&dst.Cluster.MemoryHeadroom, src.Cluster.MemoryHeadroom)
+	s(&dst.Cluster.MemoryConvert, src.Cluster.MemoryConvert)
 	s(&dst.Cluster.CPUPriority, src.Cluster.CPUPriority)
 	l(&dst.CACerts, src.CACerts)
 	l(&dst.Egress.Domains, src.Egress.Domains)
@@ -539,6 +545,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		AutoReclaim:         def(fc.Cluster.AutoReclaim, "10m"),
 		MemoryPolicy:        def(fc.Cluster.MemoryPolicy, "auto"),
 		MemoryHeadroom:      fc.Cluster.MemoryHeadroom,
+		MemoryConvert:       def(fc.Cluster.MemoryConvert, "off"),
 		CPUPriority:         def(fc.Cluster.CPUPriority, "low"),
 		BaseDir:             baseDir,
 		ConfigFile:          configFile,
