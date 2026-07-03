@@ -99,7 +99,11 @@ gateway 192.168.64.1                        eth0 192.168.64.x   [ eth1 gvnet ]
   Testcontainers' `wait.ForLog` (open logs → concurrent Inspect, undrained) reach
   readiness. The whole connection follows its first request's type: moby dials a
   dedicated, unpooled connection per hijack, so pooled connections only ever
-  carry non-hijack requests.
+  carry non-hijack requests. The loopback route is **gated on a health probe**
+  (`loopbackEngineHealthy`: `GET /_ping`, verdict cached ~30 s) — the publish can
+  be listening yet dead (accepts, then EOFs every request, seen when its gvnet
+  path is down), in which case everything stays on the bridge: HOL-prone but
+  working beats broken.
 - **Nested published ports** are discovered via the engine API (over the loopback
   endpoint) and mirrored onto host `127.0.0.1:<port>`; the data plane tunnels
   through the in-guest forwarder `k3c-docker-fwd` over a unix socket the runtime

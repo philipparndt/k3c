@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -118,6 +119,59 @@ func dialDockerEngine(cfg *config.Config) (net.Conn, error) {
 // anything larger is treated as unrecognized and routed to the bridge.
 const engineHeadPeekMax = 64 << 10
 
+// The Apple-published loopback endpoint can be listening yet dead: the publish
+// accepts the TCP connection but its forward into the guest is down, so every
+// request gets an immediate EOF (observed on macOS 26 when the gvnet path the
+// publish rides is unreachable). A successful dial therefore proves nothing —
+// routeEngineConn only diverts non-hijack traffic to the loopback after a
+// positive health probe (an HTTP response line to GET /_ping). Verdicts are
+// cached for loopbackProbeTTL so the probe costs at most one loopback
+// round-trip per interval, and a sidecar recreate that revives (or kills) the
+// publish is picked up at the next expiry.
+const loopbackProbeTTL = 30 * time.Second
+
+var loopbackHealth struct {
+	sync.Mutex
+	endpoint string
+	healthy  bool
+	checked  time.Time
+}
+
+// loopbackEngineHealthy reports whether the loopback publish at endpoint
+// actually serves the engine, probing at most once per loopbackProbeTTL.
+func loopbackEngineHealthy(endpoint string) bool {
+	loopbackHealth.Lock()
+	defer loopbackHealth.Unlock()
+	if loopbackHealth.endpoint == endpoint && time.Since(loopbackHealth.checked) < loopbackProbeTTL {
+		return loopbackHealth.healthy
+	}
+	healthy := probeLoopbackEngine(endpoint)
+	loopbackHealth.endpoint = endpoint
+	loopbackHealth.healthy = healthy
+	loopbackHealth.checked = time.Now()
+	return healthy
+}
+
+// probeLoopbackEngine sends GET /_ping to endpoint and requires the start of an
+// HTTP response line within the deadline. Any status counts — the probe tests
+// the transport, not engine health; a dead publish yields EOF instead.
+func probeLoopbackEngine(endpoint string) bool {
+	c, err := net.DialTimeout("tcp", endpoint, connectTimeout)
+	if err != nil {
+		return false
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.WriteString(c, "GET /_ping HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n"); err != nil {
+		return false
+	}
+	buf := make([]byte, len("HTTP/"))
+	if _, err := io.ReadFull(c, buf); err != nil {
+		return false
+	}
+	return string(buf) == "HTTP/"
+}
+
 // startDockerSocket serves a host unix socket that forwards to the sidecar's
 // docker engine. Each accepted connection is routed by request type
 // (routeEngineConn): hijacked/interactive streams go over the full-duplex
@@ -155,7 +209,8 @@ func startDockerSocket(cfg *config.Config) {
 //   - A clearly non-hijacked request (inspect, logs, wait, events, build,
 //     archive PUT / `docker cp`, …) is spliced to the Apple-published loopback
 //     endpoint, which handles a back-pressured stream + concurrent request
-//     without head-of-line blocking (proven; the bridge does not).
+//     without head-of-line blocking (proven; the bridge does not). Gated on
+//     loopbackEngineHealthy: a listening-but-dead publish routes to the bridge.
 //   - A hijacked/upgrade stream (`docker exec`/`attach`, interactive run), or any
 //     head we cannot confidently classify, is spliced over the full-duplex
 //     --publish-socket bridge (dialDockerEngine), which carries hijacks; Apple's
@@ -173,9 +228,12 @@ func routeEngineConn(cfg *config.Config, conn net.Conn) {
 	head, parsed, hijack := readEngineHead(br)
 	_ = conn.SetReadDeadline(time.Time{})
 
-	// Only divert to loopback when we are SURE it is a non-hijack HTTP request;
-	// hijacks and anything unrecognized keep today's bridge-first behavior.
-	if parsed && !hijack {
+	// Only divert to loopback when we are SURE it is a non-hijack HTTP request
+	// AND the loopback publish has probed healthy — a listening-but-dead publish
+	// accepts dials and then EOFs every request, so a bare dial success must not
+	// commit the connection. Hijacks, anything unrecognized, and an unhealthy
+	// loopback keep today's bridge-first behavior.
+	if parsed && !hijack && loopbackEngineHealthy(dockerEngineEndpoint(cfg)) {
 		if upstream, err := net.DialTimeout("tcp", dockerEngineEndpoint(cfg), connectTimeout); err == nil {
 			spliceEngine(conn, head, br, upstream)
 			return
@@ -226,9 +284,15 @@ func classifyEngineHead(head []byte) (parsed, hijack bool) {
 	if len(fields) < 3 || !strings.HasPrefix(fields[2], "HTTP/") {
 		return false, false // not an HTTP request head
 	}
-	uri := fields[1]
-	if strings.Contains(uri, "/attach") ||
-		(strings.Contains(uri, "/exec/") && strings.Contains(uri, "/start")) {
+	// Match hijack endpoints on the query-stripped path by segment, not a loose
+	// substring, so an ordinary request for a container merely named "attach"
+	// (e.g. GET /containers/attach/json) is not misrouted to the bridge.
+	path := fields[1]
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	if strings.HasSuffix(path, "/attach") || strings.HasSuffix(path, "/attach/ws") ||
+		(strings.Contains(path, "/exec/") && strings.HasSuffix(path, "/start")) {
 		return true, true
 	}
 	for _, ln := range lines[1:] {

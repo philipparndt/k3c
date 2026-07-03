@@ -89,6 +89,8 @@ func TestClassifyEngineHead(t *testing.T) {
 		{"exec start upgrade", "POST /v1.43/exec/abc/start HTTP/1.1\r\nUpgrade: tcp\r\nConnection: Upgrade", true, true},
 		{"attach path", "POST /v1.43/containers/abc/attach?stream=1&stdout=1 HTTP/1.1\r\nHost: d", true, true},
 		{"attach ws path", "GET /v1.43/containers/abc/attach/ws HTTP/1.1\r\nHost: d", true, true},
+		{"container named attach (not a hijack)", "GET /v1.43/containers/attach/json HTTP/1.1\r\nHost: d", true, false},
+		{"logs for container named attach", "GET /v1.43/containers/attach/logs?follow=0 HTTP/1.1\r\nHost: d", true, false},
 		{"connection upgrade header", "POST /v1.43/anything HTTP/1.1\r\nConnection: Upgrade", true, true},
 		{"connection upgrade mixed case", "POST /v1.43/x HTTP/1.1\r\nConnection: keep-alive, Upgrade", true, true},
 		{"not http", "PING some garbage bytes", false, false},
@@ -216,6 +218,71 @@ func TestEngineNonHijackRoutesToLoopback(t *testing.T) {
 	}
 	if *bridgeUsed {
 		t.Fatal("non-hijack request was routed to the --publish-socket bridge; must use loopback")
+	}
+}
+
+// startDeadLoopback stands in for a listening-but-dead Apple publish: it
+// accepts each connection and closes it immediately — the EOF observed when the
+// publish's forward into the guest is down (macOS 26, gvnet path unreachable).
+// Returns the port for cfg.DockerPort.
+func startDeadLoopback(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	return port
+}
+
+// TestEngineNonHijackFallsBackToBridgeWhenLoopbackDead pins the health gate: a
+// loopback publish that accepts dials but EOFs every request must not swallow
+// non-hijack traffic — the /_ping probe fails, so the request is served over
+// the --publish-socket bridge instead (HOL-prone but working beats broken).
+func TestEngineNonHijackFallsBackToBridgeWhenLoopbackDead(t *testing.T) {
+	cfg := tempBase(t)
+	cfg.DockerPort = startDeadLoopback(t)
+
+	fwd, err := net.Listen("unix", dockerForwardSocketPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fwd.Close()
+	go func() {
+		c, err := fwd.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		br := bufio.NewReader(c)
+		if _, err := br.ReadString('\n'); err != nil { // dockerfwd port header
+			return
+		}
+		if _, err := readHead(br); err != nil {
+			return
+		}
+		_, _ = io.WriteString(c, "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nBRIDGE")
+	}()
+
+	startDockerSocket(cfg)
+	conn := dialHostSocket(t, cfg)
+	defer conn.Close()
+
+	_, _ = io.WriteString(conn, "GET /v1.43/containers/x/json HTTP/1.1\r\nHost: d\r\n\r\n")
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	resp, _ := io.ReadAll(conn)
+	if !strings.Contains(string(resp), "BRIDGE") {
+		t.Fatalf("inspect with dead loopback = %q, want it served over the bridge", resp)
 	}
 }
 
