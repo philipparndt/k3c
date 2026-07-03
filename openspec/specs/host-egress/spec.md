@@ -13,8 +13,9 @@ false`.
 
 ### Requirement: Default egress via transparent gvnet
 
-By default (`egress.transparent` unset or true, or `K3C_TRANSPARENT_EGRESS=1`),
-each VM SHALL gain a second gvnet NIC backed by a per-VM userspace netstack. The
+Each VM SHALL, by default (`egress.transparent` unset or true, or
+`K3C_TRANSPARENT_EGRESS=1`), gain a second gvnet NIC backed by a per-VM
+userspace netstack. The
 guest default route and `/etc/resolv.conf` SHALL be repointed at the gvnet
 gateway, and the netstack SHALL re-originate every outbound connection from a
 host socket so the VPN carries it. In this mode there SHALL be no SNI gateway,
