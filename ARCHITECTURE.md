@@ -78,7 +78,7 @@ docker CLI / Testcontainers
                                                         └─▶ 127.0.0.1:<port>
 k3c host daemons
   pull-cache  :5011 ◀────────── containerd pulls via the mirror
-  CONNECT pxy :3128 ◀────────── (default-mode egress; or transparent egress §4.2)
+  CONNECT pxy :3128 ◀────────── (legacy-mode egress; default is transparent §4.2)
 
 gateway 192.168.64.1                        eth0 192.168.64.x   [ eth1 gvnet ]
 ```
@@ -154,10 +154,11 @@ k3c host daemons + registry VM              node-ip pinned to vmnet eth0
 
 ### 4.1 The two NICs
 
-vmnet is always present; gvnet is added only in transparent-egress mode.
+vmnet is always present; gvnet is added in transparent-egress mode, which is
+the default.
 
 ```
-vmnet  (Apple shared mode)              gvnet  (transparent egress, opt-in)
+vmnet  (Apple shared mode)              gvnet  (transparent egress, default)
 ─────────────────────────              ───────────────────────────────────
 host bridge "bridge100"                per-VM userspace netstack
 gateway 192.168.64.1                     (gvisor-tap-vsock), one process per VM
@@ -188,21 +189,8 @@ guest routing (transparent-egress mode)
 
 ### 4.2 Egress — two modes
 
-**(a) Default: CONNECT proxy + SNI gateway** (the VMs have no direct internet)
-
-```
-containerd image pull
-  guest ─ HTTP_PROXY 192.168.64.1:3128 ─▶ host CONNECT proxy ─▶ VPN ─▶ registry
-
-pod HTTPS egress
-  pod ─ DNS(egress domain) ─▶ CoreDNS ─ override ─▶ answers 192.168.64.1
-  pod ─ :443 ─▶ host SNI gateway ─ reads ClientHello SNI ─▶ dials the real host
-                                                            via the VPN, or the
-                                                            cluster ingress for
-                                                            ingressDomains
-```
-
-**(b) Transparent (gvnet)** — `egress.transparent: true` / `K3C_TRANSPARENT_EGRESS=1`
+**(a) Default: transparent (gvnet)** — `egress.transparent` unset or `true` /
+`K3C_TRANSPARENT_EGRESS=1`
 
 ```
 any guest connection
@@ -215,6 +203,21 @@ No SNI gateway, no CoreDNS override, no `HTTP_PROXY` — pods resolve real DNS
 and connect directly; the netstack terminates the guest TCP/IP and re-emits
 each connection from the host, so the corporate VPN/proxy carries it (the same
 proven principle as the SNI gateway).
+
+**(b) Legacy: CONNECT proxy + SNI gateway** — `egress.transparent: false`
+(the VMs have no direct internet; select this to fall back off gvnet)
+
+```
+containerd image pull
+  guest ─ HTTP_PROXY 192.168.64.1:3128 ─▶ host CONNECT proxy ─▶ VPN ─▶ registry
+
+pod HTTPS egress
+  pod ─ DNS(egress domain) ─▶ CoreDNS ─ override ─▶ answers 192.168.64.1
+  pod ─ :443 ─▶ host SNI gateway ─ reads ClientHello SNI ─▶ dials the real host
+                                                            via the VPN, or the
+                                                            cluster ingress for
+                                                            ingressDomains
+```
 
 > **docker.io stays corp-blocked even with transparent egress** — that's why
 > the pull-cache / registry mirror is still required (next section).
@@ -243,7 +246,7 @@ browser/host ─ :<ingress> ─▶ host published port ─ vmnet ─▶ VM :443
                                                             └ ingress controller ─▶ pod
 ```
 
-In default mode the SNI gateway additionally routes configured `ingressDomains`
+In legacy mode the SNI gateway additionally routes configured `ingressDomains`
 to the cluster ingress instead of egressing them.
 
 ### 4.5 Host daemons (`k3c daemons`)
@@ -253,8 +256,8 @@ run with the **project config** (for the pull-cache) and the **current binary**:
 
 | listener          | port      | purpose                                            |
 |-------------------|-----------|----------------------------------------------------|
-| CONNECT proxy     | `:3128`   | containerd image pulls (default-mode egress)       |
-| SNI gateway       | `:443`    | pod HTTPS egress (default-mode)                     |
+| CONNECT proxy     | `:3128`   | containerd image pulls (legacy-mode egress)        |
+| SNI gateway       | `:443`    | pod HTTPS egress (legacy-mode)                      |
 | pull-cache        | `:5011`   | registry pull-through + corporate-CA termination   |
 | registry forward  | cfg       | host → local registry VM                            |
 | dockerPortForward | dynamic   | mirror the sidecar VM's published ports to the host |

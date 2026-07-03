@@ -16,7 +16,6 @@ $ k3c cluster create
 2026-06-10T17:04:00+02:00 [   3] INFO  [  1] waiting for node to become Ready
 NAME         STATUS   ROLES                  AGE   VERSION
 k3c-server   Ready    control-plane,master   3s    v1.33.9+k3s1
-2026-06-10T17:04:07+02:00 [  10] INFO  [  1] configuring CoreDNS egress override
 2026-06-10T17:04:28+02:00 [  31] INFO  [  1] cluster is up (context: k3c-k3c)
 ```
 
@@ -33,14 +32,19 @@ constraints that break a naive k3s setup. k3c bundles all the workarounds:
 | no **br_netfilter** → same-node service replies dropped (pod DNS dead) | `kube-proxy --masquerade-all` |
 | `container exec`/`cp` hang on a running k3s container | config and kubeconfig flow through a bind mount |
 | amd64-only images fail with `exec format error` | `--rosetta` (binfmt, like Docker Desktop) |
-| corporate full-tunnel **VPNs block all VM egress** | host-side CONNECT proxy (image pulls) + SNI gateway (pod HTTPS egress) + CoreDNS override |
+| corporate full-tunnel **VPNs block all VM egress** | transparent egress (gvnet) by default; legacy host-side CONNECT proxy + SNI gateway + CoreDNS override (`egress.transparent: false`) |
 
 The VPN piece deserves a sentence: VMs behind e.g. Cisco-style full-tunnel
-VPNs have *no* outbound connectivity, but they can reach the host. k3c runs
-a CONNECT proxy that containerd uses for image pulls, and an SNI-routing
-gateway on host :443 — CoreDNS resolves your configured corporate domains to
-the host, the gateway reads the TLS SNI and splices the connection to the
-real destination from the host's network. TLS stays end-to-end.
+VPNs have *no* outbound connectivity, but they can reach the host. By default
+k3c uses **transparent egress**: each VM gets a gvnet NIC backed by a host-side
+userspace netstack that re-originates every outbound connection from a host
+socket, so pods resolve real DNS and connect directly and the corporate
+VPN/proxy carries the traffic. Set `egress.transparent: false` to fall back to
+the legacy path instead: a CONNECT proxy that containerd uses for image pulls,
+and an SNI-routing gateway on host :443 — CoreDNS resolves your configured
+corporate domains to the host, the gateway reads the TLS SNI and splices the
+connection to the real destination from the host's network. TLS stays
+end-to-end in both modes.
 
 ## Install
 
@@ -198,8 +202,11 @@ caCerts:                       # added to the node's registry CA bundle
   - certs/*.crt                # relative to this file
 
 egress:
-  domains: [example.com]       # pod HTTPS egress via the SNI gateway
-                               # ["*"] allows every external domain at once
+  # transparent: true          # default: gvnet re-originates VM egress from the
+                               # host (real DNS, direct connect). Set false to
+                               # use the legacy CONNECT-proxy / SNI-gateway path.
+  domains: [example.com]       # legacy mode only: pod HTTPS egress via the SNI
+                               # gateway. ["*"] allows every external domain
   ingressDomains: [example.test] # ...except these: routed to the ingress
   # static TCP forwards for non-TLS protocols (no SNI parsing), e.g. an
   # HTTP CONNECT proxy; the target host also belongs in domains above
