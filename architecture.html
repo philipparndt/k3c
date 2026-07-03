@@ -57,17 +57,6 @@
   .flow { text-align: center; color: var(--faint); font: 600 11px var(--mono); margin: 2px 0 12px; letter-spacing: .06em; }
   .netnote { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font: 500 11.5px/1.5 var(--mono); color: var(--muted); }
   .netnote i { font-style: normal; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
-  /* ---------- findings ---------- */
-  .finding { background: var(--panel); border: 1px solid var(--line); border-left-width: 3px; border-radius: 6px; padding: 14px 16px; margin: 10px 0; }
-  .finding.crit { border-left-color: var(--bad); }
-  .finding.high { border-left-color: var(--warn); }
-  .finding.med  { border-left-color: var(--cold); }
-  .finding h4 { margin: 0 0 6px; font-size: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .sev { font: 700 10px/1 var(--mono); letter-spacing: .1em; padding: 4px 7px; border-radius: 3px; color: #12161d; }
-  .sev.crit { background: var(--bad); } .sev.high { background: var(--warn); } .sev.med { background: var(--cold); }
-  .finding p { margin: 0; color: var(--muted); font-size: 13.5px; max-width: none; }
-  .finding .fix { margin-top: 7px; font-size: 13px; color: var(--ink); }
-  .finding .fix b { color: var(--ok); font: 700 10.5px var(--mono); letter-spacing: .08em; margin-right: 6px; }
   .tiers { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }
   .tier { flex: 1 1 200px; border-radius: 6px; padding: 13px 15px; border: 1px solid var(--line); background: var(--panel); border-top: 3px solid var(--line); }
   .tier.warm { border-top-color: var(--warm); } .tier.cold { border-top-color: var(--cold); } .tier.frozen { border-top-color: var(--frozen); }
@@ -84,12 +73,12 @@
   <div class="meta"><span>state: v0.23.0</span><span>~17k LOC Go + Preact web UI</span><span>macOS / arm64</span></div>
   <nav class="toc">
     <a href="#glance">System at a glance</a>
+    <a href="#vms">VMs &amp; containers</a>
     <a href="#packages">Packages</a>
     <a href="#daemons">Host daemons</a>
     <a href="#paths">Data paths</a>
     <a href="#state">State on disk</a>
     <a href="#release">Release pipeline</a>
-    <a href="#health">Drift &amp; improvement</a>
     <a href="./index.html" style="margin-left:auto">Onboarding&nbsp;↗</a>
   </nav>
 </header>
@@ -135,8 +124,20 @@
   <p>The engine never links the runtime: it drives the <code>container</code> CLI as a subprocess (resolved by <code>runtime/</code>, which extracts the embedded fork to <code>~/.cache/k3c/runtime/&lt;ver&gt;</code>). The gvnet netstack likewise runs out-of-process — one detached <code>gvnet</code> per VM — keeping gvisor out of the main binary.</p>
 </section>
 
+<section id="vms">
+  <h2><span class="num">2</span>VMs &amp; containers</h2>
+  <p class="lede">On Apple <code>container</code>, every container is its own lightweight VM (Virtualization.framework). k3c manages up to three kinds per setup, plus one detached gvnet netstack process per VM on the host.</p>
+  <div class="tablewrap"><table>
+    <tr><th>VM</th><th>Image</th><th>Role</th><th>Networks</th><th>Reachable at</th></tr>
+    <tr><td><code>&lt;cluster&gt;-server</code></td><td><code>rancher/k3s:v1.33.9-k3s1</code></td><td>The k3s node — control plane and workloads in one VM; Rosetta translates amd64 images. k3s config and CA bundle injected via virtiofs bind mounts.</td><td>vmnet + gvnet /24</td><td>API <code>127.0.0.1:&lt;apiPort&gt;</code> · ingress <code>:8444</code> (public <code>:443</code> when active)</td></tr>
+    <tr><td><code>&lt;cluster&gt;-registry</code></td><td><code>registry:2</code></td><td>Optional per-cluster private registry; guests and host reach it via the stable daemon forward, so its own IP never matters.</td><td>vmnet</td><td><code>127.0.0.1:&lt;internal&gt;</code>, forwarded at <code>:5001</code> for the active cluster</td></tr>
+    <tr><td><code>k3c-docker</code></td><td><code>docker:dind</code></td><td>The Docker sidecar — one shared engine VM for Testcontainers, buildx, and nested k3d. Image store lives on the <code>k3c-docker-data</code> volume and survives recreation; nested container ports are mirrored onto the host.</td><td>vmnet + gvnet /24</td><td>engine <code>127.0.0.1:2375</code> + <code>docker.sock</code> (routed per request over loopback or the vsock bridge)</td></tr>
+  </table></div>
+  <p>Each VM has three lifecycle temperatures beyond running: <b>paused</b> (SIGSTOP — keeps RAM, frees CPU, resumes instantly), <b>suspended</b> (machine state written to disk — frees RAM and CPU, <code>start</code> restores it), and <b>stopped</b>. Snapshots capture the same spectrum per tier (§5): warm carries the RAM image, cold just the disk, frozen a logical extract.</p>
+</section>
+
 <section id="packages">
-  <h2><span class="num">2</span>Binary &amp; packages</h2>
+  <h2><span class="num">3</span>Binary &amp; packages</h2>
   <p class="lede">Clean layering, no import cycles. <code>cluster/</code> is the hub; <code>ui</code>, <code>version</code>, <code>dockerfwd</code>, <code>gvnet</code> are leaves. Two helper binaries ship inside the runtime payload: <code>gvnet</code> (host) and <code>k3c-docker-fwd</code> (linux/arm64, runs inside the sidecar VM).</p>
   <div class="tablewrap"><table>
     <tr><th>Package</th><th style="text-align:right">LOC</th><th>Responsibility</th></tr>
@@ -150,7 +151,7 @@
     <tr><td><code>ui/</code></td><td class="n">152</td><td>Shared CLI output primitives (tables, JSON emit, colors)</td></tr>
     <tr><td><code>dockerfwd/</code></td><td class="n">110</td><td>In-guest TCP forwarder wire protocol; same package serves host and guest</td></tr>
   </table></div>
-  <h3>Largest files inside cluster/ (the split candidates)</h3>
+  <h3>Responsibility areas inside cluster/</h3>
   <div class="tablewrap"><table>
     <tr><th>Cohesion cluster</th><th>Files</th><th style="text-align:right">LOC</th></tr>
     <tr><td>Lifecycle &amp; core</td><td><code>cluster.go</code>, <code>info.go</code>, <code>ports.go</code>, <code>kernel.go</code></td><td class="n">~2,530</td></tr>
@@ -164,7 +165,7 @@
 </section>
 
 <section id="daemons">
-  <h2><span class="num">3</span>Host daemons</h2>
+  <h2><span class="num">4</span>Host daemons</h2>
   <p class="lede">One detached <code>k3c daemons run</code> process owns every host listener. Ports bind <code>0.0.0.0</code> but are source-restricted to loopback + vmnet; contested ports (e.g. :443) are <em>arbitrated</em> — spliced to the docker sidecar when it is the active target.</p>
   <div class="tablewrap"><table>
     <tr><th>Listener</th><th>Port</th><th>Purpose</th></tr>
@@ -179,7 +180,7 @@
 </section>
 
 <section id="paths">
-  <h2><span class="num">4</span>Key data paths</h2>
+  <h2><span class="num">5</span>Key data paths</h2>
 
   <h3>Egress (transparent gvnet — the default)</h3>
   <p>Every VM gets a second NIC on a private gvnet /24; the entrypoint repoints the default route and DNS at it. The gvisor netstack terminates guest TCP/IP and re-originates each connection from host sockets — so VPN/Zscaler, proxies, and corporate DNS are handled host-side with zero per-domain config. The legacy mode (<code>egress.transparent: false</code>) instead combines the CONNECT proxy, the SNI gateway, and a CoreDNS override that resolves egress domains to the vmnet gateway.</p>
@@ -199,7 +200,7 @@
 </section>
 
 <section id="state">
-  <h2><span class="num">5</span>State on disk</h2>
+  <h2><span class="num">6</span>State on disk</h2>
   <div class="tablewrap"><table>
     <tr><th>Path</th><th>Owner</th><th>Purpose</th></tr>
     <tr><td><code>~/.config/k3c/proxy.pid</code></td><td>daemons</td><td>Daemon PID (one process, two pidfiles)</td></tr>
@@ -213,45 +214,10 @@
 </section>
 
 <section id="release">
-  <h2><span class="num">6</span>Release pipeline</h2>
+  <h2><span class="num">7</span>Release pipeline</h2>
   <p class="lede">Tag <code>v*</code> → goreleaser: clones the pinned <code>philipparndt/container</code> + <code>containerization</code> forks, builds the Swift runtime, stages it with the cross-compiled helpers (<code>gvnet</code>, <code>k3c-docker-fwd</code>, 16K kernel) into <code>runtime/payload/container-runtime.tar.gz</code>, then builds the Go binary with <code>-tags bundled</code> (go:embed). Publishes the GitHub release + Homebrew formula (<code>philipparndt/k3c/k3c</code>). darwin/arm64 only. Fork refs are pinned commits — bumped deliberately, never branch tips.</p>
 </section>
 
-<section id="health">
-  <h2><span class="num">7</span>Drift &amp; improvement — where fast growth is showing</h2>
-  <p class="lede">Findings from a structural review + a docs-vs-code audit (July 2026), ranked by how soon they bite. Full details in the accompanying review.</p>
-
-  <div class="finding crit"><h4><span class="sev crit">Fix docs</span>Egress default is inverted in every prose doc</h4>
-    <p>Code defaults transparent gvnet egress ON; ARCHITECTURE.md, README, and the host-egress spec all describe the CONNECT-proxy/SNI path as the default and transparent as opt-in. New users will configure the legacy mode believing it's the normal one.</p>
-    <div class="fix"><b>DO</b>One doc pass: flip the framing, document <code>egress.transparent</code>, fix the README startup sample.</div></div>
-
-  <div class="finding crit"><h4><span class="sev crit">Refactor</span>Cluster vs sidecar is a copy-paste fork</h4>
-    <p>Snapshot save/restore, lifecycle (up/down/pause/resume/suspend/reclaim), and the CLI trees exist twice — near-identical, already diverging (meta filename, registry handling), and every fix must land twice. This is the biggest driver of future bugs.</p>
-    <div class="fix"><b>DO</b>One snapshot/lifecycle engine behind a small "snapshottable VM" interface; parameterize the CLI tree.</div></div>
-
-  <div class="finding high"><h4><span class="sev high">Refactor</span>Business logic rides on fragile CLI text parsing</h4>
-    <p>~23 sites column-index-parse <code>container</code> stdout (<code>strings.Fields</code> + positional indexing, some unbounded <code>[0]</code>). Apple's CLI is young; any output change breaks silently.</p>
-    <div class="fix"><b>DO</b>A typed <code>container</code> client using <code>--format json</code> everywhere; it doubles as the test seam.</div></div>
-
-  <div class="finding high"><h4><span class="sev high">Test</span>Coverage is inverted — riskiest code untested</h4>
-    <p>22 of 29 cluster/ source files have no test, including snapshot restore, daemons, and the whole docker lifecycle — exactly the most-changed areas. cmd/ (67 commands) has zero tests.</p>
-    <div class="fix"><b>DO</b>After the client seam: table tests for both restore paths against a fake client.</div></div>
-
-  <div class="finding high"><h4><span class="sev high">Fix docs</span>Shipped features without spec or README coverage</h4>
-    <p>Frozen snapshots, export --slim/--thin, <code>k3c web</code>, memory knobs (autoReclaim, memoryPolicy, memoryHeadroom), <code>cluster repair</code>/<code>import-run</code>, <code>info</code> — all live in code, none in specs/README. Five unarchived openspec changes hold the missing specs.</p>
-    <div class="fix"><b>DO</b>Archive the five pending openspec changes into specs; extend the README quick-ref.</div></div>
-
-  <div class="finding med"><h4><span class="sev med">Refactor</span>Config: two ~50-field structs + scattered state files</h4>
-    <p>FileConfig (53 fields) and Config (48) are merged by hand — a new field touches five places. Runtime state (active.yaml, ports.yaml, daemons.version) is read/written ad-hoc from many files (71 raw file ops in cluster/).</p>
-    <div class="fix"><b>DO</b>Derive Config from FileConfig; one typed state package owning the on-disk files.</div></div>
-
-  <div class="finding med"><h4><span class="sev med">Harden</span>Sleep-based sequencing &amp; best-effort error swallowing</h4>
-    <p>17 non-test <code>time.Sleep</code> settle-waits; the code documents real stop/start races with the runtime. 134 ignored-error sites concentrate in snapshot/daemon/restore paths, where "best-effort" recovery can make failure look like success.</p>
-    <div class="fix"><b>DO</b>Wait-for-state helpers with timeouts; triage ignored errors on save/restore paths to at least log-and-surface.</div></div>
-
-  <p style="margin-top:22px">Suggested order: <b>1)</b> the two doc passes (cheap, stops onboarding damage) · <b>2)</b> typed container client (unlocks testing) · <b>3)</b> de-fork snapshot/lifecycle · <b>4)</b> config/state consolidation · then split <code>cluster/</code> along the §2 cohesion table, pull-cache first (least coupled).</p>
-</section>
-
-<footer>k3c architecture overview · generated July 3, 2026 · sources: code audit of v0.23.0 (4197a47), ARCHITECTURE.md, openspec/specs</footer>
+<footer>k3c architecture overview · generated July 3, 2026 · sources: code audit of v0.23.0 (4197a47), ARCHITECTURE.md, openspec/specs · improvement work is tracked in issues #36–#44</footer>
 </div>
 </html>
