@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Get started with k3c</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ink: #e2e7ee; --muted: #9aa5b4; --faint: #6b7686;
+    --paper: #12161d; --panel: #1a212b; --line: #2b3441; --line-soft: #232b36;
+    --accent: #45b8c9; --accent-deep: #7dd3e0; --accent-soft: #15333a;
+    --warm: #e08a4d; --warm-soft: #2b2118; --cold: #6da3d8; --cold-soft: #1a2531; --frozen: #8fc0e0; --frozen-soft: #1d2933;
+    --term-bg: #0c1016; --term-ink: #d4dbe6; --term-green: #7fd08a; --term-dim: #5f6b7d;
+    --mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; color: var(--ink); background: var(--paper); margin: 0; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 28px 90px; }
+  a { color: var(--accent); }
+  code { font: 500 12.5px var(--mono); background: var(--line-soft); padding: 1.5px 5px; border-radius: 3px; }
+  /* ------- hero ------- */
+  .hero { padding: 56px 0 40px; }
+  .eyebrow { font: 600 11px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin: 0 0 16px; }
+  h1 { font-size: 40px; line-height: 1.12; font-weight: 800; letter-spacing: -.025em; margin: 0 0 14px; text-wrap: balance; max-width: 21ch; }
+  h1 em { font-style: normal; color: var(--accent-deep); }
+  .hero p.sub { color: var(--muted); font-size: 17px; max-width: 56ch; margin: 0 0 26px; }
+  /* ------- terminal ------- */
+  .term { background: var(--term-bg); border: 1px solid var(--line); border-radius: 8px; padding: 0 0 16px; margin: 0 0 10px; box-shadow: 0 12px 32px rgba(0,0,0,.45); overflow: hidden; }
+  .term-bar { display: flex; align-items: center; gap: 6px; padding: 11px 14px; }
+  .term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a4453; }
+  .term-bar span { margin-left: 8px; font: 500 11px var(--mono); color: var(--term-dim); }
+  .term pre { margin: 0; padding: 6px 18px 0; font: 500 13px/1.75 var(--mono); color: var(--term-ink); white-space: pre-wrap; min-height: 168px; }
+  .term .p { color: var(--term-dim); } .term .ok { color: var(--term-green); } .term .c { color: #e8b45f; }
+  .caret { display: inline-block; width: 7px; height: 14px; background: var(--term-ink); vertical-align: -2px; animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .caret { animation: none; } }
+  .hero-note { font: 500 12px var(--mono); color: var(--faint); }
+  /* ------- sections ------- */
+  section { margin: 58px 0 0; }
+  h2 { font-size: 24px; font-weight: 750; letter-spacing: -.015em; margin: 0 0 8px; text-wrap: balance; }
+  .lede { color: var(--muted); max-width: 62ch; margin: 0 0 22px; }
+  /* ------- feature cards ------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px 18px 16px; }
+  .card h3 { margin: 0 0 7px; font-size: 15.5px; font-weight: 700; }
+  .card p { margin: 0 0 10px; font-size: 13.5px; color: var(--muted); }
+  .card code { white-space: nowrap; }
+  /* ------- snapshot tiers ------- */
+  .tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .tier { border-radius: 8px; padding: 18px; border: 1px solid var(--line); }
+  .tier.warm { background: var(--warm-soft); border-color: #4a3a28; } .tier.warm h3 { color: var(--warm); }
+  .tier.cold { background: var(--cold-soft); border-color: #2d4258; } .tier.cold h3 { color: var(--cold); }
+  .tier.frozen { background: var(--frozen-soft); border-color: #31485c; } .tier.frozen h3 { color: var(--frozen); }
+  .tier h3 { margin: 0 0 4px; font-size: 16px; }
+  .tier .tag { font: 600 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .tier p { font-size: 13.5px; color: var(--ink); margin: 8px 0 10px; }
+  .tier code { background: rgba(0,0,0,.35); }
+  /* ------- workflow tabs ------- */
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 0; }
+  .tabs button { font: 600 13px/-apple-system var(--mono); font: 600 12.5px var(--mono); color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-bottom: none; border-radius: 7px 7px 0 0; padding: 10px 14px; cursor: pointer; }
+  .tabs button[aria-selected="true"] { color: var(--accent-deep); background: var(--accent-soft); border-color: var(--accent); position: relative; }
+  .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 0 8px 8px 8px; padding: 22px 24px; }
+  .panel[hidden] { display: none; }
+  .step { display: flex; gap: 14px; margin: 0 0 18px; }
+  .step:last-child { margin-bottom: 4px; }
+  .step .dot { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-deep); font: 700 12px/24px var(--mono); text-align: center; margin-top: 1px; }
+  .step h4 { margin: 0 0 4px; font-size: 14.5px; }
+  .step p { margin: 0 0 8px; font-size: 13.5px; color: var(--muted); max-width: 60ch; }
+  .cmd { display: flex; align-items: center; gap: 10px; background: var(--term-bg); border-radius: 6px; padding: 9px 12px; margin: 6px 0; max-width: 640px; }
+  .cmd pre { flex: 1; margin: 0; font: 500 12.5px/1.5 var(--mono); color: var(--term-ink); overflow-x: auto; white-space: pre; }
+  .cmd pre .p { color: var(--term-dim); user-select: none; }
+  .cmd button { flex: none; font: 600 10.5px var(--mono); letter-spacing: .05em; color: var(--term-dim); background: none; border: 1px solid #2c3542; border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+  .cmd button:hover, .cmd button:focus-visible { color: var(--term-ink); border-color: var(--term-dim); outline: none; }
+  .cmd button.done { color: var(--term-green); border-color: var(--term-green); }
+  /* ------- TUI keys ------- */
+  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 14px; }
+  .keygroup { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 15px 17px; }
+  .keygroup h4 { margin: 0 0 9px; font: 600 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .keygroup table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .keygroup td { padding: 3px 0; }
+  .keygroup td:first-child { width: 72px; }
+  kbd { font: 600 11px var(--mono); background: var(--line-soft); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1.5px 6px; white-space: nowrap; }
+  /* ------- cheat sheet ------- */
+  .cheat { columns: 2; column-gap: 28px; font-size: 13px; }
+  @media (max-width: 720px) { .cheat { columns: 1; } h1 { font-size: 32px; } }
+  .cheat div { break-inside: avoid; margin-bottom: 16px; }
+  .cheat h4 { margin: 0 0 6px; font: 600 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent-deep); }
+  .cheat p { margin: 2px 0; color: var(--muted); }
+  .cheat code { color: var(--ink); }
+  footer { border-top: 1px solid var(--line); margin-top: 64px; padding-top: 18px; font: 500 12px var(--mono); color: var(--faint); }
+</style>
+
+<div class="wrap">
+
+<div class="hero">
+  <p class="eyebrow">k3c · onboarding</p>
+  <h1>Real k3s clusters on your Mac. <em>No Docker Desktop.</em></h1>
+  <p class="sub">k3c runs Kubernetes and a real Docker engine as lightweight VMs on Apple's native container runtime — and takes care of everything that usually hurts on a corporate laptop: VPN egress, CA bundles, registry mirrors, memory, and instant snapshots.</p>
+  <div class="term" aria-label="terminal demo">
+    <div class="term-bar"><i></i><i></i><i></i><span>zsh — ~/dev</span></div>
+    <pre id="termout"><span class="caret"></span></pre>
+  </div>
+  <p class="hero-note">macOS / Apple silicon · the Apple container runtime ships inside the binary — brew install and go</p>
+</div>
+
+<section>
+  <h2>What k3c does for you</h2>
+  <p class="lede">One binary, one YAML file per project. Everything below works out of the box or with one config line.</p>
+  <div class="grid">
+    <div class="card"><h3>Kubernetes without a license</h3><p>k3s on Apple's Virtualization.framework — one VM per machine, Rosetta for amd64 images, kubeconfig merged and context switched automatically.</p><code>k3c cluster create</code></div>
+    <div class="card"><h3>Corporate VPN? Handled.</h3><p>Transparent egress (default): every VM connection is re-originated from host sockets, so Zscaler/VPN, proxies, and corporate DNS just work — no per-domain config.</p><code>k3c doctor</code> <span style="font-size:12px;color:var(--faint)">verifies the whole chain</span></div>
+    <div class="card"><h3>A real Docker engine</h3><p>The docker:dind sidecar exposes a genuine Engine API. Testcontainers, docker CLI, and buildx work unchanged — <code>docker up</code> activates the context for you.</p><code>k3c docker up</code></div>
+    <div class="card"><h3>Instant snapshots</h3><p>APFS copy-on-write snapshots of the whole cluster — including RAM. Break things freely; restore in seconds. Export them to teammates.</p><code>k3c snapshot save</code></div>
+    <div class="card"><h3>Your RAM stays yours</h3><p>Memory ballooning returns unused guest RAM to macOS continuously; pause or suspend clusters you're not using and switch in under a second.</p><code>k3c cluster reclaim · pause · suspend</code></div>
+    <div class="card"><h3>Prod charts on a laptop</h3><p>An admission webhook rewrites pod CPU/memory <em>requests</em> to near-zero (limits stay), so production-sized Helm charts schedule locally.</p><code>ignoreCpuRequests: true</code></div>
+    <div class="card"><h3>Fast image pulls, shared</h3><p>A pull-through cache serves every cluster; registry mirrors and private CAs from your k3c.yaml are baked into nodes, buildkit, and k3d images.</p><code>k3c image pull-cache list</code></div>
+    <div class="card"><h3>See everything live</h3><p>A terminal UI for machines + snapshots and a browser diagram with live traffic, pod heatmaps, and one-click lifecycle actions.</p><code>k3c ui</code> · <code>k3c web</code></div>
+  </div>
+</section>
+
+<section>
+  <h2>Snapshots come in three temperatures</h2>
+  <p class="lede">Pick the tier by what you want back and how fast. All three are APFS clones — saving is instant.</p>
+  <div class="tiers">
+    <div class="tier warm"><h3>warm</h3><span class="tag">default · restores instantly</span><p>Disk <em>and RAM</em>. Restore resumes the running machine mid-thought — pods, connections, everything. Largest on disk.</p><code>k3c snapshot save</code></div>
+    <div class="tier cold"><h3>cold</h3><span class="tag">boots fresh · ~30–60 s</span><p>Full disk, no machine state. IP-independent and smaller; the cluster boots clean from the saved state.</p><code>k3c snapshot save --cold</code></div>
+    <div class="tier frozen"><h3>frozen</h3><span class="tag">smallest · thaws in minutes</span><p>Just the datastore, volumes, and an image manifest — images rehydrate from the pull-cache on restore. Ideal for sharing.</p><code>k3c snapshot save --frozen</code></div>
+  </div>
+</section>
+
+<section>
+  <h2>The five workflows you'll actually use</h2>
+  <p class="lede">Click through — each is complete, top to bottom.</p>
+  <div class="tabs" role="tablist" id="tabs"></div>
+  <div id="panels"></div>
+</section>
+
+<section>
+  <h2>Drive it from the terminal UI</h2>
+  <p class="lede"><code>k3c ui</code> shows every machine and its snapshots as a tree, with live traffic and one-key actions. <kbd>?</kbd> shows this inside the TUI.</p>
+  <div class="keys">
+    <div class="keygroup"><h4>Navigate</h4><table>
+      <tr><td><kbd>↑↓</kbd> <kbd>jk</kbd></td><td>move</td></tr>
+      <tr><td><kbd>←→</kbd></td><td>expand / collapse</td></tr>
+      <tr><td><kbd>l</kbd></td><td>command log</td></tr>
+      <tr><td><kbd>D</kbd></td><td>system diagram</td></tr>
+      <tr><td><kbd>q</kbd></td><td>quit</td></tr>
+    </table></div>
+    <div class="keygroup"><h4>Machine row</h4><table>
+      <tr><td><kbd>↵</kbd></td><td>activate (make current)</td></tr>
+      <tr><td><kbd>s</kbd> <kbd>S</kbd></td><td>start / stop</td></tr>
+      <tr><td><kbd>p</kbd> <kbd>r</kbd> <kbd>z</kbd></td><td>pause / resume / suspend</td></tr>
+      <tr><td><kbd>m</kbd> <kbd>M</kbd></td><td>reclaim / release memory</td></tr>
+      <tr><td><kbd>c</kbd></td><td>new snapshot (wizard)</td></tr>
+    </table></div>
+    <div class="keygroup"><h4>Snapshot row</h4><table>
+      <tr><td><kbd>↵</kbd></td><td>restore — warm snapshots offer <em>warm</em> vs <em>cold</em></td></tr>
+      <tr><td><kbd>R</kbd></td><td>rename</td></tr>
+      <tr><td><kbd>e</kbd></td><td>export archive</td></tr>
+      <tr><td><kbd>d</kbd></td><td>delete</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<section>
+  <h2>Command cheat sheet</h2>
+  <div class="cheat">
+    <div><h4>Cluster</h4>
+      <p><code>k3c cluster create [NAME]</code> — create &amp; start</p>
+      <p><code>k3c cluster list</code> — all clusters, current marked</p>
+      <p><code>k3c cluster activate NAME</code> — switch (&lt;1 s with pause)</p>
+      <p><code>k3c cluster stop · start · delete</code></p>
+      <p><code>k3c status</code> — cluster, daemons, nodes</p></div>
+    <div><h4>Memory &amp; speed</h4>
+      <p><code>k3c cluster pause / resume</code> — freeze in RAM, instant</p>
+      <p><code>k3c cluster suspend</code> — to disk, frees CPU+RAM</p>
+      <p><code>k3c cluster reclaim [--release]</code> — balloon RAM back</p></div>
+    <div><h4>Snapshots</h4>
+      <p><code>k3c snapshot save [NAME] [--cold|--frozen]</code></p>
+      <p><code>k3c snapshot restore NAME [--cold]</code></p>
+      <p><code>k3c snapshot export NAME -o f.k3csnap</code></p>
+      <p><code>k3c cluster import-run f.k3csnap</code> — clone a teammate's</p></div>
+    <div><h4>Docker sidecar</h4>
+      <p><code>k3c docker up</code> — engine + context, ready for Testcontainers</p>
+      <p><code>k3c docker env</code> — exports for CI shells</p>
+      <p><code>k3c docker buildkit</code> — buildx behind the corporate CA</p>
+      <p><code>k3c docker snapshot save/restore</code> — whole image store</p></div>
+    <div><h4>Images</h4>
+      <p><code>k3c image import IMAGE</code> — host store → cluster</p>
+      <p><code>k3c image pull-cache list · info · prune</code></p></div>
+    <div><h4>When something's off</h4>
+      <p><code>k3c doctor</code> — walks every known failure mode, read-only</p>
+      <p><code>k3c doctor --shell</code> — netshoot pod inside the cluster</p>
+      <p><code>k3c daemons restart</code> — refresh host listeners</p>
+      <p><code>k3c info</code> — version, runtime, config in use</p></div>
+  </div>
+</section>
+
+<footer>k3c onboarding · v0.23.0 · July 2026 · full internals: <a href="./architecture.html">architecture overview</a> · <code>k3c &lt;cmd&gt; --help</code> is always current</footer>
+</div>
+
+<script>
+(function () {
+  /* ---------- hero terminal animation ---------- */
+  var script = [
+    { t: "cmd", text: "brew install philipparndt/k3c/k3c" },
+    { t: "cmd", text: "k3c cluster create demo" },
+    { t: "out", cls: "p",  text: "starting host daemons (proxy :3128, sni-gateway :443)" },
+    { t: "out", cls: "p",  text: "starting k3s v1.33.9 · merging kubeconfig (context k3c-demo)" },
+    { t: "out", cls: "ok", text: "cluster 'demo' ready" },
+    { t: "cmd", text: "kubectl get nodes" },
+    { t: "out", cls: "c",  text: "demo-server   Ready   control-plane,master   14s" }
+  ];
+  var pre = document.getElementById("termout");
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function render(upTo, partial) {
+    var html = "";
+    for (var i = 0; i < upTo; i++) {
+      var l = script[i];
+      html += l.t === "cmd" ? '<span class="p">$ </span>' + l.text + "\n"
+                            : '<span class="' + l.cls + '">' + l.text + "</span>\n";
+    }
+    if (partial !== undefined) {
+      var l2 = script[upTo];
+      html += '<span class="p">$ </span>' + l2.text.slice(0, partial);
+    }
+    pre.innerHTML = html + '<span class="caret"></span>';
+  }
+  if (reduced) { render(script.length); }
+  else {
+    var line = 0;
+    (function step() {
+      if (line >= script.length) { render(script.length); return; }
+      var l = script[line];
+      if (l.t === "cmd") {
+        var ch = 0;
+        (function type() {
+          render(line, ch);
+          if (ch++ < l.text.length) { setTimeout(type, 34); }
+          else { line++; setTimeout(step, 260); }
+        })();
+      } else { line++; render(line); setTimeout(step, l.cls === "ok" ? 500 : 300); }
+    })();
+  }
+
+  /* ---------- workflow tabs ---------- */
+  var flows = [
+    { id: "start", label: "Getting started", steps: [
+      { h: "Install", p: "One brew formula — the Apple container runtime is embedded in the binary.", c: "brew install philipparndt/k3c/k3c" },
+      { h: "Create a cluster", p: "Starts the host daemons, boots k3s in a VM, merges your kubeconfig, and switches the context.", c: "k3c cluster create" },
+      { h: "Use kubectl as always", p: "The context is k3c-<name>; ingress is on https://localhost:8444.", c: "kubectl get nodes" },
+      { h: "Watch it live", p: "The TUI or the browser diagram show machines, traffic, and pods.", c: "k3c ui" }
+    ]},
+    { id: "snap", label: "Snapshots", steps: [
+      { h: "Provision once, save", p: "Set your cluster up fully, then snapshot it — warm by default, so RAM is captured and restore is instant.", c: "k3c snapshot save golden" },
+      { h: "Experiment freely", p: "Break the cluster however you like — delete namespaces, upgrade operators, corrupt state." },
+      { h: "Restore in seconds", p: "Warm restore resumes the machine exactly where it was. Add --cold for a fresh boot from the same disk (less RAM held).", c: "k3c snapshot restore golden" },
+      { h: "Share with the team", p: "Export a portable archive; a teammate recreates the whole cluster from it in one command.", c: "k3c snapshot export golden -o golden.k3csnap\nk3c cluster import-run golden.k3csnap" }
+    ]},
+    { id: "docker", label: "Docker & Testcontainers", steps: [
+      { h: "Start the sidecar", p: "A docker:dind VM with a real Engine API. This also activates the k3c docker context — docker CLI and Testcontainers pick it up automatically.", c: "k3c docker up" },
+      { h: "Run your integration tests", p: "Testcontainers works unchanged — including log-wait strategies (Redpanda, Kafka).", c: "go test ./integration/..." },
+      { h: "Build behind the corporate CA", p: "Provisions a buildx builder that trusts your CA bundle and uses the k3c proxy.", c: "k3c docker buildkit" },
+      { h: "Snapshot the whole image store", p: "Every image and nested cluster in one restorable snapshot.", c: "k3c docker snapshot save before-upgrade" }
+    ]},
+    { id: "k3d", label: "Nested k3d", steps: [
+      { h: "Sidecar first", p: "k3d needs a Docker API — the sidecar provides a real one.", c: "k3c docker up" },
+      { h: "Prepare node images once", p: "Bakes your corporate CA into the k3s node images so nested clusters can pull through corporate mirrors.", c: "k3c docker prepare-k3d" },
+      { h: "Create nested clusters", p: "Plain k3d, inside the sidecar. Freeze or snapshot the sidecar to capture every nested cluster at once.", c: "k3d cluster create ci" }
+    ]},
+    { id: "multi", label: "Multiple clusters", steps: [
+      { h: "Create as many as you need", p: "Each cluster gets private host ports; the public :443 ingress and :5001 registry always route to the active one.", c: "k3c cluster create feature-x" },
+      { h: "Park the ones you're not using", p: "Paused clusters keep RAM but use no CPU; suspended ones free both.", c: "k3c cluster pause main" },
+      { h: "Switch in under a second", p: "Resumes/starts the target, repoints ingress + registry routing, and switches your kube context.", c: "k3c cluster activate feature-x" }
+    ]}
+  ];
+  var tabs = document.getElementById("tabs"), panels = document.getElementById("panels");
+  flows.forEach(function (f, i) {
+    var b = document.createElement("button");
+    b.id = "tab-" + f.id; b.textContent = f.label;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", i === 0 ? "true" : "false");
+    b.setAttribute("aria-controls", "panel-" + f.id);
+    b.addEventListener("click", function () { select(f.id); });
+    tabs.appendChild(b);
+
+    var p = document.createElement("div");
+    p.id = "panel-" + f.id; p.className = "panel";
+    p.setAttribute("role", "tabpanel"); p.setAttribute("aria-labelledby", "tab-" + f.id);
+    if (i !== 0) { p.hidden = true; }
+    f.steps.forEach(function (s, n) {
+      var d = document.createElement("div"); d.className = "step";
+      var cmd = "";
+      if (s.c) {
+        cmd = '<div class="cmd"><pre>' + s.c.split("\n").map(function (ln) {
+          return '<span class="p">$ </span>' + ln;
+        }).join("\n") + '</pre><button type="button" data-copy="' +
+          s.c.replace(/"/g, "&quot;") + '">copy</button></div>';
+      }
+      d.innerHTML = '<div class="dot">' + (n + 1) + '</div><div><h4>' + s.h + "</h4><p>" + s.p + "</p>" + cmd + "</div>";
+      p.appendChild(d);
+    });
+    panels.appendChild(p);
+  });
+  function select(id) {
+    flows.forEach(function (f) {
+      document.getElementById("tab-" + f.id).setAttribute("aria-selected", String(f.id === id));
+      document.getElementById("panel-" + f.id).hidden = f.id !== id;
+    });
+  }
+  panels.addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-copy]");
+    if (!b) return;
+    navigator.clipboard.writeText(b.getAttribute("data-copy")).then(function () {
+      b.textContent = "copied"; b.classList.add("done");
+      setTimeout(function () { b.textContent = "copy"; b.classList.remove("done"); }, 1400);
+    });
+  });
+})();
+</script>
+</html>

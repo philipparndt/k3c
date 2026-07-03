@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>k3c Architecture</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ink: #e2e7ee; --muted: #9aa5b4; --faint: #6b7686;
+    --paper: #12161d; --panel: #1a212b; --line: #2b3441; --line-soft: #232b36;
+    --accent: #45b8c9; --accent-soft: #15333a;
+    --warm: #e08a4d; --cold: #6da3d8; --frozen: #8fc0e0;
+    --bad: #e0685e; --warn: #d99a4e; --ok: #5dbd85;
+    --mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--ink); background: var(--paper); margin: 0; padding: 0;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 28px 96px; }
+  header.masthead { padding: 48px 0 28px; border-bottom: 1px solid var(--line); margin-bottom: 40px; }
+  .eyebrow { font: 600 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-size: 34px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 10px; text-wrap: balance; }
+  .sub { color: var(--muted); max-width: 62ch; margin: 0 0 18px; }
+  .meta { display: flex; gap: 18px; flex-wrap: wrap; font: 500 12px/1 var(--mono); color: var(--faint); }
+  nav.toc { display: flex; gap: 8px; flex-wrap: wrap; margin: 22px 0 0; }
+  nav.toc a { font: 600 12px/1 var(--mono); color: var(--accent); text-decoration: none; background: var(--accent-soft); padding: 7px 11px; border-radius: 4px; }
+  nav.toc a:hover, nav.toc a:focus-visible { background: var(--accent); color: #0e1319; outline: none; }
+  section { margin: 0 0 56px; }
+  h2 { font-size: 22px; font-weight: 750; letter-spacing: -.01em; margin: 0 0 6px; text-wrap: balance; }
+  h2 .num { color: var(--faint); font: 600 14px var(--mono); margin-right: 8px; }
+  .lede { color: var(--muted); max-width: 68ch; margin: 0 0 20px; }
+  h3 { font-size: 15px; font-weight: 700; margin: 26px 0 10px; }
+  p { max-width: 70ch; }
+  code, .mono { font: 500 12.5px var(--mono); }
+  code { background: var(--line-soft); padding: 1.5px 5px; border-radius: 3px; white-space: nowrap; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .tablewrap { overflow-x: auto; margin: 14px 0; }
+  th { text-align: left; font: 600 11px/1.3 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 10px 12px; background: var(--line-soft); border-bottom: 1px solid var(--line); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.n { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); font-family: var(--mono); font-size: 12.5px; }
+  /* ---------- topology diagram ---------- */
+  .diagram { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 22px; margin: 18px 0; overflow-x: auto; }
+  .lane { border: 1px dashed var(--line); border-radius: 6px; padding: 14px 14px 16px; margin-bottom: 14px; min-width: 620px; }
+  .lane-label { font: 600 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); margin: 0 0 12px; }
+  .boxes { display: flex; gap: 10px; flex-wrap: wrap; }
+  .box { border: 1px solid var(--line); border-radius: 5px; padding: 9px 12px; background: var(--paper); flex: 1 1 130px; min-width: 120px; }
+  .box b { display: block; font-size: 13px; font-weight: 700; }
+  .box span { display: block; font: 500 11px/1.5 var(--mono); color: var(--muted); margin-top: 3px; }
+  .box.hub { border-color: var(--accent); background: var(--accent-soft); }
+  .box.vm { border-left: 3px solid var(--cold); }
+  .box.daemon { border-left: 3px solid var(--accent); }
+  .flow { text-align: center; color: var(--faint); font: 600 11px var(--mono); margin: 2px 0 12px; letter-spacing: .06em; }
+  .netnote { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font: 500 11.5px/1.5 var(--mono); color: var(--muted); }
+  .netnote i { font-style: normal; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  /* ---------- findings ---------- */
+  .finding { background: var(--panel); border: 1px solid var(--line); border-left-width: 3px; border-radius: 6px; padding: 14px 16px; margin: 10px 0; }
+  .finding.crit { border-left-color: var(--bad); }
+  .finding.high { border-left-color: var(--warn); }
+  .finding.med  { border-left-color: var(--cold); }
+  .finding h4 { margin: 0 0 6px; font-size: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .sev { font: 700 10px/1 var(--mono); letter-spacing: .1em; padding: 4px 7px; border-radius: 3px; color: #12161d; }
+  .sev.crit { background: var(--bad); } .sev.high { background: var(--warn); } .sev.med { background: var(--cold); }
+  .finding p { margin: 0; color: var(--muted); font-size: 13.5px; max-width: none; }
+  .finding .fix { margin-top: 7px; font-size: 13px; color: var(--ink); }
+  .finding .fix b { color: var(--ok); font: 700 10.5px var(--mono); letter-spacing: .08em; margin-right: 6px; }
+  .tiers { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }
+  .tier { flex: 1 1 200px; border-radius: 6px; padding: 13px 15px; border: 1px solid var(--line); background: var(--panel); border-top: 3px solid var(--line); }
+  .tier.warm { border-top-color: var(--warm); } .tier.cold { border-top-color: var(--cold); } .tier.frozen { border-top-color: var(--frozen); }
+  .tier b { font-size: 14px; } .tier p { font-size: 13px; color: var(--muted); margin: 5px 0 0; }
+  footer { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 18px; font: 500 12px var(--mono); color: var(--faint); }
+  a { color: var(--accent); }
+</style>
+
+<div class="wrap">
+<header class="masthead">
+  <p class="eyebrow">Architecture Overview</p>
+  <h1>k3c — local k3s clusters on Apple&nbsp;container</h1>
+  <p class="sub">A single Go binary that creates and operates k3s clusters and a Docker sidecar as lightweight VMs on Apple's Virtualization.framework — with corporate-network egress, snapshots, and memory management handled on the host.</p>
+  <div class="meta"><span>state: v0.23.0</span><span>~17k LOC Go + Preact web UI</span><span>macOS / arm64</span></div>
+  <nav class="toc">
+    <a href="#glance">System at a glance</a>
+    <a href="#packages">Packages</a>
+    <a href="#daemons">Host daemons</a>
+    <a href="#paths">Data paths</a>
+    <a href="#state">State on disk</a>
+    <a href="#release">Release pipeline</a>
+    <a href="#health">Drift &amp; improvement</a>
+    <a href="./index.html" style="margin-left:auto">Onboarding&nbsp;↗</a>
+  </nav>
+</header>
+
+<section id="glance">
+  <h2><span class="num">1</span>System at a glance</h2>
+  <p class="lede">Three layers: user interfaces drive one engine package, the engine supervises host daemons and shells out to the (forked, bundled) Apple <code>container</code> runtime, and the runtime runs each container as its own VM.</p>
+
+  <div class="diagram">
+    <div class="lane">
+      <p class="lane-label">Host — user surface</p>
+      <div class="boxes">
+        <div class="box"><b>CLI</b><span>cmd/ · cobra · 67 commands</span></div>
+        <div class="box"><b>TUI</b><span>k3c ui · bubbletea</span></div>
+        <div class="box"><b>Web UI</b><span>k3c web · Preact · :7654</span></div>
+      </div>
+    </div>
+    <p class="flow">▼ all call into ▼</p>
+    <div class="lane">
+      <p class="lane-label">Host — engine &amp; daemons</p>
+      <div class="boxes">
+        <div class="box hub"><b>cluster/ engine</b><span>lifecycle · snapshots · sidecar · doctor · memory ~12k LOC</span></div>
+        <div class="box daemon"><b>k3c daemons run</b><span>proxy :3128 · SNI :443 · registry :5001 · pull-cache :5011 · webhook :9443 · docker.sock</span></div>
+        <div class="box daemon"><b>gvnet ×N</b><span>per-VM egress netstack (gvisor-tap-vsock)</span></div>
+      </div>
+    </div>
+    <p class="flow">▼ shells out to `container` CLI · unix sockets · vsock ▼</p>
+    <div class="lane">
+      <p class="lane-label">Apple container runtime (bundled fork) — one VM per container</p>
+      <div class="boxes">
+        <div class="box vm"><b>&lt;cluster&gt;-server</b><span>k3s node · API :6443 · ingress :443</span></div>
+        <div class="box vm"><b>&lt;cluster&gt;-registry</b><span>registry:2 · optional</span></div>
+        <div class="box vm"><b>k3c-docker</b><span>docker:dind · engine :2375 · Testcontainers, k3d</span></div>
+      </div>
+      <div class="netnote">
+        <span><i style="background:var(--cold)"></i>vmnet 192.168.64.0/24 — host↔VM, gateway .1 serves the daemons</span>
+        <span><i style="background:var(--accent)"></i>gvnet /24 per VM (192.168.127+) — transparent egress, default ON</span>
+        <span><i style="background:var(--warm)"></i>--publish-socket unix bridge — docker engine hijacks &amp; nested ports</span>
+      </div>
+    </div>
+  </div>
+
+  <p>The engine never links the runtime: it drives the <code>container</code> CLI as a subprocess (resolved by <code>runtime/</code>, which extracts the embedded fork to <code>~/.cache/k3c/runtime/&lt;ver&gt;</code>). The gvnet netstack likewise runs out-of-process — one detached <code>gvnet</code> per VM — keeping gvisor out of the main binary.</p>
+</section>
+
+<section id="packages">
+  <h2><span class="num">2</span>Binary &amp; packages</h2>
+  <p class="lede">Clean layering, no import cycles. <code>cluster/</code> is the hub; <code>ui</code>, <code>version</code>, <code>dockerfwd</code>, <code>gvnet</code> are leaves. Two helper binaries ship inside the runtime payload: <code>gvnet</code> (host) and <code>k3c-docker-fwd</code> (linux/arm64, runs inside the sidecar VM).</p>
+  <div class="tablewrap"><table>
+    <tr><th>Package</th><th style="text-align:right">LOC</th><th>Responsibility</th></tr>
+    <tr><td><code>cluster/</code></td><td class="n">10,278</td><td>Core engine: cluster lifecycle, host daemons, docker sidecar, snapshots (warm/cold/frozen), pull-cache, gvnet control, memory/CPU policy, doctor, kubeconfig</td></tr>
+    <tr><td><code>tui/</code></td><td class="n">2,518</td><td>Terminal UI: machine/snapshot tree, live traffic, lifecycle actions, dialogs</td></tr>
+    <tr><td><code>cmd/</code></td><td class="n">1,377</td><td>Cobra command tree — thin wrappers over cluster/tui/web</td></tr>
+    <tr><td><code>config/</code></td><td class="n">922</td><td>Layered YAML config → effective Config; renders k3s startup script, CoreDNS, registries.yaml</td></tr>
+    <tr><td><code>runtime/</code></td><td class="n">758</td><td>Resolves which <code>container</code> CLI to run; extracts the embedded runtime bundle; helper-binary + kernel resolution</td></tr>
+    <tr><td><code>web/</code></td><td class="n">543</td><td>HTTP server for the embedded Preact SPA; read-only state/pod-stream JSON API</td></tr>
+    <tr><td><code>gvnet/</code></td><td class="n">169</td><td>Userspace egress netstack library (also the standalone binary)</td></tr>
+    <tr><td><code>ui/</code></td><td class="n">152</td><td>Shared CLI output primitives (tables, JSON emit, colors)</td></tr>
+    <tr><td><code>dockerfwd/</code></td><td class="n">110</td><td>In-guest TCP forwarder wire protocol; same package serves host and guest</td></tr>
+  </table></div>
+  <h3>Largest files inside cluster/ (the split candidates)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Cohesion cluster</th><th>Files</th><th style="text-align:right">LOC</th></tr>
+    <tr><td>Lifecycle &amp; core</td><td><code>cluster.go</code>, <code>info.go</code>, <code>ports.go</code>, <code>kernel.go</code></td><td class="n">~2,530</td></tr>
+    <tr><td>Snapshots</td><td><code>snapshot.go</code>, <code>frozen.go</code>, <code>transfer.go</code>, <code>dockersnapshot.go</code>, <code>snapshotsparsify.go</code>, <code>pullcachepin.go</code></td><td class="n">~2,900</td></tr>
+    <tr><td>Daemons &amp; network</td><td><code>daemons.go</code>, <code>dockerports.go</code>, <code>gvnetctl.go</code>, <code>webhook.go</code></td><td class="n">~1,780</td></tr>
+    <tr><td>Docker sidecar</td><td><code>docker.go</code>, <code>dockerlifecycle.go</code>, <code>nodeprep.go</code></td><td class="n">~1,060</td></tr>
+    <tr><td>Pull cache</td><td><code>pullcache.go</code></td><td class="n">966</td></tr>
+    <tr><td>Memory / CPU</td><td><code>reclaim.go</code>, <code>autoreclaim.go</code>, <code>memorypolicy.go</code>, <code>priority.go</code>, <code>pause.go</code></td><td class="n">~900</td></tr>
+    <tr><td>Diagnostics</td><td><code>doctor.go</code>, <code>profile.go</code></td><td class="n">~950</td></tr>
+  </table></div>
+</section>
+
+<section id="daemons">
+  <h2><span class="num">3</span>Host daemons</h2>
+  <p class="lede">One detached <code>k3c daemons run</code> process owns every host listener. Ports bind <code>0.0.0.0</code> but are source-restricted to loopback + vmnet; contested ports (e.g. :443) are <em>arbitrated</em> — spliced to the docker sidecar when it is the active target.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Listener</th><th>Port</th><th>Purpose</th></tr>
+    <tr><td>CONNECT proxy</td><td class="n">3128</td><td>Image-pull egress for containerd/dind (HTTP(S)_PROXY inside guests)</td></tr>
+    <tr><td>SNI gateway</td><td class="n">443</td><td>Pod/host HTTPS: reads TLS SNI, splices to the real host over VPN or to cluster ingress</td></tr>
+    <tr><td>Registry forward</td><td class="n">5001</td><td>Routes to the <em>active</em> cluster's private registry</td></tr>
+    <tr><td>Pull-through cache</td><td class="n">5011</td><td>Shared registry cache; first mirror endpoint for every configured registry</td></tr>
+    <tr><td>Admission webhook</td><td class="n">9443</td><td>Strips pod CPU/memory <em>requests</em> so prod-sized charts fit a laptop</td></tr>
+    <tr><td>Egress ports / forwards</td><td class="n">cfg</td><td>Extra SNI-routed ports and static TCP forwards</td></tr>
+  </table></div>
+  <p>Non-listener loops in the same process: auto-reclaim (balloon memory back every 10&nbsp;min), CPU-priority reconcile, pull-cache prune, sidecar published-port mirroring, and the stable <code>docker.sock</code> engine socket with per-connection routing (§4).</p>
+</section>
+
+<section id="paths">
+  <h2><span class="num">4</span>Key data paths</h2>
+
+  <h3>Egress (transparent gvnet — the default)</h3>
+  <p>Every VM gets a second NIC on a private gvnet /24; the entrypoint repoints the default route and DNS at it. The gvisor netstack terminates guest TCP/IP and re-originates each connection from host sockets — so VPN/Zscaler, proxies, and corporate DNS are handled host-side with zero per-domain config. The legacy mode (<code>egress.transparent: false</code>) instead combines the CONNECT proxy, the SNI gateway, and a CoreDNS override that resolves egress domains to the vmnet gateway.</p>
+
+  <h3>Image pulls</h3>
+  <p>Guests pull through the pull-cache (<code>192.168.64.1:5011</code>) as the first mirror for every registry; misses fall through to real upstreams via the proxy. Snapshot image closures are pinned in the cache so frozen snapshots can rehydrate.</p>
+
+  <h3>Docker engine socket (sidecar)</h3>
+  <p>The host <code>docker.sock</code> routes each connection by its first HTTP request: hijacked streams (<code>exec</code>/<code>attach</code>) go over the full-duplex <code>--publish-socket</code> vsock bridge (Apple's loopback publish drops hijacks); everything else goes to the Apple-published loopback <code>127.0.0.1:2375</code>, which — unlike the bridge — doesn't head-of-line-block an undrained stream (the Testcontainers <code>wait.ForLog</code> fix). The loopback route is gated on a cached <code>/_ping</code> health probe, because a boot-restored runtime process can lose its macOS Local Network grant and leave the publish listening-but-dead.</p>
+
+  <h3>Snapshots</h3>
+  <div class="tiers">
+    <div class="tier warm"><b>warm</b><p>APFS clone of rootfs + VM RAM image + machine identity. Resumes in place, instantly. Restore reclaims the snapshot-time IP (desired-address re-allocation).</p></div>
+    <div class="tier cold"><b>cold</b><p>Full rootfs clone, no machine state. Boots fresh in ~30–60&nbsp;s; IP-independent; less RAM held after restore.</p></div>
+    <div class="tier frozen"><b>frozen</b><p>Logical extract: datastore + PVC data + image manifest. Smallest; thaws in minutes, rehydrating images from the pull-cache.</p></div>
+  </div>
+</section>
+
+<section id="state">
+  <h2><span class="num">5</span>State on disk</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Path</th><th>Owner</th><th>Purpose</th></tr>
+    <tr><td><code>~/.config/k3c/proxy.pid</code></td><td>daemons</td><td>Daemon PID (one process, two pidfiles)</td></tr>
+    <tr><td><code>~/.config/k3c/active.yaml</code></td><td>engine</td><td>Which cluster/sidecar owns contested ports + kube context</td></tr>
+    <tr><td><code>~/.config/k3c/docker.sock</code></td><td>daemons</td><td>Stable DOCKER_HOST for the sidecar engine</td></tr>
+    <tr><td><code>~/.config/k3c/docker-fwd.sock</code></td><td>Apple publish</td><td>Host side of the vsock bridge into the sidecar</td></tr>
+    <tr><td><code>~/.config/k3c/gvnet/&lt;vm&gt;.sock|.pid|.log</code></td><td>gvnet</td><td>Per-VM netstack socket + process state</td></tr>
+    <tr><td><code>~/.config/k3c/clusters/&lt;name&gt;/</code></td><td>engine</td><td>Per-cluster ports.yaml, k3s etc dir (virtiofs-mounted), snapshots</td></tr>
+    <tr><td><code>~/.cache/k3c/runtime/&lt;ver&gt;/</code></td><td>runtime</td><td>Extracted bundled Apple container fork (CLI, apiserver, plugins, 16K kernel)</td></tr>
+  </table></div>
+</section>
+
+<section id="release">
+  <h2><span class="num">6</span>Release pipeline</h2>
+  <p class="lede">Tag <code>v*</code> → goreleaser: clones the pinned <code>philipparndt/container</code> + <code>containerization</code> forks, builds the Swift runtime, stages it with the cross-compiled helpers (<code>gvnet</code>, <code>k3c-docker-fwd</code>, 16K kernel) into <code>runtime/payload/container-runtime.tar.gz</code>, then builds the Go binary with <code>-tags bundled</code> (go:embed). Publishes the GitHub release + Homebrew formula (<code>philipparndt/k3c/k3c</code>). darwin/arm64 only. Fork refs are pinned commits — bumped deliberately, never branch tips.</p>
+</section>
+
+<section id="health">
+  <h2><span class="num">7</span>Drift &amp; improvement — where fast growth is showing</h2>
+  <p class="lede">Findings from a structural review + a docs-vs-code audit (July 2026), ranked by how soon they bite. Full details in the accompanying review.</p>
+
+  <div class="finding crit"><h4><span class="sev crit">Fix docs</span>Egress default is inverted in every prose doc</h4>
+    <p>Code defaults transparent gvnet egress ON; ARCHITECTURE.md, README, and the host-egress spec all describe the CONNECT-proxy/SNI path as the default and transparent as opt-in. New users will configure the legacy mode believing it's the normal one.</p>
+    <div class="fix"><b>DO</b>One doc pass: flip the framing, document <code>egress.transparent</code>, fix the README startup sample.</div></div>
+
+  <div class="finding crit"><h4><span class="sev crit">Refactor</span>Cluster vs sidecar is a copy-paste fork</h4>
+    <p>Snapshot save/restore, lifecycle (up/down/pause/resume/suspend/reclaim), and the CLI trees exist twice — near-identical, already diverging (meta filename, registry handling), and every fix must land twice. This is the biggest driver of future bugs.</p>
+    <div class="fix"><b>DO</b>One snapshot/lifecycle engine behind a small "snapshottable VM" interface; parameterize the CLI tree.</div></div>
+
+  <div class="finding high"><h4><span class="sev high">Refactor</span>Business logic rides on fragile CLI text parsing</h4>
+    <p>~23 sites column-index-parse <code>container</code> stdout (<code>strings.Fields</code> + positional indexing, some unbounded <code>[0]</code>). Apple's CLI is young; any output change breaks silently.</p>
+    <div class="fix"><b>DO</b>A typed <code>container</code> client using <code>--format json</code> everywhere; it doubles as the test seam.</div></div>
+
+  <div class="finding high"><h4><span class="sev high">Test</span>Coverage is inverted — riskiest code untested</h4>
+    <p>22 of 29 cluster/ source files have no test, including snapshot restore, daemons, and the whole docker lifecycle — exactly the most-changed areas. cmd/ (67 commands) has zero tests.</p>
+    <div class="fix"><b>DO</b>After the client seam: table tests for both restore paths against a fake client.</div></div>
+
+  <div class="finding high"><h4><span class="sev high">Fix docs</span>Shipped features without spec or README coverage</h4>
+    <p>Frozen snapshots, export --slim/--thin, <code>k3c web</code>, memory knobs (autoReclaim, memoryPolicy, memoryHeadroom), <code>cluster repair</code>/<code>import-run</code>, <code>info</code> — all live in code, none in specs/README. Five unarchived openspec changes hold the missing specs.</p>
+    <div class="fix"><b>DO</b>Archive the five pending openspec changes into specs; extend the README quick-ref.</div></div>
+
+  <div class="finding med"><h4><span class="sev med">Refactor</span>Config: two ~50-field structs + scattered state files</h4>
+    <p>FileConfig (53 fields) and Config (48) are merged by hand — a new field touches five places. Runtime state (active.yaml, ports.yaml, daemons.version) is read/written ad-hoc from many files (71 raw file ops in cluster/).</p>
+    <div class="fix"><b>DO</b>Derive Config from FileConfig; one typed state package owning the on-disk files.</div></div>
+
+  <div class="finding med"><h4><span class="sev med">Harden</span>Sleep-based sequencing &amp; best-effort error swallowing</h4>
+    <p>17 non-test <code>time.Sleep</code> settle-waits; the code documents real stop/start races with the runtime. 134 ignored-error sites concentrate in snapshot/daemon/restore paths, where "best-effort" recovery can make failure look like success.</p>
+    <div class="fix"><b>DO</b>Wait-for-state helpers with timeouts; triage ignored errors on save/restore paths to at least log-and-surface.</div></div>
+
+  <p style="margin-top:22px">Suggested order: <b>1)</b> the two doc passes (cheap, stops onboarding damage) · <b>2)</b> typed container client (unlocks testing) · <b>3)</b> de-fork snapshot/lifecycle · <b>4)</b> config/state consolidation · then split <code>cluster/</code> along the §2 cohesion table, pull-cache first (least coupled).</p>
+</section>
+
+<footer>k3c architecture overview · generated July 3, 2026 · sources: code audit of v0.23.0 (4197a47), ARCHITECTURE.md, openspec/specs</footer>
+</div>
+</html>
