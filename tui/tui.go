@@ -63,13 +63,14 @@ type treeRow struct {
 // button red. focus is the selected button, navigated with ←/→ and defaulting
 // to the safe leftmost (Cancel).
 type confirm struct {
-	prompt      string
-	cmd         tea.Cmd
-	noCmd       tea.Cmd
-	yesLabel    string // affirmative button label (default "OK")
-	noLabel     string // middle button label when noCmd is set (default "No")
-	destructive bool   // paint the affirmative button red
-	focus       int    // selected button index (0 = Cancel)
+	prompt        string
+	cmd           tea.Cmd
+	noCmd         tea.Cmd
+	yesLabel      string // affirmative button label (default "OK")
+	noLabel       string // middle button label when noCmd is set (default "No")
+	destructive   bool   // paint the affirmative button red
+	noDestructive bool   // paint the middle button red too (both choices destroy state)
+	focus         int    // selected button index (0 = Cancel)
 }
 
 // confirmButton is one rendered button in a confirm dialog. A nil action is
@@ -93,7 +94,7 @@ func (c confirm) buttons() []confirmButton {
 		if no == "" {
 			no = "No"
 		}
-		btns = append(btns, confirmButton{label: no, action: c.noCmd})
+		btns = append(btns, confirmButton{label: no, destructive: c.noDestructive, action: c.noCmd})
 	}
 	btns = append(btns, confirmButton{label: yes, destructive: c.destructive, action: c.cmd})
 	return btns
@@ -1039,16 +1040,33 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.onSnapshot() {
 			snap := m.curSnapshot()
-			restore := m.opCmd("restore of "+snap+" into "+name, "snapshot", "restore", name, snap)
+			desc := "restore of " + snap + " into " + name
+			args := []string{"snapshot", "restore", name, snap}
 			if kind == "docker" {
-				restore = m.opCmd("restore of "+snap+" into the docker sidecar", "docker", "snapshot", "restore", snap)
+				desc = "restore of " + snap + " into the docker sidecar"
+				args = []string{"docker", "snapshot", "restore", snap}
 			}
-			m.confirm = &confirm{
+			c := &confirm{
 				prompt:      fmt.Sprintf("Restore snapshot %q into %q? Its current state is replaced.", snap, name),
-				cmd:         restore,
+				cmd:         m.opCmd(desc, args...),
 				yesLabel:    "Restore",
 				destructive: true,
 			}
+			// A warm snapshot can also be restored cold (drop the saved machine
+			// state, boot fresh — less RAM held): offer the choice, still
+			// defaulting to Cancel.
+			if r, ok := m.curRow(); ok && r.snapMode == string(cluster.ModeWarm) {
+				c.prompt = fmt.Sprintf("Restore snapshot %q into %q? Its current state is replaced. "+
+					"Warm resumes the saved machine (RAM included); cold boots fresh and uses less memory.", snap, name)
+				// warm (today's behavior) sits first of the two restore
+				// buttons, cold in the affirmative slot; both are destructive.
+				c.yesLabel = "Restore cold"
+				c.cmd = m.opCmd("cold "+desc, append(append([]string{}, args...), "--cold")...)
+				c.noLabel = "Restore warm"
+				c.noDestructive = true // both restore variants replace the current state
+				c.noCmd = m.opCmd(desc, args...)
+			}
+			m.confirm = c
 			return m, nil
 		}
 		// machine row (docker machine rows are handled above)
