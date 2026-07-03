@@ -1039,16 +1039,29 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.onSnapshot() {
 			snap := m.curSnapshot()
-			restore := m.opCmd("restore of "+snap+" into "+name, "snapshot", "restore", name, snap)
+			desc := "restore of " + snap + " into " + name
+			args := []string{"snapshot", "restore", name, snap}
 			if kind == "docker" {
-				restore = m.opCmd("restore of "+snap+" into the docker sidecar", "docker", "snapshot", "restore", snap)
+				desc = "restore of " + snap + " into the docker sidecar"
+				args = []string{"docker", "snapshot", "restore", snap}
 			}
-			m.confirm = &confirm{
+			c := &confirm{
 				prompt:      fmt.Sprintf("Restore snapshot %q into %q? Its current state is replaced.", snap, name),
-				cmd:         restore,
+				cmd:         m.opCmd(desc, args...),
 				yesLabel:    "Restore",
 				destructive: true,
 			}
+			// A warm snapshot can also be restored cold (drop the saved machine
+			// state, boot fresh — less RAM held): offer the choice, still
+			// defaulting to Cancel.
+			if r, ok := m.curRow(); ok && r.snapMode == string(cluster.ModeWarm) {
+				c.prompt = fmt.Sprintf("Restore snapshot %q into %q? Its current state is replaced. "+
+					"Warm resumes the saved machine (RAM included); cold boots fresh and uses less memory.", snap, name)
+				c.yesLabel = "Restore warm"
+				c.noLabel = "Restore cold"
+				c.noCmd = m.opCmd("cold "+desc, append(append([]string{}, args...), "--cold")...)
+			}
+			m.confirm = c
 			return m, nil
 		}
 		// machine row (docker machine rows are handled above)
