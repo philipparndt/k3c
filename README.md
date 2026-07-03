@@ -3,8 +3,12 @@
 Local [k3s](https://k3s.io) clusters on [Apple `container`](https://github.com/apple/container) —
 like [k3d](https://k3d.io), but for Apple's native container runtime instead of Docker.
 
-No Docker Desktop, no OrbStack, no Colima — no license costs and no extra VM
-layer. Just macOS 26+, the Apple `container` tool, and `kubectl`.
+No Docker Desktop, no OrbStack, no Colima — no extra VM layer. Just macOS 26+,
+the Apple `container` tool, and `kubectl`.
+
+k3c itself is **open source under Apache 2.0** (see [LICENSE](LICENSE)): no
+per-seat subscription, nothing to procure or license — unlike Docker Desktop,
+which requires a paid subscription for larger organizations.
 
 ```console
 $ k3c cluster create
@@ -33,6 +37,7 @@ constraints that break a naive k3s setup. k3c bundles all the workarounds:
 | `container exec`/`cp` hang on a running k3s container | config and kubeconfig flow through a bind mount |
 | amd64-only images fail with `exec format error` | `--rosetta` (binfmt, like Docker Desktop) |
 | corporate full-tunnel **VPNs block all VM egress** | transparent egress (gvnet) by default; legacy host-side CONNECT proxy + SNI gateway + CoreDNS override (`egress.transparent: false`) |
+| Docker Desktop needs a **paid subscription** at scale | k3c is Apache-2.0 open source — nothing to license or procure |
 
 The VPN piece deserves a sentence: VMs behind e.g. Cisco-style full-tunnel
 VPNs have *no* outbound connectivity, but they can reach the host. By default
@@ -62,14 +67,38 @@ make install-user   # GOPATH/bin, no sudo
 ## Usage
 
 ```
-k3c cluster create [NAME]     k3c kubeconfig get   [NAME]
-k3c cluster delete [NAME]     k3c kubeconfig merge [NAME]
-k3c cluster start  [NAME]     k3c config view [NAME]
-k3c cluster stop   [NAME]     k3c status [NAME]
-k3c cluster pause  [NAME]     k3c version
-k3c cluster resume [NAME]     k3c image import IMAGE
-k3c cluster activate [NAME]   k3c cluster list
+k3c cluster create [NAME]        k3c kubeconfig get   [NAME]
+k3c cluster delete [NAME]        k3c kubeconfig merge [NAME]
+k3c cluster start  [NAME]        k3c config view [NAME]
+k3c cluster stop   [NAME]        k3c status [NAME]
+k3c cluster pause  [NAME]        k3c info
+k3c cluster resume [NAME]        k3c version
+k3c cluster suspend [NAME]       k3c image import IMAGE
+k3c cluster reclaim [NAME]       k3c doctor [CLUSTER]
+k3c cluster repair [NAME]        k3c profile [POD]
+k3c cluster activate [NAME]      k3c ui
+k3c cluster import-run FILE      k3c web
+k3c cluster list                 k3c daemons status
+k3c snapshot save|restore ...    k3c container ...
+k3c docker up|down|status ...
 ```
+
+- `docker` — a `docker:dind` sidecar VM exposing a real Docker engine API
+  (Testcontainers, `docker` CLI, nested k3d); `up`/`down`/`status`.
+- `doctor` — read-only host/daemon/egress/cluster health checks (`--shell`
+  opens a debug pod).
+- `profile` — live per-pod CPU/memory profiling.
+- `ui` — interactive terminal UI; `web` — the same live system diagram in the
+  browser (see below).
+- `container` — pass-through to the underlying Apple `container` CLI.
+- `daemons` — inspect/manage the k3c host daemon (proxy, SNI gateway,
+  registry, pull-cache, webhook).
+- `info` — version, resolved container runtime, and config in use.
+- `cluster suspend` saves the VM to disk (releasing CPU/memory; `start`
+  restores it); `cluster reclaim` returns unused memory to the host;
+  `cluster repair` rebuilds host↔guest gateway forwarding without recreating
+  the cluster; `cluster import-run FILE` creates a cluster from an exported
+  snapshot and restores it in one step.
 
 `activate` (alias `use`) makes a cluster current: resumes or starts it if
 needed, points the public ingress/registry routing at it, and switches the
@@ -90,13 +119,16 @@ under a second. `stop`/`start` preserves cluster state.
 ### Snapshots
 
 ```
-k3c snapshot save [CLUSTER] [NAME]     # default name: timestamp
+k3c snapshot save [CLUSTER] [NAME]     # default name: timestamp; warm by default
 k3c snapshot save [CLUSTER] [NAME] --cold
-k3c snapshot restore [CLUSTER] NAME
+k3c snapshot save [CLUSTER] [NAME] --frozen
+k3c snapshot restore [CLUSTER] NAME    # auto-detects the tier
 k3c snapshot restore [CLUSTER] NAME --cold
 k3c snapshot list [CLUSTER]
 k3c snapshot rename [CLUSTER] OLD NEW
 k3c snapshot delete [CLUSTER] NAME
+k3c snapshot export [CLUSTER] NAME [--slim | --thin]   # frozen only: slim/thin
+k3c snapshot import FILE [NAME]
 ```
 
 (`k3c cluster snapshot ...` works as well.)
@@ -115,8 +147,26 @@ a superset: restore it with `--cold` to ignore the saved machine state and
 boot from its disk (crash-consistent, like after a power cut). Without
 suspend support every snapshot is cold.
 
+`--frozen` is a third, **smallest** tier: instead of cloning the rootfs it
+takes a *logical* extract — the cluster datastore, **all** persistent-volume
+data, and an image-digest manifest — and drops the container image store,
+rehydrating it from the [pull-cache](#configuration) on restore. A frozen
+snapshot is tiny and ideal for archiving or sharing, but restoring ("thawing")
+boots fresh and takes minutes while images are re-pulled from the cache. The
+tier is recorded in the snapshot's `meta.yaml`; `restore` auto-detects it.
+
+`snapshot export` writes a portable archive. Warm/cold snapshots export their
+disk image (always restoring cold). A frozen snapshot exports as a logical
+bundle in one of three modes: **fat** (default) is fully self-contained (adds
+the recoverable image-blob closure, so it imports and restores offline);
+`--slim` bundles only the local-only images (those not recoverable from a
+remote registry) and re-pulls the rest on import; `--thin` bundles no images
+at all (only safe when the cluster has no local-only images). `--slim` and
+`--thin` are mutually exclusive. `cluster import-run FILE` creates the cluster
+from an archive and restores it in one step.
+
 Restore requires the cluster container to exist (the snapshot captures
-state, not the container).
+state, not the container) — or use `cluster import-run` to create it first.
 
 ### Local images
 
@@ -147,6 +197,23 @@ negligible values at creation, so everything schedules regardless of the
 node size. Limits are kept. `failurePolicy: Ignore` means pods keep their
 requests if the daemon is down.
 
+### System diagram (terminal & web)
+
+`k3c ui` opens an interactive terminal UI for viewing clusters and snapshots
+and driving lifecycle actions, with a live system diagram and traffic display.
+
+`k3c web` serves the same live system diagram as an animated data-flow page in
+your browser: components colored by state, particles flowing along edges that
+are actually carrying data, and start/pause/stop actions per machine. It binds
+loopback and opens the page automatically:
+
+```
+k3c web                 # http://127.0.0.1:7654, opens the browser
+k3c web --port 8080     # a free port is picked if the requested one is busy
+k3c web --addr 0.0.0.0  # override the bind address
+k3c web --no-open       # start the server without launching a browser
+```
+
 ## Configuration
 
 Layered, all optional:
@@ -163,13 +230,25 @@ cluster:
   name: dev
   contextPrefix: k3d-          # kube context = <prefix><name>
   apiHost: k3s.example.test    # TLS SAN + kubeconfig server host
-  clusterCidr: 10.52.0.0/16
-  serviceCidr: 10.53.0.0/16
+  clusterCidr: 10.42.0.0/16    # defaults; only override if a VPN claims a range
+  serviceCidr: 10.43.0.0/16    # (e.g. a full-tunnel VPN often claims 10.53/16)
   cpus: 8                      # default: all host cores
   memory: 16G
   extraK3sArgs: []
-  sysctls:                     # node kernel parameters, merged over the
-    vm.max_map_count: "262144" # defaults (raised inotify limits)
+  sysctls:                     # node kernel parameters, merged over the defaults
+    # defaults: fs.inotify.max_user_instances "1024",
+    #           fs.inotify.max_user_watches "1048576" (raised inotify limits)
+    vm.max_map_count: "262144" # example extra override
+  memoryPolicy: auto           # auto: continuously return unused VM memory to
+                               # the host (policy-capable builds); off = manual
+  memoryHeadroom: 1500M        # memory kept free above the workload (default 1G)
+  memoryConvert: off           # on-create: convert a new VM once so boot memory
+                               # returns immediately (default off: on 1st suspend)
+  autoReclaim: 10m             # fallback reclaim interval for balloon-only
+                               # builds without memoryPolicy ("off" disables)
+  cpuPriority: low             # low: clamp VMs below GUI apps (default); normal
+  kernel: bundled              # bundled 16K-page kernel (best memory return, no
+                               # amd64); recommended = 4K kata (amd64); keep
 
 ports:
   ingress: 8444                # cluster :443 publish (fronted by SNI gateway)
