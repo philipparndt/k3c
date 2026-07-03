@@ -47,6 +47,28 @@ one every other k3c command uses.`,
 	},
 }
 
+// containerSystemRestartCmd restarts the embedded container system so a
+// freshly extracted bundled runtime is applied (new install root, newly
+// registered plugins) and records the version, marking the update done.
+// Hidden: interactive shells get this via EnsureSystem's prompt; the TUI —
+// whose alt-screen cannot host that prompt — runs this from its own restart
+// dialog instead.
+var containerSystemRestartCmd = &cobra.Command{
+	Use:    "container-system-restart",
+	Hidden: true,
+	Short:  "Restart the embedded container system to apply an updated runtime",
+	Args:   cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		if cfg, err := config.Resolve("", configFile); err == nil {
+			cluster.SetContainerBinary(cfg.ContainerBinary)
+		}
+		if _, err := runtime.Resolve(); err != nil {
+			fail(err)
+		}
+		fail(runtime.RestartSystem())
+	},
+}
+
 func init() {
-	rootCmd.AddCommand(containerCmd)
+	rootCmd.AddCommand(containerCmd, containerSystemRestartCmd)
 }

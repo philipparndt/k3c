@@ -174,6 +174,29 @@ func GvnetPluginInstalled() (bool, string) {
 	return err == nil, root
 }
 
+// RuntimeUpdatePending reports whether an updated bundled runtime is waiting
+// for a container-system restart that can be offered right now: the runtime
+// changed since the system was last started AND no containers are running (a
+// restart stops them — the same guard the EnsureSystem prompt uses). The TUI
+// polls this to drive its restart dialog, since its alt-screen cannot host
+// the stdin prompt.
+func RuntimeUpdatePending() bool {
+	return RuntimeRestartNeeded() && !runningContainers()
+}
+
+// RestartSystem stops and starts the container system so a freshly extracted
+// bundled runtime is picked up (new install root, newly added plugins), then
+// records the applied version so the update is no longer pending. Callers
+// must have resolved the runtime first.
+func RestartSystem() error {
+	_, _ = Output("system", "stop")
+	if out, err := Output("system", "start", "--enable-kernel-install"); err != nil {
+		return fmt.Errorf("could not restart container system: %s", out)
+	}
+	writeSystemVersion(bundleVersion())
+	return nil
+}
+
 // RuntimeRestartNeeded reports whether the active bundled runtime changed since
 // the container system was last (re)started by k3c — i.e. a `system stop`+
 // `start` is needed for the running launchd service to pick up the new install
@@ -228,10 +251,20 @@ func stdinIsTerminal() bool {
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
+// promptsDisabled suppresses stdin prompts even on a terminal. The TUI sets
+// it: bubbletea owns stdin in raw mode under the alt-screen, so a prompt
+// there is painted into the frame and its read never gets the keystrokes.
+var promptsDisabled bool
+
+// DisablePrompts makes promptYesNo decline without touching the terminal.
+// Full-screen callers (the TUI) use this and surface questions themselves.
+func DisablePrompts() { promptsDisabled = true }
+
 // promptYesNo asks a yes/no question on the terminal, defaulting to no. A
-// non-interactive invocation (script/CI) never blocks: it returns false.
+// non-interactive invocation (script/CI, or a caller that disabled prompts)
+// never blocks: it returns false.
 func promptYesNo(question string) bool {
-	if !stdinIsTerminal() {
+	if promptsDisabled || !stdinIsTerminal() {
 		return false
 	}
 	fmt.Print(question + " [y/N]: ")
