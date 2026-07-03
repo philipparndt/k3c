@@ -98,7 +98,7 @@
 <div class="hero">
   <p class="eyebrow">k3c · onboarding</p>
   <h1>Real k3s clusters on your Mac. <em>No Docker Desktop.</em></h1>
-  <p class="sub">k3c runs Kubernetes and a real Docker engine as lightweight VMs on Apple's native container runtime — and takes care of everything that usually hurts on a corporate laptop: VPN egress, CA bundles, registry mirrors, memory, and instant snapshots.</p>
+  <p class="sub">k3c runs Kubernetes and a real Docker engine as lightweight VMs on Apple's native container runtime — and takes care of everything that usually hurts on a corporate laptop: VPN egress, CA bundles, registry mirrors, memory, and instant snapshots. Free and open source: no subscription, no per-seat license, nothing to procure.</p>
   <div class="term" aria-label="terminal demo">
     <div class="term-bar"><i></i><i></i><i></i><span>zsh — ~/dev</span></div>
     <pre id="termout"><span class="caret"></span></pre>
@@ -110,7 +110,7 @@
   <h2>What k3c does for you</h2>
   <p class="lede">One binary, one YAML file per project. Everything below works out of the box or with one config line.</p>
   <div class="grid">
-    <div class="card"><h3>Kubernetes without a license</h3><p>k3s on Apple's Virtualization.framework — one VM per machine, Rosetta for amd64 images, kubeconfig merged and context switched automatically.</p><code>k3c cluster create</code></div>
+    <div class="card"><h3>No license. No subscription.</h3><p>k3s on Apple's Virtualization.framework — free and open source, no Docker Desktop seat to buy. One VM per machine, Rosetta for amd64 images, kubeconfig handled automatically.</p><code>k3c cluster create</code></div>
     <div class="card"><h3>Corporate VPN? Handled.</h3><p>Transparent egress (default): every VM connection is re-originated from host sockets, so Zscaler/VPN, proxies, and corporate DNS just work — no per-domain config.</p><code>k3c doctor</code> <span style="font-size:12px;color:var(--faint)">verifies the whole chain</span></div>
     <div class="card"><h3>A real Docker engine</h3><p>The docker:dind sidecar exposes a genuine Engine API. Testcontainers, docker CLI, and buildx work unchanged — <code>docker up</code> activates the context for you.</p><code>k3c docker up</code></div>
     <div class="card"><h3>Instant snapshots</h3><p>APFS copy-on-write snapshots of the whole cluster — including RAM. Break things freely; restore in seconds. Export them to teammates.</p><code>k3c snapshot save</code></div>
