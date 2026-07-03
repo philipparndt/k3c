@@ -11,6 +11,9 @@ ITER       ?= 3
 POWER      ?= true
 STORE      ?= results/store.jsonl
 EXTRA      ?=
+# keep the Mac awake for the duration of a run (idle sleep would pause the
+# VMs and ruin timings/energy); the display may still sleep
+RUN        := caffeinate -i ./$(BIN)
 
 .PHONY: help build full k8s quick pull edx summary report open clean
 
@@ -22,22 +25,22 @@ build: ## build the bench binary
 
 full: build ## run the FULL bench: every engine and benchmark (results append)
 	@echo "Full bench: $(ENGINES) x $(BENCHMARKS), $(ITER) rounds. Cycles OrbStack/RD/k3c daemons."
-	./$(BIN) -engines $(ENGINES) -benchmarks $(BENCHMARKS) -variants $(VARIANTS) \
+	$(RUN) -engines $(ENGINES) -benchmarks $(BENCHMARKS) -variants $(VARIANTS) \
 	  -iterations $(ITER) -power=$(POWER) -store $(STORE) $(EXTRA)
 
 k8s: build ## full bench but k8s engines only (k3c, orb, k3d)
-	./$(BIN) -engines k3c,orb,k3d -benchmarks $(BENCHMARKS) -variants $(VARIANTS) \
+	$(RUN) -engines k3c,orb,k3d -benchmarks $(BENCHMARKS) -variants $(VARIANTS) \
 	  -iterations $(ITER) -power=$(POWER) -store $(STORE) $(EXTRA)
 
 quick: build ## fast sanity run: k3c vs orb, empty cold, no power
-	./$(BIN) -engines k3c,orb -benchmarks empty -variants cold -iterations 1 -power=false -store $(STORE)
+	$(RUN) -engines k3c,orb -benchmarks empty -variants cold -iterations 1 -power=false -store $(STORE)
 
 pull: build ## image-pull bench (opt-in; Docker Hub rate-limits — prefer the cache or BENCH_PULL_IMAGES)
-	./$(BIN) -engines $(ENGINES) -benchmarks pull -variants $(VARIANTS) \
+	$(RUN) -engines $(ENGINES) -benchmarks pull -variants $(VARIANTS) \
 	  -iterations $(ITER) -power=$(POWER) -store $(STORE) $(EXTRA)
 
 edx: build ## Open edX heavy build (docker providers only; very heavy, Docker Hub bound)
-	./$(BIN) -engines k3c,orb,rancher,colima -benchmarks edx \
+	$(RUN) -engines k3c,orb,rancher,colima -benchmarks edx \
 	  -iterations $(ITER) -power=$(POWER) -store $(STORE) $(EXTRA)
 
 summary: build ## print the comparison table from the store
