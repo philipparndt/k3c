@@ -432,38 +432,10 @@ func captureClusterConfig(cfg *config.Config, dir string) {
 }
 
 func writeSnapshot(cfg *config.Config, dir string, warm bool, serverIP string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// rootfs + registry rootfs + k3s config + (warm) machine state, shared with
+	// the sidecar path via the snapshot engine.
+	if err := writeSnapshotArtifacts(dir, clusterSnapshotTarget(cfg), warm); err != nil {
 		return err
-	}
-	src, err := containerRootfsPath(cfg.ServerName)
-	if err != nil {
-		return err
-	}
-	logger.Info("cloning server root filesystem")
-	if err := cloneFile(src, filepath.Join(dir, serverRootfs)); err != nil {
-		return err
-	}
-	if registrySrc, err := containerRootfsPath(cfg.RegistryName); err == nil {
-		logger.Info("cloning registry root filesystem")
-		if err := cloneFile(registrySrc, filepath.Join(dir, registryRootfs)); err != nil {
-			return err
-		}
-	}
-	if err := copyDir(cfg.K3sEtcDir(), filepath.Join(dir, "k3s-etc")); err != nil {
-		return err
-	}
-	if warm {
-		// the suspended machine state, making the snapshot warm
-		if _, err := containerStateFilePath(cfg.ServerName, vmstateFile); err != nil {
-			return fmt.Errorf("no saved machine state after suspend: %w", err)
-		}
-		for _, name := range suspendStateFiles {
-			if src, err := containerStateFilePath(cfg.ServerName, name); err == nil {
-				if err := cloneFile(src, filepath.Join(dir, "server-"+name)); err != nil {
-					return err
-				}
-			}
-		}
 	}
 	mode := "cold"
 	if warm {
@@ -591,53 +563,11 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 		}
 	}
 
-	dst, err := containerRootfsPath(cfg.ServerName)
+	// restore rootfs + registry rootfs + k3s config, then reconcile machine
+	// state — shared with the sidecar path via the snapshot engine.
+	warm, err := restoreSnapshotArtifacts(dir, clusterSnapshotTarget(cfg), cold)
 	if err != nil {
 		return err
-	}
-	logger.Info("restoring server root filesystem")
-	if err := cloneFile(filepath.Join(dir, serverRootfs), dst); err != nil {
-		return err
-	}
-	if _, err := os.Stat(filepath.Join(dir, registryRootfs)); err == nil {
-		if registryDst, err := containerRootfsPath(cfg.RegistryName); err == nil {
-			logger.Info("restoring registry root filesystem")
-			if err := cloneFile(filepath.Join(dir, registryRootfs), registryDst); err != nil {
-				return err
-			}
-		}
-	}
-	if err := copyDir(filepath.Join(dir, "k3s-etc"), cfg.K3sEtcDir()); err != nil {
-		return err
-	}
-
-	// Stale suspended state on the container belongs to its previous disk
-	// image and must never be applied to the restored one. The machine
-	// identifier is stable container identity, not state, and stays.
-	for _, fileName := range []string{vmstateFile, "vmstate-attachments.json", "vmstate-features.json"} {
-		if path, err := containerStateFile(cfg.ServerName, fileName); err == nil {
-			_ = os.Remove(path)
-		}
-	}
-
-	warm := false
-	if !cold {
-		for _, fileName := range suspendStateFiles {
-			snapshotFile := filepath.Join(dir, "server-"+fileName)
-			if _, err := os.Stat(snapshotFile); err != nil {
-				continue
-			}
-			dst, err := containerStateFile(cfg.ServerName, fileName)
-			if err != nil {
-				return err
-			}
-			if err := cloneFile(snapshotFile, dst); err != nil {
-				return err
-			}
-			if fileName == vmstateFile {
-				warm = true
-			}
-		}
 	}
 
 	if warm {
