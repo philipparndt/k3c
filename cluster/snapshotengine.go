@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/philipparndt/go-logger"
 
@@ -189,6 +190,38 @@ func writeWarmState(dir string, t snapshotTarget) error {
 		}
 	}
 	return nil
+}
+
+// scanSnapshots reads the snapshot directories under root, parsing each meta
+// file (metaFile — "meta.yaml" for clusters, "meta" for the sidecar) for its
+// mode and created time. It is the shared scan behind Snapshots and
+// DockerSnapshots; callers apply their own default Created value and any
+// sorting. Order is ReadDir order (callers sort if they need to).
+func scanSnapshots(root, metaFile, createdDefault string) []SnapshotInfo {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	infos := make([]SnapshotInfo, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info := SnapshotInfo{Name: e.Name(), Mode: "cold", Created: createdDefault}
+		info.Size = dirDiskUsage(filepath.Join(root, e.Name()))
+		if meta, err := os.ReadFile(filepath.Join(root, e.Name(), metaFile)); err == nil {
+			for _, line := range strings.Split(string(meta), "\n") {
+				if v, ok := strings.CutPrefix(line, "created: "); ok {
+					info.Created = strings.TrimSpace(v)
+				}
+				if v, ok := strings.CutPrefix(line, "mode: "); ok {
+					info.Mode = strings.TrimSpace(v)
+				}
+			}
+		}
+		infos = append(infos, info)
+	}
+	return infos
 }
 
 // restoreSnapshotArtifacts clones a target's rootfs and extras from the snapshot

@@ -167,29 +167,7 @@ func DockerSnapshotRestore(cfg *config.Config, name string, cold bool) error {
 
 // DockerSnapshots lists saved sidecar snapshots (newest first).
 func DockerSnapshots(cfg *config.Config) []SnapshotInfo {
-	entries, err := os.ReadDir(dockerSnapshotsRoot(cfg))
-	if err != nil {
-		return nil
-	}
-	var snaps []SnapshotInfo
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		info := SnapshotInfo{Name: e.Name(), Mode: "cold"}
-		info.Size = dirDiskUsage(dockerSnapshotDir(cfg, e.Name()))
-		if data, err := os.ReadFile(filepath.Join(dockerSnapshotDir(cfg, e.Name()), "meta")); err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
-				if strings.HasPrefix(line, "mode: ") {
-					info.Mode = strings.TrimSpace(strings.TrimPrefix(line, "mode: "))
-				}
-				if strings.HasPrefix(line, "created: ") {
-					info.Created = strings.TrimSpace(strings.TrimPrefix(line, "created: "))
-				}
-			}
-		}
-		snaps = append(snaps, info)
-	}
+	snaps := scanSnapshots(dockerSnapshotsRoot(cfg), "meta", "")
 	sort.Slice(snaps, func(i, j int) bool { return snaps[i].Created > snaps[j].Created })
 	return snaps
 }

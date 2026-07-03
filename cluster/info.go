@@ -160,29 +160,5 @@ func trafficOf(container string) (rx, tx int64, err error) {
 
 // Snapshots returns the saved snapshots of a cluster, sorted by name.
 func Snapshots(cfg *config.Config, cluster string) []SnapshotInfo {
-	base := filepath.Join(cfg.BaseDir, "snapshots", cluster)
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return nil
-	}
-	infos := make([]SnapshotInfo, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		info := SnapshotInfo{Name: e.Name(), Mode: "cold", Created: "?"}
-		info.Size = dirDiskUsage(filepath.Join(base, e.Name()))
-		if meta, err := os.ReadFile(filepath.Join(base, e.Name(), "meta.yaml")); err == nil {
-			for _, line := range strings.Split(string(meta), "\n") {
-				if v, ok := strings.CutPrefix(line, "created: "); ok {
-					info.Created = v
-				}
-				if v, ok := strings.CutPrefix(line, "mode: "); ok {
-					info.Mode = v
-				}
-			}
-		}
-		infos = append(infos, info)
-	}
-	return infos
+	return scanSnapshots(filepath.Join(cfg.BaseDir, "snapshots", cluster), "meta.yaml", "?")
 }

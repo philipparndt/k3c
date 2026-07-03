@@ -265,6 +265,41 @@ func TestRestoreMachineStateNoSnapshotStateBootsCold(t *testing.T) {
 	}
 }
 
+// TestScanSnapshotsParsesMetaAndDefaults pins the shared list scan: it reads the
+// per-target meta filename for mode/created, applies the caller's Created
+// default when a snapshot has no meta, and ignores non-directory entries.
+func TestScanSnapshotsParsesMetaAndDefaults(t *testing.T) {
+	root, _ := os.MkdirTemp("/tmp", "k3c-snaproot")
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	writeTestFile(t, filepath.Join(root, "golden", "meta.yaml"), "cluster: c\ncreated: 2026-07-03T10:00:00+02:00\nmode: warm\n")
+	writeTestFile(t, filepath.Join(root, "plain", "meta.yaml"), "created: 2026-07-01T09:00:00+02:00\n") // no mode → cold
+	if err := os.MkdirAll(filepath.Join(root, "nometa"), 0o755); err != nil {                          // no meta → defaults
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(root, "loose-file"), "ignored") // not a dir → skipped
+
+	got := map[string]SnapshotInfo{}
+	for _, s := range scanSnapshots(root, "meta.yaml", "?") {
+		got[s.Name] = s
+	}
+	if len(got) != 3 {
+		t.Fatalf("scanSnapshots found %d snapshots, want 3 (golden, plain, nometa)", len(got))
+	}
+	if got["golden"].Mode != "warm" || got["golden"].Created != "2026-07-03T10:00:00+02:00" {
+		t.Errorf("golden = %+v, want warm @ 2026-07-03T10:00:00+02:00", got["golden"])
+	}
+	if got["plain"].Mode != "cold" {
+		t.Errorf("plain mode = %q, want cold (default)", got["plain"].Mode)
+	}
+	if got["nometa"].Mode != "cold" || got["nometa"].Created != "?" {
+		t.Errorf("nometa = %+v, want cold @ '?' (defaults)", got["nometa"])
+	}
+	if _, ok := got["loose-file"]; ok {
+		t.Error("non-directory entry should be ignored")
+	}
+}
+
 func assertFile(t *testing.T, path, want string) {
 	t.Helper()
 	got, err := os.ReadFile(path)
