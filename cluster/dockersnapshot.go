@@ -121,36 +121,10 @@ func DockerSnapshotSave(cfg *config.Config, name string, cold, replace bool) err
 }
 
 func writeDockerSnapshot(cfg *config.Config, dir string, warm bool) error {
-	if src, err := containerRootfsPath(dockerName); err == nil {
-		logger.Info("cloning sidecar root filesystem")
-		if err := cloneFile(src, filepath.Join(dir, dockerSnapRootfs)); err != nil {
-			return err
-		}
-	} else {
+	// sidecar rootfs + image-store volume + (warm) machine state, shared with
+	// the cluster path via the snapshot engine.
+	if err := writeSnapshotArtifacts(dir, sidecarSnapshotTarget(cfg), warm); err != nil {
 		return err
-	}
-	vol, err := dockerVolumePath()
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(vol); err != nil {
-		return fmt.Errorf("docker image-store volume not found at %s: %w", vol, err)
-	}
-	logger.Info("cloning docker image store (the nested cluster's data)")
-	if err := cloneFile(vol, filepath.Join(dir, dockerSnapVolume)); err != nil {
-		return err
-	}
-	if warm {
-		if _, err := containerStateFilePath(dockerName, vmstateFile); err != nil {
-			return fmt.Errorf("no saved machine state after suspend: %w", err)
-		}
-		for _, n := range suspendStateFiles {
-			if src, err := containerStateFilePath(dockerName, n); err == nil {
-				if err := cloneFile(src, filepath.Join(dir, "sidecar-"+n)); err != nil {
-					return err
-				}
-			}
-		}
 	}
 	mode := "cold"
 	if warm {

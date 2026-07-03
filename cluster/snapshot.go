@@ -432,38 +432,10 @@ func captureClusterConfig(cfg *config.Config, dir string) {
 }
 
 func writeSnapshot(cfg *config.Config, dir string, warm bool, serverIP string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// rootfs + registry rootfs + k3s config + (warm) machine state, shared with
+	// the sidecar path via the snapshot engine.
+	if err := writeSnapshotArtifacts(dir, clusterSnapshotTarget(cfg), warm); err != nil {
 		return err
-	}
-	src, err := containerRootfsPath(cfg.ServerName)
-	if err != nil {
-		return err
-	}
-	logger.Info("cloning server root filesystem")
-	if err := cloneFile(src, filepath.Join(dir, serverRootfs)); err != nil {
-		return err
-	}
-	if registrySrc, err := containerRootfsPath(cfg.RegistryName); err == nil {
-		logger.Info("cloning registry root filesystem")
-		if err := cloneFile(registrySrc, filepath.Join(dir, registryRootfs)); err != nil {
-			return err
-		}
-	}
-	if err := copyDir(cfg.K3sEtcDir(), filepath.Join(dir, "k3s-etc")); err != nil {
-		return err
-	}
-	if warm {
-		// the suspended machine state, making the snapshot warm
-		if _, err := containerStateFilePath(cfg.ServerName, vmstateFile); err != nil {
-			return fmt.Errorf("no saved machine state after suspend: %w", err)
-		}
-		for _, name := range suspendStateFiles {
-			if src, err := containerStateFilePath(cfg.ServerName, name); err == nil {
-				if err := cloneFile(src, filepath.Join(dir, "server-"+name)); err != nil {
-					return err
-				}
-			}
-		}
 	}
 	mode := "cold"
 	if warm {
