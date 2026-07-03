@@ -370,6 +370,31 @@ func containerIP(name string) string {
 	return ""
 }
 
+// runningContainerOn returns the name of a running container holding ip on
+// any of its NICs, or "" when no running container uses it. Used to decide
+// whether a warm restore can reclaim the snapshot-time address.
+func runningContainerOn(ip string) string {
+	out, _ := runContainer("ls")
+	return containerHolding(out, ip)
+}
+
+// containerHolding scans `container ls` output for a container whose IP
+// column (comma-separated CIDRs when a VM has several NICs) contains ip.
+func containerHolding(lsOut, ip string) string {
+	for _, line := range strings.Split(lsOut, "\n")[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		for _, addr := range strings.Split(fields[5], ",") {
+			if addr == ip || strings.HasPrefix(addr, ip+"/") {
+				return fields[0]
+			}
+		}
+	}
+	return ""
+}
+
 // hostReachableIP picks the host-routable address from container ls's IP column,
 // which lists several (comma-separated) when a VM has multiple NICs — e.g. a
 // transparent-egress gvnet NIC plus the vmnet NIC. The gvnet range lives in a
@@ -538,21 +563,32 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 	}
 
 	resumeIfPaused(cfg)
-	// A warm snapshot resumes a memory image with the snapshot-time IP
-	// configured in the guest. If the container's address changed (deleted
-	// and recreated cluster), the resumed guest would answer on the wrong
-	// IP — boot cold instead, which re-initializes the network.
-	if !cold {
-		snapIP := snapshotMetaValue(dir, "ip")
-		if currentIP := containerIP(cfg.ServerName); snapIP != "" && currentIP != "" && snapIP != currentIP {
-			logger.Warn("the cluster's IP changed since the snapshot (" + snapIP + " -> " + currentIP + "); restoring cold")
-			cold = true
-		}
-	}
 	if containerExists(cfg.ServerName, true) {
 		logger.Info("stopping cluster")
 		_, _ = runContainer("stop", cfg.ServerName)
+	}
+	// Stop the registry even when the server is not running: it restarts
+	// under Start anyway, and stopping it releases an address it may have
+	// grabbed from the snapshot's server (a recreated cluster can swap IPs).
+	if containerExists(cfg.RegistryName, true) {
 		_, _ = runContainer("stop", cfg.RegistryName)
+	}
+	// A warm snapshot resumes a memory image with the snapshot-time IP
+	// configured in the guest, and the runtime re-requests that address on
+	// start (the snapshot's vmstate-attachments.json becomes desiredAddress,
+	// honored when free). Stopping the cluster just released its own
+	// addresses — even swapped ones after a delete/recreate — so the reclaim
+	// only fails when some OTHER running container sits on the snapshot IP.
+	// Then the resumed guest would answer on the wrong address: boot cold
+	// instead, which re-initializes the network.
+	if !cold {
+		if snapIP := snapshotMetaValue(dir, "ip"); snapIP != "" {
+			if holder := runningContainerOn(snapIP); holder != "" && holder != cfg.ServerName {
+				logger.Warn("the snapshot's IP " + snapIP + " is held by running container '" + holder +
+					"'; restoring cold (stop it for a warm resume, or pass --cold to choose this)")
+				cold = true
+			}
+		}
 	}
 
 	dst, err := containerRootfsPath(cfg.ServerName)
@@ -606,6 +642,12 @@ func SnapshotRestore(cfg *config.Config, name string, cold bool) error {
 
 	if warm {
 		logger.Info("snapshot '" + name + "' restored (warm), resuming cluster")
+		// Resume the server before Start, which boots the registry first: a
+		// fresh registry allocation could race the server's desired-address
+		// reclaim and take the snapshot IP. Start skips a running server.
+		if out, err := startServerVM(cfg); err != nil {
+			return fmt.Errorf("resume failed: %s", out)
+		}
 	} else {
 		// no machine state applied: either none in the snapshot, or --cold
 		logger.Info("snapshot '" + name + "' restored (cold), booting cluster")

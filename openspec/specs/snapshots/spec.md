@@ -29,6 +29,17 @@ name.
 - **THEN** the cluster state is restored from `mysnap` and the cluster is
   started
 
+#### Scenario: Warm restore reclaims the snapshot address
+
+- **WHEN** the user restores a warm snapshot after the cluster was deleted and
+  recreated with swapped addresses (e.g. the registry took the server's former
+  IP)
+- **THEN** the restore stops the cluster's containers (releasing their
+  addresses), the server reclaims the snapshot-time address, and the snapshot
+  resumes warm
+- **AND** only when a running container outside the cluster holds that address
+  does the restore fall back to a cold boot, warning which container blocks it
+
 #### Scenario: Rename a snapshot
 
 - **WHEN** the user runs `k3c snapshot rename mysnap golden`
