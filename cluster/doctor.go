@@ -39,6 +39,11 @@ func Doctor(cfg *config.Config) error {
 	d.checkDaemons(cfg)
 	d.checkEgress(cfg)
 
+	if containerExists(dockerName, true) {
+		d.section("docker sidecar")
+		d.checkDockerSidecar(cfg)
+	}
+
 	d.section("cluster '" + cfg.Cluster + "'")
 	d.checkCluster(cfg)
 
@@ -361,6 +366,37 @@ func (d *doctor) checkGatewayForwarding(cfg *config.Config) {
 		return
 	}
 	d.fail("registry not reachable on the gateway or loopback ("+firstLine(gwErr.Error())+")", "k3c cluster repair")
+}
+
+// checkDockerSidecar verifies the running sidecar's engine transports. The
+// loopback publish can be listening yet dead: a runtime process restored at
+// login after a reboot misses the macOS Local Network grant (never
+// re-evaluated while the process lives), so its forwarder accepts every
+// connection and then EOFs it. Non-hijack engine traffic prefers this endpoint
+// (routeEngineConn) and its health gate silently falls back to the HOL-prone
+// bridge, so surface the state here with the actual fix — only a sidecar
+// restart gives the runtime a fresh process and a fresh grant.
+func (d *doctor) checkDockerSidecar(cfg *config.Config) {
+	if _, err := os.Stat(dockerForwardSocketPath(cfg)); err != nil {
+		d.warn("no --publish-socket bridge (sidecar created by an older k3c); exec/attach are dropped",
+			"k3c docker rm && k3c docker up (image store is kept)")
+	}
+	endpoint := dockerEngineEndpoint(cfg)
+	if c, err := net.DialTimeout("tcp", endpoint, 3*time.Second); err != nil {
+		d.fail("engine loopback publish not listening ("+endpoint+")",
+			"k3c docker down && k3c docker up")
+		return
+	} else {
+		_ = c.Close()
+	}
+	if !probeLoopbackEngine(endpoint) {
+		d.fail("engine loopback publish is dead: accepts connections but answers nothing ("+endpoint+
+			") — the sidecar runtime lost its macOS Local Network grant (typical after a login-time restore); "+
+			"engine traffic is degraded to the bridge, which head-of-line-blocks streaming clients (Testcontainers wait.ForLog)",
+			"k3c docker down && k3c docker up")
+		return
+	}
+	d.pass("engine loopback publish healthy (" + endpoint + ")")
 }
 
 // checkEgress sends a request to a registry mirror through the host
