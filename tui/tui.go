@@ -280,6 +280,10 @@ type model struct {
 	input      *nameInput
 	rename     *renameInput
 	exportPick *exportPick
+
+	// restartOffered: the runtime-update restart dialog was already shown
+	// this session, so a declined offer is not re-asked on every refresh.
+	restartOffered bool
 }
 
 // New builds the TUI model. cfg supplies state-dir lookups and the color
@@ -302,7 +306,11 @@ func New(cfg *config.Config) tea.Model {
 func Run(cfg *config.Config) error {
 	// The TUI owns the terminal (alt-screen); stray log lines from in-process
 	// calls like runtime.EnsureSystem would corrupt the frame. Silence the
-	// global logger for the session and restore it on exit.
+	// global logger for the session and restore it on exit. Stdin prompts are
+	// just as unusable here (bubbletea reads stdin in raw mode), so disable
+	// them too — the runtime-update restart question is surfaced as a confirm
+	// dialog instead (see the dataMsg handler).
+	runtime.DisablePrompts()
 	logger.LogTo(io.Discard)
 	defer logger.LogTo(os.Stderr)
 	_, err := tea.NewProgram(New(cfg), tea.WithAltScreen()).Run()
@@ -317,6 +325,7 @@ type dataMsg struct {
 	traffic        *trafficSample
 	cacheStats     *cluster.PullStats
 	daemons        *cluster.DaemonsInfo
+	runtimeUpdate  bool // an updated bundled runtime awaits a system restart
 }
 
 // snapsMsg carries a single machine's snapshots — an on-expand lazy load.
@@ -437,6 +446,7 @@ func (m model) refresh() tea.Cmd {
 	cfg := m.cfg
 	curName := m.curName()
 	pullCache := cfg.PullCacheEnabled
+	restartOffered := m.restartOffered
 	expanded := make(map[string]bool, len(m.expanded))
 	for k, v := range m.expanded {
 		expanded[k] = v
@@ -472,6 +482,14 @@ func (m model) refresh() tea.Cmd {
 			}
 		}
 		msg := dataMsg{clusters: clusters, snapsByMachine: snaps}
+		// After a k3c upgrade the running container system needs a restart to
+		// pick up the new runtime. EnsureSystem cannot prompt here (prompts
+		// are disabled under the alt-screen), so report the pending update and
+		// let the dataMsg handler open a confirm dialog. Skip once offered —
+		// a declined restart should not be re-asked every tick.
+		if !restartOffered {
+			msg.runtimeUpdate = runtime.RuntimeUpdatePending()
+		}
 		for _, c := range clusters {
 			if c.Name == curName && c.Server == "running" {
 				if rx, tx, err := cluster.Traffic(cfg, curName); err == nil {
@@ -686,6 +704,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.daemons != nil {
 			m.daemons = *msg.daemons
+		}
+		// A k3c upgrade left the container system on the old runtime: offer
+		// the restart EnsureSystem would have prompted for on a plain
+		// terminal. Only when idle — never stomp an open dialog/wizard or a
+		// running op; an offer suppressed now is simply made on a later
+		// refresh (restartOffered is only set once the dialog is shown).
+		if msg.runtimeUpdate && !m.restartOffered && m.busy == "" &&
+			m.confirm == nil && m.input == nil && m.rename == nil && m.exportPick == nil {
+			m.restartOffered = true
+			m.confirm = &confirm{
+				prompt:   "The container runtime was updated. Restart the container system now to apply it?",
+				cmd:      m.opCmd("apply updated container runtime", "container-system-restart"),
+				yesLabel: "Restart",
+			}
 		}
 		return m, nil
 
