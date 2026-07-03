@@ -1058,10 +1058,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if r, ok := m.curRow(); ok && r.snapMode == string(cluster.ModeWarm) {
 				c.prompt = fmt.Sprintf("Restore snapshot %q into %q? Its current state is replaced. "+
 					"Warm resumes the saved machine (RAM included); cold boots fresh and uses less memory.", snap, name)
-				c.yesLabel = "Restore warm"
-				c.noLabel = "Restore cold"
+				// warm (today's behavior) sits first of the two restore
+				// buttons, cold in the affirmative slot; both are destructive.
+				c.yesLabel = "Restore cold"
+				c.cmd = m.opCmd("cold "+desc, append(append([]string{}, args...), "--cold")...)
+				c.noLabel = "Restore warm"
 				c.noDestructive = true // both restore variants replace the current state
-				c.noCmd = m.opCmd("cold "+desc, append(append([]string{}, args...), "--cold")...)
+				c.noCmd = m.opCmd(desc, args...)
 			}
 			m.confirm = c
 			return m, nil

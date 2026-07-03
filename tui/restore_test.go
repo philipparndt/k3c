@@ -27,9 +27,9 @@ func restoreModel(mode string) model {
 	return m
 }
 
-// A warm snapshot offers the restore-tier choice: Cancel (default), cold
-// (boot fresh, less RAM held), warm (resume the saved machine, today's
-// behavior as the affirmative).
+// A warm snapshot offers the restore-tier choice: Cancel (default), warm
+// (resume the saved machine, today's behavior) first, then cold (boot
+// fresh, less RAM held).
 func TestRestoreWarmSnapshotOffersColdChoice(t *testing.T) {
 	m := restoreModel(string(cluster.ModeWarm))
 	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -40,13 +40,13 @@ func TestRestoreWarmSnapshotOffersColdChoice(t *testing.T) {
 	}
 	btns := nm.confirm.buttons()
 	if len(btns) != 3 {
-		t.Fatalf("dialog has %d buttons, want 3 (Cancel/Restore cold/Restore warm)", len(btns))
+		t.Fatalf("dialog has %d buttons, want 3 (Cancel/Restore warm/Restore cold)", len(btns))
 	}
 	if nm.confirm.focus != 0 {
 		t.Errorf("default focus = %d, want 0 (Cancel)", nm.confirm.focus)
 	}
-	if btns[0].label != "Cancel" || btns[1].label != "Restore cold" || btns[2].label != "Restore warm" {
-		t.Errorf("button labels = %q/%q/%q, want Cancel/Restore cold/Restore warm",
+	if btns[0].label != "Cancel" || btns[1].label != "Restore warm" || btns[2].label != "Restore cold" {
+		t.Errorf("button labels = %q/%q/%q, want Cancel/Restore warm/Restore cold",
 			btns[0].label, btns[1].label, btns[2].label)
 	}
 	if !btns[1].destructive || !btns[2].destructive {
