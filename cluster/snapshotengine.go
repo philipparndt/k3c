@@ -32,21 +32,35 @@ type snapshotTarget struct {
 	// extras are the additional per-target artifacts (registry rootfs + k3s
 	// config for a cluster; the image-store volume for the sidecar).
 	extras []snapshotArtifact
-	// stateFile resolves a machine-state file's live path for this target;
-	// defaults to containerStateFilePath(machine, name). Injectable for tests.
+	// stateFile resolves a machine-state file's live path, requiring it to
+	// exist (the save source). Defaults to containerStateFilePath(machine,name).
 	stateFile func(name string) (string, error)
+	// statePath resolves a machine-state file's live path without requiring it
+	// to exist (the restore destination / removal target). Defaults to
+	// containerStateFile(machine, name). Injectable for tests.
+	statePath func(name string) (string, error)
 }
 
 // snapshotArtifact is one file or directory captured into (and restored from) a
 // snapshot. name is its filename inside the snapshot dir; src resolves its live
-// location, which is also the restore destination.
+// save source, dst its live restore destination (defaults to src). They differ
+// only where a save source must already exist but a restore destination may be
+// (re)created — the docker image-store volume.
 type snapshotArtifact struct {
-	name     string                  // filename inside the snapshot dir
-	label    string                  // human label for log lines
-	src      func() (string, error)  // live path (save source == restore dest)
-	required bool                    // true → a resolve error aborts; false → skip
-	isDir    bool                    // copyDir vs cloneFile
+	name     string                 // filename inside the snapshot dir
+	label    string                 // human label for log lines
+	src      func() (string, error) // live save source (may validate existence)
+	dst      func() (string, error) // live restore destination; nil → same as src
+	required bool                   // save: a resolve error aborts vs skips
+	isDir    bool                   // copyDir vs cloneFile
 }
+
+// staleStateFiles are the machine-state files that belong to the pre-restore
+// disk image and must be cleared on every restore so a cold boot starts clean;
+// machine-identifier.bin is deliberately excluded — it is stable container
+// identity, not state, and is preserved (a warm restore still overwrites it from
+// the snapshot, which carries the whole suspendStateFiles set).
+var staleStateFiles = []string{vmstateFile, "vmstate-attachments.json", "vmstate-features.json"}
 
 // clusterSnapshotTarget describes a k3s cluster: server rootfs, optional
 // registry rootfs, and the k3s config directory, with warm state under
@@ -77,6 +91,7 @@ func clusterSnapshotTarget(cfg *config.Config) snapshotTarget {
 			},
 		},
 		stateFile: func(name string) (string, error) { return containerStateFilePath(cfg.ServerName, name) },
+		statePath: func(name string) (string, error) { return containerStateFile(cfg.ServerName, name) },
 	}
 }
 
@@ -106,10 +121,14 @@ func sidecarSnapshotTarget(cfg *config.Config) snapshotTarget {
 					}
 					return vol, nil
 				},
+				// restore recreates the volume image, so its destination need
+				// not exist yet — resolve the path without the save-time check.
+				dst:      func() (string, error) { return dockerVolumePath() },
 				required: true,
 			},
 		},
 		stateFile: func(name string) (string, error) { return containerStateFilePath(dockerName, name) },
+		statePath: func(name string) (string, error) { return containerStateFile(dockerName, name) },
 	}
 }
 
@@ -170,4 +189,85 @@ func writeWarmState(dir string, t snapshotTarget) error {
 		}
 	}
 	return nil
+}
+
+// restoreSnapshotArtifacts clones a target's rootfs and extras from the snapshot
+// dir back onto the live VM, then reconciles machine state, returning whether
+// the machine will resume warm. It is the shared core of what were the diverged
+// artifact/state blocks in SnapshotRestore and DockerSnapshotRestore; the
+// callers keep their target-specific orchestration (stop, IP reclaim, CIDR
+// checks, virtiofs repair, bring-up) around it.
+func restoreSnapshotArtifacts(dir string, t snapshotTarget, cold bool) (warm bool, err error) {
+	if err := restoreArtifact(dir, t.rootfs); err != nil {
+		return false, err
+	}
+	for _, a := range t.extras {
+		if err := restoreArtifact(dir, a); err != nil {
+			return false, err
+		}
+	}
+	return restoreMachineState(dir, t, cold)
+}
+
+// restoreArtifact clones one artifact from the snapshot back to its live
+// location. Artifacts the snapshot does not carry, and destinations that cannot
+// be resolved (e.g. an absent registry VM), are skipped — matching each path's
+// prior restore behavior. Clone/copy errors propagate.
+func restoreArtifact(dir string, a snapshotArtifact) error {
+	snap := filepath.Join(dir, a.name)
+	if _, err := os.Stat(snap); err != nil {
+		return nil // snapshot doesn't carry this artifact
+	}
+	resolve := a.dst
+	if resolve == nil {
+		resolve = a.src
+	}
+	dst, err := resolve()
+	if err != nil {
+		return nil // live destination unavailable → skip
+	}
+	logger.Info("restoring " + a.label)
+	if a.isDir {
+		return copyDir(snap, dst)
+	}
+	return cloneFile(snap, dst)
+}
+
+// restoreMachineState clears the stale pre-restore machine state and, for a warm
+// restore, clones the snapshot's suspended state back into place. Returns
+// whether the machine has warm state to resume from. This unifies the two
+// previously-diverged blocks: both targets now preserve machine-identifier.bin
+// on a cold restore and propagate clone errors (previously only the cluster did
+// both; the sidecar removed the identifier and ignored clone errors).
+func restoreMachineState(dir string, t snapshotTarget, cold bool) (bool, error) {
+	for _, name := range staleStateFiles {
+		if path, err := t.statePath(name); err == nil {
+			_ = os.Remove(path)
+		}
+	}
+	if cold {
+		return false, nil
+	}
+	// warm only if the snapshot actually carries machine state
+	if _, err := os.Stat(filepath.Join(dir, t.statePrefix+vmstateFile)); err != nil {
+		return false, nil
+	}
+	warm := false
+	for _, name := range suspendStateFiles {
+		snap := filepath.Join(dir, t.statePrefix+name)
+		if _, err := os.Stat(snap); err != nil {
+			continue
+		}
+		dst, err := t.statePath(name)
+		if err != nil {
+			return warm, err
+		}
+		if err := cloneFile(snap, dst); err != nil {
+			return warm, err
+		}
+		if name == vmstateFile {
+			warm = true
+		}
+	}
+	return warm, nil
 }

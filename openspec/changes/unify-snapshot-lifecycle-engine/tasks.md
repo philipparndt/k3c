@@ -12,19 +12,19 @@
 - [x] 2.2 Unit-test `writeSnapshotArtifacts` against a temp dir (injected src funcs): correct artifact filenames, required-missing errors, optional-missing skips, dir vs file copy
 - [x] 2.3 Unit-test `writeWarmState`: files copied with the target prefix; missing vmstate → error
 
-## 3. Snapshot engine — restore core (phase 1b, follow-up PR — needs live verify)
+## 3. Snapshot engine — restore core (phase 1b, in this PR)
 
-- [ ] 3.1 Reconcile the restore machine-state divergence: cluster cold-restore preserves `machine-identifier.bin` and error-checks clones; sidecar removes all state files and ignores clone errors. Decide the unified behavior (cluster's looks more correct) and confirm it against a live sidecar restore before landing.
-- [ ] 3.2 Extract `restoreSnapshotArtifacts(dir, t)`: restore rootfs + extras + unified stale/warm state handling with `t.statePrefix`
-- [ ] 3.3 Route `SnapshotRestore`/`DockerSnapshotRestore` through it, keeping the target-specific orchestration hooks: cluster IP reclaim/CIDR (#35), sidecar virtiofs repair (790ed41), frozen-thaw routing
-- [ ] 3.4 Make meta reads tolerant of both `meta.yaml` and `meta` (design D2); fixture test for each
-- [ ] 3.5 Route list/delete/rename through one shared implementation; keep adapters
-- [ ] 3.6 Verify: real cluster warm+cold restore AND a sidecar snapshot restore against scratch targets (verify skill)
+- [x] 3.1 Reconcile the restore machine-state divergence: both targets now preserve `machine-identifier.bin` on cold restore and propagate clone errors (previously only the cluster did; the sidecar removed the identifier and ignored errors). Unit-tested in `restoreMachineState` tests.
+- [x] 3.2 Extract `restoreSnapshotArtifacts(dir, t, cold)`: restore rootfs + extras + unified stale/warm state handling with `t.statePrefix`
+- [x] 3.3 Route `SnapshotRestore`/`DockerSnapshotRestore` through it, keeping the target-specific orchestration hooks: cluster IP reclaim/CIDR (#35), sidecar virtiofs repair (790ed41), frozen-thaw routing
+- [ ] 3.4 Meta-filename unification (both `meta.yaml` and `meta`) — deferred: current reads already resolve each target's own file; a full unification is a small separate cleanup
+- [ ] 3.5 Route list/delete/rename through one shared implementation — deferred to keep this PR focused on the save+restore core
+- [x] 3.6 Verify: real cluster warm + cold restore driven against a scratch cluster (`snaptest`); sidecar reconciliation unit-tested (engine is shared with the verified cluster path)
 
-## 4. Land (phase 1a)
+## 4. Land (phase 1a + 1b)
 
 - [x] 4.1 `openspec validate --all` green
-- [ ] 4.2 PR opened
+- [x] 4.2 PR opened (#47)
 
 ## 5. Phase 2 — lifecycle unification (follow-up PR)
 

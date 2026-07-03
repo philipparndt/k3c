@@ -150,42 +150,11 @@ func DockerSnapshotRestore(cfg *config.Config, name string, cold bool) error {
 		_, _ = runContainer("stop", dockerName)
 	}
 
-	if dst, err := containerRootfsPath(dockerName); err == nil {
-		if _, serr := os.Stat(filepath.Join(dir, dockerSnapRootfs)); serr == nil {
-			logger.Info("restoring sidecar root filesystem")
-			if err := cloneFile(filepath.Join(dir, dockerSnapRootfs), dst); err != nil {
-				return err
-			}
-		}
-	}
-	vol, err := dockerVolumePath()
-	if err != nil {
+	// restore sidecar rootfs + image-store volume, then reconcile machine
+	// state — shared with the cluster path via the snapshot engine. DockerUp
+	// below resumes warm state when present and boots fresh otherwise.
+	if _, err := restoreSnapshotArtifacts(dir, sidecarSnapshotTarget(cfg), cold); err != nil {
 		return err
-	}
-	logger.Info("restoring docker image store")
-	if err := cloneFile(filepath.Join(dir, dockerSnapVolume), vol); err != nil {
-		return err
-	}
-
-	// warm restore: put the suspended machine state back so the VM resumes;
-	// cold restore: drop any saved state so it boots fresh
-	warm := !cold
-	if _, err := os.Stat(filepath.Join(dir, "sidecar-"+vmstateFile)); err != nil {
-		warm = false
-	}
-	for _, n := range suspendStateFiles {
-		dst, derr := containerStateFile(dockerName, n)
-		if derr != nil {
-			continue
-		}
-		src := filepath.Join(dir, "sidecar-"+n)
-		if warm {
-			if _, serr := os.Stat(src); serr == nil {
-				_ = cloneFile(src, dst)
-			}
-		} else {
-			_ = os.Remove(dst) // ensure a cold boot
-		}
 	}
 
 	logger.Info("bringing the docker sidecar back up")

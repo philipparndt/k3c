@@ -154,6 +154,117 @@ func TestWriteWarmStatePrefixesFiles(t *testing.T) {
 	assertFile(t, filepath.Join(dir, "sidecar-machine-identifier.bin"), "ID")
 }
 
+// TestRestoreArtifactCopiesBackAndSkips: an artifact the snapshot carries is
+// cloned to its live destination; one it lacks, or whose destination cannot be
+// resolved, is skipped without error.
+func TestRestoreArtifactCopiesBackAndSkips(t *testing.T) {
+	dir, _ := os.MkdirTemp("/tmp", "k3c-snap")
+	live, _ := os.MkdirTemp("/tmp", "k3c-live")
+	t.Cleanup(func() { _ = os.RemoveAll(dir); _ = os.RemoveAll(live) })
+
+	writeTestFile(t, filepath.Join(dir, "root.ext4"), "SNAP")
+	dstPath := filepath.Join(live, "rootfs.ext4")
+
+	// present in snapshot → cloned to dst
+	if err := restoreArtifact(dir, snapshotArtifact{name: "root.ext4", src: func() (string, error) { return dstPath, nil }}); err != nil {
+		t.Fatalf("restoreArtifact: %v", err)
+	}
+	assertFile(t, dstPath, "SNAP")
+
+	// absent in snapshot → skipped, no error
+	if err := restoreArtifact(dir, snapshotArtifact{name: "missing.ext4", src: func() (string, error) { return dstPath, nil }}); err != nil {
+		t.Errorf("absent artifact should skip, got %v", err)
+	}
+	// dst unresolvable (e.g. absent registry VM) → skipped, no error
+	if err := restoreArtifact(dir, snapshotArtifact{name: "root.ext4", src: func() (string, error) { return "", os.ErrNotExist }}); err != nil {
+		t.Errorf("unresolvable dst should skip, got %v", err)
+	}
+
+	// dst override is honored over src (the volume case)
+	dst2 := filepath.Join(live, "vol.img")
+	if err := restoreArtifact(dir, snapshotArtifact{
+		name: "root.ext4",
+		src:  func() (string, error) { return "", os.ErrNotExist }, // would skip if used
+		dst:  func() (string, error) { return dst2, nil },
+	}); err != nil {
+		t.Fatalf("restoreArtifact with dst override: %v", err)
+	}
+	assertFile(t, dst2, "SNAP")
+}
+
+// TestRestoreMachineStateColdPreservesIdentity pins the reconciled behavior: a
+// cold restore clears stale non-identity state but KEEPS machine-identifier.bin
+// (previously the sidecar path removed it), and reports not-warm.
+func TestRestoreMachineStateColdPreservesIdentity(t *testing.T) {
+	dir, _ := os.MkdirTemp("/tmp", "k3c-snap")   // empty snapshot (cold)
+	live, _ := os.MkdirTemp("/tmp", "k3c-live")
+	t.Cleanup(func() { _ = os.RemoveAll(dir); _ = os.RemoveAll(live) })
+
+	writeTestFile(t, filepath.Join(live, vmstateFile), "VM")
+	writeTestFile(t, filepath.Join(live, "vmstate-attachments.json"), "A")
+	writeTestFile(t, filepath.Join(live, "machine-identifier.bin"), "ID")
+
+	target := snapshotTarget{
+		statePrefix: "sidecar-",
+		statePath:   func(name string) (string, error) { return filepath.Join(live, name), nil },
+	}
+	warm, err := restoreMachineState(dir, target, true)
+	if err != nil || warm {
+		t.Fatalf("cold restore = (warm=%v, err=%v), want (false, nil)", warm, err)
+	}
+	for _, gone := range []string{vmstateFile, "vmstate-attachments.json"} {
+		if _, err := os.Stat(filepath.Join(live, gone)); err == nil {
+			t.Errorf("stale state %q should have been removed on cold restore", gone)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(live, "machine-identifier.bin")); err != nil {
+		t.Error("machine-identifier.bin must be preserved on a cold restore (stable identity)")
+	}
+}
+
+// TestRestoreMachineStateWarmClonesBack: a warm restore clones the snapshot's
+// prefixed state (including the identifier) back and reports warm.
+func TestRestoreMachineStateWarmClonesBack(t *testing.T) {
+	dir, _ := os.MkdirTemp("/tmp", "k3c-snap")
+	live, _ := os.MkdirTemp("/tmp", "k3c-live")
+	t.Cleanup(func() { _ = os.RemoveAll(dir); _ = os.RemoveAll(live) })
+
+	writeTestFile(t, filepath.Join(dir, "sidecar-"+vmstateFile), "VM")
+	writeTestFile(t, filepath.Join(dir, "sidecar-machine-identifier.bin"), "ID")
+
+	target := snapshotTarget{
+		statePrefix: "sidecar-",
+		statePath:   func(name string) (string, error) { return filepath.Join(live, name), nil },
+	}
+	warm, err := restoreMachineState(dir, target, false)
+	if err != nil || !warm {
+		t.Fatalf("warm restore = (warm=%v, err=%v), want (true, nil)", warm, err)
+	}
+	assertFile(t, filepath.Join(live, vmstateFile), "VM")
+	assertFile(t, filepath.Join(live, "machine-identifier.bin"), "ID")
+}
+
+// TestRestoreMachineStateNoSnapshotStateBootsCold: !cold requested but the
+// snapshot carries no machine state → not warm, stale cleared.
+func TestRestoreMachineStateNoSnapshotStateBootsCold(t *testing.T) {
+	dir, _ := os.MkdirTemp("/tmp", "k3c-snap")   // no prefixed state
+	live, _ := os.MkdirTemp("/tmp", "k3c-live")
+	t.Cleanup(func() { _ = os.RemoveAll(dir); _ = os.RemoveAll(live) })
+	writeTestFile(t, filepath.Join(live, vmstateFile), "VM")
+
+	target := snapshotTarget{
+		statePrefix: "server-",
+		statePath:   func(name string) (string, error) { return filepath.Join(live, name), nil },
+	}
+	warm, err := restoreMachineState(dir, target, false)
+	if err != nil || warm {
+		t.Fatalf("no-state restore = (warm=%v, err=%v), want (false, nil)", warm, err)
+	}
+	if _, err := os.Stat(filepath.Join(live, vmstateFile)); err == nil {
+		t.Error("stale vmstate should have been removed")
+	}
+}
+
 func assertFile(t *testing.T, path, want string) {
 	t.Helper()
 	got, err := os.ReadFile(path)
