@@ -6,9 +6,7 @@ Create and manage the lifecycle of local k3s clusters that run directly inside
 Apple `container` VMs (no Docker nesting). This capability owns the `k3c
 cluster` command group and the workarounds that make k3s boot reliably inside a
 Virtualization.framework VM on Apple Silicon.
-
 ## Requirements
-
 ### Requirement: Create a k3s cluster
 
 `k3c cluster create [NAME]` SHALL provision a k3s server VM, wait for the node
@@ -57,15 +55,29 @@ save the cluster to disk and release CPU and memory, with `start` restoring it.
 
 ### Requirement: Reclaim unused memory
 
-`k3c cluster reclaim [NAME]` SHALL return memory the cluster no longer uses to
-the host by ballooning the VM down to its working set. With `--release` it SHALL
-deflate the balloon and restore the cluster's full configured memory.
+On policy-capable container builds, the cluster's VMs SHALL return unused
+memory to the host continuously: the runtime sizes the memory balloon to the
+guest's workload plus headroom, and deflates promptly when the guest runs
+low. `k3c cluster reclaim [NAME]` SHALL re-arm the
+runtime policy (after a manual override or with `memoryPolicy: off`) and
+report the footprint. With `--release` it SHALL switch the VM to manual
+memory management and restore the full configured memory.
 
-#### Scenario: Reclaim idle memory
+On older container builds (balloon support only), `k3c cluster reclaim`
+SHALL keep the previous behavior: balloon the VM down to its working set
+once, `--release` deflates.
 
-- **WHEN** the user runs `k3c cluster reclaim`
-- **THEN** unused guest memory is returned to the host while the balloon stays
-  sized to current usage
+#### Scenario: Memory returns continuously
+
+- **WHEN** a workload's memory demand drops on a policy-capable runtime
+- **THEN** the host footprint follows it down within seconds, without any
+  k3c command
+
+#### Scenario: Reclaim re-arms the policy
+
+- **WHEN** the user runs `k3c cluster reclaim` after a manual memory target
+- **THEN** the runtime's automatic policy is re-armed and the footprint
+  settles at the workload plus headroom
 
 ### Requirement: Activate a cluster as current
 
@@ -99,3 +111,45 @@ context. Activating a cluster SHALL reclaim any contested host ports (e.g. the
 
 - **WHEN** the user runs `k3c cluster ls`
 - **THEN** the known clusters are printed
+
+### Requirement: Repair host-to-guest gateway forwarding
+
+`k3c cluster repair [NAME]` SHALL rebuild the host-to-guest gateway
+forwarding for an existing cluster without recreating it, so a cluster whose
+registry or admission-webhook connections have started returning EOF on the
+gateway recovers in place. Repair SHALL NOT delete or recreate the cluster VM
+or its state.
+
+#### Scenario: Rebuild forwarding without recreating the cluster
+
+- **WHEN** the cluster's gateway forwarding is broken (e.g. registry or
+  webhook connections EOF on the gateway) and the user runs `k3c cluster
+  repair`
+- **THEN** the host-to-guest gateway forwarding is rebuilt and the cluster and
+  its state are left intact
+
+### Requirement: Cluster VMs are created with automatic memory management
+
+`k3c cluster create` SHALL create the server VM with the runtime's automatic
+memory policy enabled when `cluster.memoryPolicy: auto` (the default) on a
+policy-capable container build. With `cluster.memoryConvert: on-create` it
+SHALL additionally convert the freshly created VM with one
+suspend/restore cycle, so memory touched during the k3s boot returns to the
+host immediately (the hypervisor frees ballooned pages only for VMs
+restored from saved state; without the conversion, the first regular
+suspend or snapshot converts). A failed post-conversion restore SHALL fail
+the create visibly. `k3c cluster start` SHALL re-arm the policy on VMs
+created before policy support.
+
+#### Scenario: Create leaves a lean cluster
+
+- **WHEN** the user creates a cluster on a policy-capable runtime
+- **THEN** after creation the VM's host footprint reflects the k3s workload
+  plus headroom, not the boot-time peak
+
+#### Scenario: Existing clusters benefit without recreation
+
+- **WHEN** the user starts a cluster whose VM was created before memory
+  policy support
+- **THEN** the runtime's automatic memory policy is armed for that run
+

@@ -65,3 +65,26 @@ distroless/scratch container.
 
 - **WHEN** the user runs `k3c status`
 - **THEN** the cluster, daemon, and node status are printed
+
+### Requirement: Environment info
+
+`k3c info` SHALL print an at-a-glance summary of the k3c environment: the k3c
+version, the resolved container runtime (which binary, why it was selected,
+and its CLI version), the bundled runtime version if any, and where
+configuration is read from (state directory, user and project config, the
+container binary, and the active cluster and kube context). It SHALL be
+read-only and SHALL NOT start the container system, so it stays useful for
+diagnostics when the daemon is down. `--json` SHALL emit the same information
+as machine-readable JSON.
+
+#### Scenario: Show environment info
+
+- **WHEN** the user runs `k3c info`
+- **THEN** the k3c version, resolved container runtime and its CLI version, and
+  the configuration in use are printed without starting the container system
+
+#### Scenario: Machine-readable info
+
+- **WHEN** the user runs `k3c info --json`
+- **THEN** the same version, runtime, and configuration details are emitted as
+  JSON

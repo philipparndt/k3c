@@ -7,9 +7,10 @@ NAME SHALL default to a timestamp. The save SHALL support three tiers selected
 by flag — **warm** (default, when suspend is supported), **cold** (`--cold`),
 and **frozen** (`--frozen`) — and SHALL record the chosen tier as `mode:` in the
 snapshot's `meta.yaml`. `k3c snapshot restore [CLUSTER] NAME` SHALL restore a
-snapshot and start the cluster, auto-detecting the tier from `meta.yaml`. `list`
-and `delete` SHALL manage saved snapshots, and `list` SHALL show each
-snapshot's tier.
+snapshot and start the cluster, auto-detecting the tier from `meta.yaml`.
+`list`, `rename`, and `delete` SHALL manage saved snapshots; `list` SHALL show
+each snapshot's tier, and `rename [CLUSTER] OLD NEW` SHALL rename a stored
+snapshot, carrying its pull-cache image pin to the new name.
 
 #### Scenario: Save a warm snapshot
 
@@ -35,6 +36,23 @@ snapshot's tier.
 - **WHEN** the user runs `k3c snapshot restore mysnap`
 - **THEN** the tier is read from the snapshot's `meta.yaml` and the cluster is
   restored using that tier's restore path
+
+#### Scenario: Warm restore reclaims the snapshot address
+
+- **WHEN** the user restores a warm snapshot after the cluster was deleted and
+  recreated with swapped addresses (e.g. the registry took the server's former
+  IP)
+- **THEN** the restore stops the cluster's containers (releasing their
+  addresses), the server reclaims the snapshot-time address, and the snapshot
+  resumes warm
+- **AND** only when a running container outside the cluster holds that address
+  does the restore fall back to a cold boot, warning which container blocks it
+
+#### Scenario: Rename a snapshot
+
+- **WHEN** the user runs `k3c snapshot rename mysnap golden`
+- **THEN** the stored snapshot `mysnap` is renamed to `golden` and its pinned
+  image closure remains pinned under the new name
 
 ### Requirement: Export and import cluster snapshots
 
