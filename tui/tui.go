@@ -63,13 +63,14 @@ type treeRow struct {
 // button red. focus is the selected button, navigated with ←/→ and defaulting
 // to the safe leftmost (Cancel).
 type confirm struct {
-	prompt      string
-	cmd         tea.Cmd
-	noCmd       tea.Cmd
-	yesLabel    string // affirmative button label (default "OK")
-	noLabel     string // middle button label when noCmd is set (default "No")
-	destructive bool   // paint the affirmative button red
-	focus       int    // selected button index (0 = Cancel)
+	prompt        string
+	cmd           tea.Cmd
+	noCmd         tea.Cmd
+	yesLabel      string // affirmative button label (default "OK")
+	noLabel       string // middle button label when noCmd is set (default "No")
+	destructive   bool   // paint the affirmative button red
+	noDestructive bool   // paint the middle button red too (both choices destroy state)
+	focus         int    // selected button index (0 = Cancel)
 }
 
 // confirmButton is one rendered button in a confirm dialog. A nil action is
@@ -93,7 +94,7 @@ func (c confirm) buttons() []confirmButton {
 		if no == "" {
 			no = "No"
 		}
-		btns = append(btns, confirmButton{label: no, action: c.noCmd})
+		btns = append(btns, confirmButton{label: no, destructive: c.noDestructive, action: c.noCmd})
 	}
 	btns = append(btns, confirmButton{label: yes, destructive: c.destructive, action: c.cmd})
 	return btns
@@ -1059,6 +1060,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					"Warm resumes the saved machine (RAM included); cold boots fresh and uses less memory.", snap, name)
 				c.yesLabel = "Restore warm"
 				c.noLabel = "Restore cold"
+				c.noDestructive = true // both restore variants replace the current state
 				c.noCmd = m.opCmd("cold "+desc, append(append([]string{}, args...), "--cold")...)
 			}
 			m.confirm = c

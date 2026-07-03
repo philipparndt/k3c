@@ -49,8 +49,9 @@ func TestRestoreWarmSnapshotOffersColdChoice(t *testing.T) {
 		t.Errorf("button labels = %q/%q/%q, want Cancel/Restore cold/Restore warm",
 			btns[0].label, btns[1].label, btns[2].label)
 	}
-	if !btns[2].destructive {
-		t.Error("the Restore warm button is not marked destructive")
+	if !btns[1].destructive || !btns[2].destructive {
+		t.Errorf("both restore buttons must be destructive (replace current state): cold=%v warm=%v",
+			btns[1].destructive, btns[2].destructive)
 	}
 	if !strings.Contains(nm.confirm.prompt, "cold boots fresh") {
 		t.Errorf("prompt does not explain the warm/cold difference: %q", nm.confirm.prompt)
