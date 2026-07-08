@@ -834,20 +834,33 @@ func vmRAM(vmName string) string {
 	if err != nil {
 		return "-"
 	}
+	// Prefer the report header's "Footprint:" (dirty pages only). The
+	// phys_footprint task counter also charges pages the balloon has already
+	// returned to macOS as clean/reclaimable — after a warm snapshot's
+	// suspend/resume that overstates a ~16G cluster as ~26G even though the
+	// OS can take those pages back at any moment.
+	if b, ok := scanFootprint(out, "Footprint:"); ok {
+		return humanBytes(b)
+	}
+	if b, ok := scanFootprint(out, "phys_footprint:"); ok {
+		return humanBytes(b)
+	}
+	return "-"
+}
+
+// scanFootprint scans footprint(1) output for "<marker> <value> <unit>" and
+// converts the size to bytes. Rendered with humanBytes, the same formatter
+// snapshot sizes use, so every size in the TUI/CLI reads identically.
+func scanFootprint(out, marker string) (int64, bool) {
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "phys_footprint:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 3 {
-				// Convert footprint's binary "<value> <unit>" to bytes and render
-				// it with humanBytes, the same formatter snapshot sizes use, so
-				// every size in the TUI/CLI reads identically.
-				if b, ok := parseFootprintBytes(fields[1], fields[2]); ok {
-					return humanBytes(b)
-				}
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if f == marker && i+2 < len(fields) {
+				return parseFootprintBytes(fields[i+1], fields[i+2])
 			}
 		}
 	}
-	return "-"
+	return 0, false
 }
 
 // parseFootprintBytes converts a footprint(1) "<value> <unit>" pair to a byte
