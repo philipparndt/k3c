@@ -75,3 +75,42 @@ ingress instead of egressing), `egress.ports`, and `egress.forwards`.
 - **WHEN** a domain is listed in `egress.ingressDomains` in legacy mode
 - **THEN** the SNI gateway routes that domain to the cluster ingress instead of
   egressing it
+
+### Requirement: Per-VM gvnet netstack process lifecycle
+
+In transparent-egress mode each VM SHALL be backed by its own userspace netstack
+process, spawned detached (surviving the invoking `k3c` process) before the VM's
+`run`/`start` and exiting when its VM disconnects. k3c SHALL (re)spawn the
+netstack when its pidfile is dead or its socket is missing, and the netstack
+SHALL survive a VM restart that reconnects on a new NIC socket. Each VM's gvnet
+network SHALL be allocated a distinct, non-overlapping `/24` (starting at
+`192.168.127.0/24` and counting up), because the runtime rejects overlapping
+subnets.
+
+#### Scenario: Netstack respawned when its socket is gone
+
+- **WHEN** a VM is started and its per-VM netstack pidfile is dead or the socket
+  is missing
+- **THEN** k3c spawns a fresh detached netstack for that VM before the VM comes
+  up
+
+#### Scenario: Two VMs get distinct gvnet subnets
+
+- **WHEN** two clusters (or a cluster and the sidecar) run with transparent
+  egress at once
+- **THEN** each VM's gvnet network is assigned a distinct non-overlapping `/24`
+
+### Requirement: Guest can still reach host daemons under transparent egress
+
+The gvnet gateway SHALL NAT to host loopback so that — even though the netstack
+re-originates outbound connections from the host — the guest can still reach the
+host-side daemons (pull-cache, registry forward, admission webhook) at the
+gateway address. The guest's node IP SHALL remain pinned to the vmnet NIC so the
+host can always reach the kubelet/API even while gvnet owns the default route.
+
+#### Scenario: Pull-cache reachable under transparent egress
+
+- **WHEN** a cluster runs with transparent egress and containerd pulls via the
+  configured mirror
+- **THEN** the pull reaches the host pull-cache at the gateway address, because
+  the gvnet gateway NATs to host loopback
