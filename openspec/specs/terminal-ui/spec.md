@@ -173,3 +173,106 @@ without the dialog.
 - **THEN** the snapshot-create wizard opens directly, without the New/Recreate
   dialog
 
+### Requirement: Full machine lifecycle and memory actions from the list
+
+On a machine row the UI SHALL offer the full lifecycle: activate (make current),
+start, stop, pause, resume, suspend, switch kube context, reclaim memory, and
+release memory (restore full configured memory), each bound to a key and shown
+in the shortcut menu. Operations SHALL run the corresponding `k3c` subcommand as
+a subprocess with its output streamed into the UI.
+
+#### Scenario: Reclaim memory from the UI
+
+- **WHEN** the user selects a running machine and presses the reclaim key
+- **THEN** the UI runs the reclaim operation and streams its output, and the
+  release key restores the machine's full configured memory
+
+### Requirement: Manage the Docker sidecar from the list
+
+The UI SHALL list the Docker sidecar as a machine with its own lifecycle verbs
+(activate, up, down, pause, resume, suspend, snapshot, remove), so the sidecar
+is managed from the same interface as clusters.
+
+#### Scenario: Sidecar appears and is actionable
+
+- **WHEN** the sidecar exists and the UI is open
+- **THEN** it is listed as a machine and its lifecycle verbs are available from
+  the shortcut menu
+
+### Requirement: Snapshot create, restore, rename, delete, and export from the list
+
+The snapshot-create wizard SHALL take a name and let the user cycle the tier
+(warm/cold/frozen; the sidecar is limited to warm/cold). Restoring a snapshot
+SHALL be presented as a destructive action, offering warm and cold restore for a
+warm snapshot. The UI SHALL support renaming a snapshot (text input), deleting a
+snapshot, and — when deleting a cluster — a follow-up choice to keep or also
+delete its snapshots. Exporting SHALL offer the frozen-bundle tier chooser
+(slim/fat/thin) for frozen snapshots and a direct disk-image export for
+warm/cold snapshots.
+
+#### Scenario: Create a snapshot choosing a tier
+
+- **WHEN** the user opens the create wizard, enters a name, and cycles the tier
+- **THEN** a snapshot is saved at the chosen tier
+
+#### Scenario: Delete a cluster with a snapshots choice
+
+- **WHEN** the user deletes a cluster from the list
+- **THEN** the UI offers to keep or also delete the cluster's snapshots before
+  proceeding
+
+### Requirement: Guarded destructive actions via a confirm dialog
+
+Destructive actions SHALL be confirmed through a buttoned dialog (yes/no, with
+an optional third choice) navigable with ←→/tab and `y`/`n`/`esc` shortcuts,
+with the destructive button styled distinctly and a safe default focused.
+
+#### Scenario: Cancelling a destructive confirm makes no change
+
+- **WHEN** a destructive action's confirm dialog is shown and the user cancels
+- **THEN** nothing is changed
+
+### Requirement: Command log and keybinding help overlays
+
+The UI SHALL provide a scrollable command-log overlay recording the `k3c`
+subcommands run during the session with their output and success/failure, and a
+scrollable keybinding-help overlay listing every shortcut.
+
+#### Scenario: Review a past operation
+
+- **WHEN** the user opens the command-log overlay after running operations
+- **THEN** the executed subcommands, their output, and their success/failure are
+  listed
+
+### Requirement: Honor the configured theme palette
+
+Beyond the default accent, the UI SHALL apply the per-role colors from
+`ui.theme` (accent, dim, good, warn, cool, bad; see [[configuration]]) to the
+corresponding interface elements, falling back to the built-in palette for any
+unset role.
+
+#### Scenario: Custom role colors are applied
+
+- **WHEN** `ui.theme` sets some role colors and the user launches `k3c ui`
+- **THEN** those elements render in the configured colors and unset roles use
+  the defaults
+
+### Requirement: Surface CPU-priority state and the runtime-update restart prompt
+
+The info panel SHALL surface each machine's CPU-priority state (deprioritized,
+drifted, or normal; see [[cluster-lifecycle]]). After the k3c binary is upgraded,
+the UI SHALL offer to restart the embedded container system so the new runtime
+takes effect, prompting once per session.
+
+#### Scenario: Drifted priority is visible
+
+- **WHEN** a machine's VM was respawned and its reduced CPU priority was reset
+- **THEN** the info panel shows the priority as drifted
+
+#### Scenario: Offer a runtime restart after an upgrade
+
+- **WHEN** the k3c binary has been upgraded since the embedded container system
+  started
+- **THEN** the UI offers to restart the container system, asking once per
+  session
+

@@ -153,3 +153,41 @@ created before policy support.
   policy support
 - **THEN** the runtime's automatic memory policy is armed for that run
 
+### Requirement: Cluster VMs are deprioritized against interactive apps
+
+Unless `cluster.cpuPriority: normal` is set, k3c SHALL lower the scheduling
+priority of each cluster (and sidecar) VM process below interactive GUI apps by
+setting its `nice` value to the maximum, applied on every lifecycle operation.
+Because the runtime may respawn a VM's host process out of band and reset its
+priority, k3c SHALL run a periodic reconcile that re-asserts the reduced
+priority, and SHALL be able to report the priority state as low, normal, or
+"drifted" (enabled but currently reset by a respawn) for display.
+
+#### Scenario: Interactive apps win CPU contention
+
+- **WHEN** a cluster is running with the default `cpuPriority: low` and the host
+  is under CPU pressure
+- **THEN** the VM's process is niced below interactive apps so the desktop stays
+  responsive
+
+#### Scenario: Priority self-heals after a VM respawn
+
+- **WHEN** the runtime respawns a VM's host process and its `nice` value resets
+- **THEN** the periodic reconcile re-asserts the reduced priority without a user
+  command
+
+### Requirement: Detect guest-kernel capabilities to choose workarounds
+
+k3c SHALL inspect the guest kernel's embedded build configuration to detect
+whether it provides `br_netfilter` and `vxlan`, and choose the k3s networking
+workarounds accordingly (falling back to `--flannel-backend=host-gw` and
+`kube-proxy --masquerade-all` when they are absent) rather than probe-booting a
+VM. When `cluster.kernel` permits it, k3c MAY upgrade the guest to a kernel that
+provides the needed capabilities.
+
+#### Scenario: Workarounds chosen from the kernel's capabilities
+
+- **WHEN** the guest kernel lacks `br_netfilter` and `vxlan`
+- **THEN** the cluster is created with the host-gw flannel backend and
+  `--masquerade-all`, detected from the kernel config without a probe boot
+
