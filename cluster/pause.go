@@ -18,9 +18,31 @@ import (
 // no crash-loop backoffs. The frozen state lives in memory only: it does
 // not survive a host reboot (use stop/start or snapshots for that), and
 // the paused VM keeps its memory allocated.
+//
+// In transparent-egress mode the per-VM gvnet netstack is frozen too: it is a
+// host-side process outside the VM, so pausing only the guest leaves it running
+// against a guest that no longer drains its NIC socket, and it then spins at
+// ~100% CPU retrying delivery (ENOBUFS). Freezing it in lockstep keeps its
+// socket and learned peer intact, so resume stays instant with no reconnect.
 
 func pausedMarker(cfg *config.Config) string {
 	return filepath.Join(cfg.RunDir(), "paused")
+}
+
+// gvnetPIDs returns the cluster's running transparent-egress netstack PIDs so
+// pause can freeze them alongside the guest VMs (and resume thaw them). Empty
+// when transparent egress is off or no netstack is running.
+func gvnetPIDs(cfg *config.Config) []int {
+	if !cfg.TransparentEgress {
+		return nil
+	}
+	var pids []int
+	for _, vm := range []string{cfg.ServerName, cfg.RegistryName} {
+		if pid := gvnetPID(cfg, vm); pid != 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 // vmProcessPIDs finds the processes backing a container: the runtime
@@ -79,6 +101,9 @@ func Pause(cfg *config.Config) error {
 	if registryPids, err := vmProcessPIDs(cfg.RegistryName); err == nil {
 		pids = append(pids, registryPids...)
 	}
+	// Freeze the host-side netstack(s) with the guest — resume SIGCONTs every
+	// PID in the marker, so they thaw automatically.
+	pids = append(pids, gvnetPIDs(cfg)...)
 	alreadyFrozen := true
 	for _, pid := range pids {
 		if !processStopped(pid) {
@@ -123,10 +148,20 @@ func pauseNative(cfg *config.Config) error {
 		return fmt.Errorf("pause failed: %s", out)
 	}
 	_, _ = runContainer("pause", cfg.RegistryName)
+	// The container CLI pauses only the guest VMs; the netstack is a k3c-spawned
+	// host process, so freeze it here too and record its PIDs after the "native"
+	// token so Resume can thaw them.
+	marker := "native"
+	for _, pid := range gvnetPIDs(cfg) {
+		if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+			return fmt.Errorf("freezing netstack pid %d: %w", pid, err)
+		}
+		marker += " " + strconv.Itoa(pid)
+	}
 	if err := os.MkdirAll(cfg.RunDir(), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(pausedMarker(cfg), []byte("native"), 0o644); err != nil {
+	if err := os.WriteFile(pausedMarker(cfg), []byte(marker), 0o644); err != nil {
 		return err
 	}
 	logger.Info("cluster '" + cfg.Cluster + "' paused (in memory); resume with: k3c cluster resume " + cfg.Cluster)
@@ -140,11 +175,18 @@ func Resume(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("cluster '%s' is not paused", cfg.Cluster)
 	}
-	if strings.TrimSpace(string(data)) == "native" {
+	fields := strings.Fields(string(data))
+	if len(fields) > 0 && fields[0] == "native" {
 		if out, err := runContainer("resume", cfg.ServerName); err != nil {
 			return fmt.Errorf("resume failed: %s", out)
 		}
 		_, _ = runContainer("resume", cfg.RegistryName)
+		// Thaw the netstack PIDs recorded after the "native" token.
+		for _, field := range fields[1:] {
+			if pid, err := strconv.Atoi(field); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGCONT)
+			}
+		}
 		_ = os.Remove(pausedMarker(cfg))
 		_ = loadPorts(cfg)
 		if err := waitReady(cfg); err != nil {
@@ -158,7 +200,7 @@ func Resume(cfg *config.Config) error {
 		logger.Info("cluster '" + cfg.Cluster + "' resumed (kube context and public routing switched)")
 		return nil
 	}
-	for _, field := range strings.Fields(string(data)) {
+	for _, field := range fields {
 		pid, err := strconv.Atoi(field)
 		if err != nil {
 			continue
@@ -185,13 +227,13 @@ func Resume(cfg *config.Config) error {
 func resumeIfPaused(cfg *config.Config) {
 	if data, err := os.ReadFile(pausedMarker(cfg)); err == nil {
 		logger.Info("cluster is paused, resuming first")
-		if strings.TrimSpace(string(data)) == "native" {
+		fields := strings.Fields(string(data))
+		if len(fields) > 0 && fields[0] == "native" {
 			_, _ = runContainer("resume", cfg.ServerName)
 			_, _ = runContainer("resume", cfg.RegistryName)
-			_ = os.Remove(pausedMarker(cfg))
-			return
+			fields = fields[1:] // remaining are netstack PIDs to thaw
 		}
-		for _, field := range strings.Fields(string(data)) {
+		for _, field := range fields {
 			if pid, err := strconv.Atoi(field); err == nil {
 				_ = syscall.Kill(pid, syscall.SIGCONT)
 			}
