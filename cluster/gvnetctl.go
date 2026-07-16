@@ -230,6 +230,24 @@ func stopGvnet(cfg *config.Config, vm string) {
 	_ = os.Remove(gvnetSocketPath(cfg, vm))
 }
 
+// gvnetPID returns the PID of a VM's running netstack, or 0 when there is no
+// live netstack (missing/stale pidfile or dead process). pause/resume use it to
+// freeze and thaw the host-side netstack in lockstep with its guest.
+func gvnetPID(cfg *config.Config, vm string) int {
+	data, err := os.ReadFile(gvnetPidFile(cfg, vm))
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	if proc, err := os.FindProcess(pid); err == nil && proc.Signal(syscall.Signal(0)) == nil {
+		return pid
+	}
+	return 0
+}
+
 // removeGvnet fully removes a VM's gvnet network (after the container itself is
 // gone) in addition to stopping its netstack.
 func removeGvnet(cfg *config.Config, vm string) {
