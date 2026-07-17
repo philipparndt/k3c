@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/philipparndt/go-logger"
@@ -83,6 +84,14 @@ func PrepareK3sNodeImages(cfg *config.Config) error {
 // without the host system bundle — only the extra roots the node must trust.
 func corpCACerts(cfg *config.Config) ([]byte, error) {
 	var bundle []byte
+	// CAs the host trusts (macOS System keychain) — e.g. a corporate root or an
+	// internal registry CA — must be baked into node/builder images too, so a
+	// nested build pulling base images through the corporate-CA registry mirror
+	// verifies. This does not depend on caCerts globs and pins no specific CA.
+	if extra := systemKeychainCerts(); len(extra) > 0 {
+		bundle = append(bundle, extra...)
+		bundle = append(bundle, '\n')
+	}
 	for _, glob := range cfg.CACertGlobs {
 		matches, err := filepath.Glob(glob)
 		if err != nil {
@@ -111,11 +120,25 @@ func corpCACerts(cfg *config.Config) ([]byte, error) {
 // defaulting to arm64 (Apple silicon) when it cannot be determined.
 func sidecarArch() string {
 	out, err := runContainer("exec", dockerName, "docker", "version", "--format", "{{.Server.Arch}}")
-	if arch := strings.TrimSpace(firstLine(out)); err == nil && arch != "" {
-		return arch
+	if err == nil {
+		// The container CLI can prepend noise (a debug build prints
+		// "Warning! Running debug build…"), so don't assume the first line is the
+		// arch. The arch is a single bare token; take the last arch-shaped line
+		// (whitespace-free) and ignore warnings.
+		lines := strings.Split(out, "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			s := strings.TrimSpace(lines[i])
+			if archToken.MatchString(s) {
+				return s
+			}
+		}
 	}
 	return "arm64"
 }
+
+// archToken matches a platform arch component (e.g. arm64, amd64, aarch64) and
+// nothing containing spaces, so warning lines from the container CLI are skipped.
+var archToken = regexp.MustCompile(`^[a-z0-9_]+$`)
 
 // nodeImagePrepared reports whether img already carries our CA-injected label
 // for the current CA bundle hash.

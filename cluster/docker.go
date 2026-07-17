@@ -150,15 +150,17 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 	if cfg.RegistryEnabled {
 		dockerd = append(dockerd, "--insecure-registry="+cfg.VmnetGateway+":"+cfg.RegistryPort)
 	}
+	// Always enter through /bin/sh so the CA-trust prelude installs the mounted
+	// bundle into the guest OS trust store (covering BuildKit/containerd, not
+	// just dockerd via SSL_CERT_FILE) before handing off to the dind entrypoint.
+	// Transparent egress additionally repoints the default route at the gvnet NIC
+	// first. Then exec the dind entrypoint which prepares and runs the engine.
+	prelude := config.CATrustSnippet
 	if cfg.TransparentEgress {
-		// repoint the default route at the gvnet NIC, then hand off to the dind
-		// entrypoint (which prepares the engine) — keeps egress transparent
-		args = append(args, "--entrypoint", "/bin/sh", dockerImage, "-c",
-			config.GvnetRouteSnippet+"exec dockerd-entrypoint.sh "+strings.Join(dockerd, " "))
-	} else {
-		args = append(args, dockerImage)
-		args = append(args, dockerd...)
+		prelude = config.GvnetRouteSnippet + prelude
 	}
+	args = append(args, "--entrypoint", "/bin/sh", dockerImage, "-c",
+		prelude+"exec dockerd-entrypoint.sh "+strings.Join(dockerd, " "))
 	if out, err := runContainer(args...); err != nil {
 		return fmt.Errorf("docker sidecar start failed: %s", out)
 	}
@@ -303,7 +305,14 @@ func buildBuildkitImage(ca []byte) error {
 		return err
 	}
 	logger.Info("building CA-trusting buildkit image " + buildkitLocalImage)
-	build := dockerCmd("build", "-t", buildkitLocalImage, dir)
+	// Pin the sidecar's native arch: the buildkit daemon runs natively on the
+	// sidecar, so this image must match it. Without --platform the build inherits
+	// any DOCKER_DEFAULT_PLATFORM from the environment (e.g. linux/amd64 exported
+	// for cross-arch app builds), which produces an emulated image whose RUN step
+	// crashes under Rosetta ("unable to mmap ELF"). --provenance=false keeps it a
+	// plain single-arch image (matches bakeNodeImage).
+	build := dockerCmd("build", "--platform", "linux/"+sidecarArch(), "--provenance=false",
+		"-t", buildkitLocalImage, dir)
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		return fmt.Errorf("building buildkit image: %w", err)
