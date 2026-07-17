@@ -168,12 +168,23 @@ func prepareNodeConfig(cfg *config.Config) error {
 	return os.WriteFile(filepath.Join(etc, "ca-bundle.pem"), bundle, 0o644)
 }
 
-// caBundle builds the trust bundle for guests: the host's system roots
-// plus the configured corporate CAs.
+// caBundle builds the trust bundle for guests: the host's system roots, the
+// CAs the host actually trusts (macOS System keychain), plus any configured
+// corporate CAs.
 func caBundle(cfg *config.Config) ([]byte, error) {
 	bundle, err := os.ReadFile("/etc/ssl/cert.pem")
 	if err != nil {
 		return nil, fmt.Errorf("reading system CA bundle: %w", err)
+	}
+	// /etc/ssl/cert.pem carries only the built-in roots; a CA an admin added to
+	// the macOS System keychain (e.g. a corporate root doing TLS interception,
+	// or an internal registry CA) is trusted by the host but absent from that
+	// file. Share whatever the host trusts so guests trust exactly the same set
+	// — without depending on caCerts globs pointing at the right files. This
+	// pins no specific CA; it re-shares the host's own trust store.
+	if extra := systemKeychainCerts(); len(extra) > 0 {
+		bundle = append(bundle, '\n')
+		bundle = append(bundle, extra...)
 	}
 	for _, glob := range cfg.CACertGlobs {
 		matches, err := filepath.Glob(glob)
@@ -197,6 +208,21 @@ func caBundle(cfg *config.Config) ([]byte, error) {
 		}
 	}
 	return bundle, nil
+}
+
+// systemKeychainCerts returns the certificates in the macOS System keychain as
+// PEM (admin-installed roots like a corporate CA live there, not in
+// /etc/ssl/cert.pem). It is best-effort: a failure (non-macOS host, no
+// `security` tool) yields nil and the bundle just falls back to the system
+// roots plus configured caCerts.
+func systemKeychainCerts() []byte {
+	out, err := exec.Command("security", "find-certificate", "-a", "-p",
+		"/Library/Keychains/System.keychain").Output()
+	if err != nil {
+		logger.Warn("could not read macOS System keychain CAs (continuing without them): " + err.Error())
+		return nil
+	}
+	return out
 }
 
 func startServer(cfg *config.Config) error {

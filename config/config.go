@@ -607,6 +607,20 @@ func (c *Config) ContextPrefix() string {
 const GvnetRouteSnippet = `GV=$(ip -4 -o addr show | awk '$4 !~ /^192[.]168[.]64[.]/ && $4 ~ /^192[.]168[.]/ {print $2" "$4; exit}'); if [ -n "$GV" ]; then GVGW=$(echo "${GV#* }" | awk -F'[./]' '{print $1"."$2"."$3".1"}'); ip route replace default via "$GVGW" dev "${GV%% *}"; echo "nameserver $GVGW" > /etc/resolv.conf; fi
 `
 
+// CATrustSnippet is a shell snippet for a VM entrypoint that installs the
+// mounted CA bundle (/k3c-ca/ca-bundle.pem — host system roots plus any
+// configured caCerts) into the guest's OS trust store before the daemon starts.
+// SSL_CERT_FILE already points Go (dockerd) at that bundle, but nothing else in
+// the VM — BuildKit, containerd, curl/apk in nested builds — reads it; those
+// consult /etc/ssl/certs/ca-certificates.crt instead. Sharing the same bundle
+// system-wide (via Alpine's update-ca-certificates) makes every component trust
+// exactly what the host does, so e.g. a `docker push` to a corporate-CA
+// registry verifies. It hard-codes no specific CA; it just re-shares the bundle.
+// Idempotent (fixed filename, safe to re-run) and a no-op when the bundle or
+// update-ca-certificates is absent.
+const CATrustSnippet = `if [ -f /k3c-ca/ca-bundle.pem ]; then mkdir -p /usr/local/share/ca-certificates; cp /k3c-ca/ca-bundle.pem /usr/local/share/ca-certificates/k3c-ca-bundle.crt; command -v update-ca-certificates >/dev/null 2>&1 && update-ca-certificates >/dev/null 2>&1 || true; fi
+`
+
 func (c *Config) K3sCommand(modernKernel bool) string {
 	args := []string{
 		"--disable=traefik",
