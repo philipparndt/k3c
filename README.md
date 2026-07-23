@@ -97,7 +97,7 @@ k3c docker up|down|status ...
 - `cluster suspend` saves the VM to disk (releasing CPU/memory; `start`
   restores it); `cluster reclaim` returns unused memory to the host;
   `cluster repair` rebuilds host↔guest gateway forwarding without recreating
-  the cluster; `cluster import-run FILE` creates a cluster from an exported
+  the cluster (a running docker sidecar is repaired too); `cluster import-run FILE` creates a cluster from an exported
   snapshot and restores it in one step.
 
 `activate` (alias `use`) makes a cluster current: resumes or starts it if
