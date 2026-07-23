@@ -359,10 +359,15 @@ func (d *doctor) checkGatewayForwarding(cfg *config.Config) {
 	if probe("127.0.0.1") == nil {
 		// loopback serves but the gateway does not: the forwarding plane (vmnet
 		// attachment / gvnet netstack) is stale, not the service. A daemons
-		// restart only re-binds listeners and will NOT fix this.
+		// restart only re-binds listeners and will NOT fix this. This probe runs
+		// on the HOST, and 192.168.64.1 is a local (bridge100) address — when even
+		// the host gets EOF here, the wedged state is the host-side vmnet
+		// plumbing owned by the container system, which no VM/daemon lifecycle
+		// rebuilds; only a container system restart does.
 		d.fail("registry serves on loopback but not via the gateway "+cfg.VmnetGateway+":"+cfg.RegistryPort+
 			" ("+firstLine(gwErr.Error())+") — guest->gateway forwarding is stale; a daemons restart will not fix it",
-			"k3c cluster repair")
+			"k3c cluster repair — if it persists, the host-side vmnet plumbing is wedged: "+
+				"k3c container system stop && k3c container system start, then k3c cluster start")
 		return
 	}
 	d.fail("registry not reachable on the gateway or loopback ("+firstLine(gwErr.Error())+")", "k3c cluster repair")
@@ -416,7 +421,8 @@ func (d *doctor) checkDockerGatewayForwarding(cfg *config.Config) {
 		"wget", "-q", "-T", "4", "-O", "/dev/null", probeURL); err != nil {
 		d.fail("sidecar cannot reach the gateway ("+probeURL+"): "+firstLine(out)+
 			" — the sidecar's guest->gateway forwarding is stale (its own netstack, separate from the cluster's)",
-			"k3c cluster repair (or: k3c docker down && k3c docker up)")
+			"k3c cluster repair (or: k3c docker down && k3c docker up) — if it persists, restart the "+
+				"container system: k3c container system stop && k3c container system start")
 		return
 	}
 	d.pass("sidecar reaches the gateway services (" + probeURL + ")")
