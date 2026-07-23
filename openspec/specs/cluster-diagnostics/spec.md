@@ -21,6 +21,16 @@ CoreDNS.
 - **THEN** read-only checks are run and their results reported, with no changes
   made to the host or cluster
 
+#### Scenario: Sidecar guest-to-gateway forwarding is probed separately
+
+- **WHEN** the docker sidecar is running and a gateway service (pull cache or
+  local registry) is enabled
+- **THEN** doctor probes that service from inside the sidecar (the path its
+  image pulls take), and a failure is reported with the fix
+  (`k3c cluster repair`, or `k3c docker down && k3c docker up`) — the
+  sidecar has its own netstack, so the cluster's gateway path being healthy
+  does not cover it
+
 ### Requirement: Interactive in-cluster debug shell
 
 With `--shell`, `k3c doctor` SHALL start a debug pod (default

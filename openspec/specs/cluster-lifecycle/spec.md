@@ -118,7 +118,10 @@ context. Activating a cluster SHALL reclaim any contested host ports (e.g. the
 forwarding for an existing cluster without recreating it, so a cluster whose
 registry or admission-webhook connections have started returning EOF on the
 gateway recovers in place. Repair SHALL NOT delete or recreate the cluster VM
-or its state.
+or its state. When the docker sidecar is running, repair SHALL rebuild its
+forwarding plane too (the sidecar is a separate VM with its own vmnet
+attachment and gvnet netstack, so repairing only the server VM leaves the
+sidecar's path to the gateway services — pull cache, local registry — dead).
 
 #### Scenario: Rebuild forwarding without recreating the cluster
 
@@ -127,6 +130,14 @@ or its state.
   repair`
 - **THEN** the host-to-guest gateway forwarding is rebuilt and the cluster and
   its state are left intact
+
+#### Scenario: Repair covers a running docker sidecar
+
+- **WHEN** the docker sidecar is running and the user runs `k3c cluster repair`
+- **THEN** the sidecar is restarted with a fresh netstack (equivalent to
+  `k3c docker down && k3c docker up`), so its pulls through the gateway
+  (pull cache, local registry) work again; a stopped or absent sidecar is
+  left untouched
 
 ### Requirement: Cluster VMs are created with automatic memory management
 

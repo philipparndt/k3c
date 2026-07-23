@@ -629,7 +629,9 @@ func Stop(cfg *config.Config) error {
 // the vmnet gateway) returns EOF — typically after long uptime or host
 // sleep/resume. A `daemons restart` only re-binds the host listeners; the dead
 // path is the VM's network attachment (the vmnet bridge and, with transparent
-// egress, the per-VM gvnet netstack), which only a VM restart rebuilds.
+// egress, the per-VM gvnet netstack), which only a VM restart rebuilds. A
+// running docker sidecar is repaired the same way — it is a separate VM with
+// its own attachment and netstack (k3c-docker).
 func Repair(cfg *config.Config) error {
 	if !containerExists(cfg.ServerName, false) {
 		return fmt.Errorf("cluster '%s' does not exist; create it first", cfg.Cluster)
@@ -657,7 +659,20 @@ func Repair(cfg *config.Config) error {
 	// Start re-spawns the daemons, respawns the netstack and re-attaches the VM
 	// (startServerVM -> ensureGvnet), re-merges the kubeconfig, and via postStart
 	// repairs virtiofs and re-registers the admission webhook, then waits Ready.
-	return Start(cfg)
+	if err := Start(cfg); err != nil {
+		return err
+	}
+
+	// The docker sidecar is its own VM with its own vmnet attachment and (with
+	// transparent egress) its own gvnet netstack — just as stale after host
+	// sleep/resume and untouched by the server restart above. A full down/up
+	// cycle rebuilds its attachment and spawns a fresh netstack (down removes
+	// the netstack's pidfile/socket, so up cannot keep the stale-but-running
+	// one). Without this, the sidecar's pulls through the gateway (pull cache,
+	// local registry) keep EOF'ing after a successful cluster repair.
+	return repairSidecarForwarding(containerExists(dockerName, true),
+		func() error { return DockerDown(cfg) },
+		func() error { return DockerUp(cfg, false) })
 }
 
 // Start resumes a stopped cluster.
