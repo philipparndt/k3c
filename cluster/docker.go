@@ -651,6 +651,22 @@ func DockerRemove(cfg *config.Config, removeVolume bool) error {
 	return nil
 }
 
+// repairSidecarForwarding rebuilds a RUNNING sidecar's forwarding plane via a
+// full down/up cycle (Repair calls it after restarting the server VM). A
+// stopped or absent sidecar needs nothing — its next `docker up` rebuilds the
+// attachment and netstack anyway. down/up are injected so the sequencing is
+// testable without a container runtime.
+func repairSidecarForwarding(running bool, down, up func() error) error {
+	if !running {
+		return nil
+	}
+	logger.Info("repairing gateway forwarding for the docker sidecar")
+	if err := down(); err != nil {
+		return err
+	}
+	return up()
+}
+
 // DockerStatus prints the sidecar state and the active docker context.
 func DockerStatus(cfg *config.Config) error {
 	switch {

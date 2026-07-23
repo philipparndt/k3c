@@ -359,10 +359,15 @@ func (d *doctor) checkGatewayForwarding(cfg *config.Config) {
 	if probe("127.0.0.1") == nil {
 		// loopback serves but the gateway does not: the forwarding plane (vmnet
 		// attachment / gvnet netstack) is stale, not the service. A daemons
-		// restart only re-binds listeners and will NOT fix this.
+		// restart only re-binds listeners and will NOT fix this. This probe runs
+		// on the HOST, and 192.168.64.1 is a local (bridge100) address — when even
+		// the host gets EOF here, the wedged state is the host-side vmnet
+		// plumbing owned by the container system, which no VM/daemon lifecycle
+		// rebuilds; only a container system restart does.
 		d.fail("registry serves on loopback but not via the gateway "+cfg.VmnetGateway+":"+cfg.RegistryPort+
 			" ("+firstLine(gwErr.Error())+") — guest->gateway forwarding is stale; a daemons restart will not fix it",
-			"k3c cluster repair")
+			"k3c cluster repair — if it persists, the host-side vmnet plumbing is wedged: "+
+				"k3c container system stop && k3c container system start, then k3c cluster start")
 		return
 	}
 	d.fail("registry not reachable on the gateway or loopback ("+firstLine(gwErr.Error())+")", "k3c cluster repair")
@@ -397,6 +402,46 @@ func (d *doctor) checkDockerSidecar(cfg *config.Config) {
 		return
 	}
 	d.pass("engine loopback publish healthy (" + endpoint + ")")
+	d.checkDockerGatewayForwarding(cfg)
+}
+
+// checkDockerGatewayForwarding probes a gateway service from INSIDE the
+// sidecar — the path its image pulls take to the pull cache / local registry.
+// The sidecar is its own VM with its own vmnet attachment and gvnet netstack,
+// so a healthy cluster gateway path proves nothing here: after host
+// sleep/resume the sidecar's forwarding can be stale on its own, with pulls
+// from real registries still working and only the gateway services EOF'ing.
+func (d *doctor) checkDockerGatewayForwarding(cfg *config.Config) {
+	probeURL := dockerGatewayProbeURL(cfg)
+	if probeURL == "" {
+		return
+	}
+	// busybox wget ships in the docker:dind image; -T bounds the whole request
+	if out, err := runContainer("exec", dockerName,
+		"wget", "-q", "-T", "4", "-O", "/dev/null", probeURL); err != nil {
+		d.fail("sidecar cannot reach the gateway ("+probeURL+"): "+firstLine(out)+
+			" — the sidecar's guest->gateway forwarding is stale (its own netstack, separate from the cluster's)",
+			"k3c cluster repair (or: k3c docker down && k3c docker up) — if it persists, restart the "+
+				"container system: k3c container system stop && k3c container system start")
+		return
+	}
+	d.pass("sidecar reaches the gateway services (" + probeURL + ")")
+}
+
+// dockerGatewayProbeURL picks the gateway service the sidecar depends on
+// most: the pull cache (dockerd's registry mirror), else the local registry.
+// Empty when neither is enabled or there is no vmnet gateway to probe.
+func dockerGatewayProbeURL(cfg *config.Config) string {
+	if cfg.VmnetGateway == "" {
+		return ""
+	}
+	switch {
+	case cfg.PullCacheEnabled:
+		return "http://" + net.JoinHostPort(cfg.VmnetGateway, cfg.PullCachePort) + "/v2/"
+	case cfg.RegistryEnabled:
+		return "http://" + net.JoinHostPort(cfg.VmnetGateway, cfg.RegistryPort) + "/v2/"
+	}
+	return ""
 }
 
 // checkEgress sends a request to a registry mirror through the host
