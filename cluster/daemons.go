@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -539,6 +540,87 @@ func portOpen(port string) bool {
 	return true
 }
 
+// heldDaemonPorts reports which of the daemons' listener ports are already
+// taken. Meant to be called after the orphan reap, when anything still
+// listening is foreign: the daemons bind every port from one process and
+// RunDaemons returns on the first bind error, so a single occupied port takes
+// all the listeners down with it.
+func heldDaemonPorts(cfg *config.Config) []listenerSpec {
+	specs := daemonListeners(cfg)
+	held := make([]bool, len(specs))
+	var wg sync.WaitGroup
+	for i, s := range specs {
+		wg.Add(1)
+		go func(i int, s listenerSpec) {
+			defer wg.Done()
+			held[i] = portOpen(s.port)
+		}(i, s)
+	}
+	wg.Wait()
+	var out []listenerSpec
+	for i, s := range specs {
+		if held[i] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// portConflictError names the occupied ports and, where it can, the processes
+// holding them — so the failure reads as "OrbStack has :443" instead of
+// sending the user to grep the daemon log.
+func portConflictError(held []listenerSpec) error {
+	var b strings.Builder
+	b.WriteString("cannot start host daemons: ")
+	if len(held) == 1 {
+		b.WriteString("port already in use")
+	} else {
+		b.WriteString("ports already in use")
+	}
+	var stale bool
+	for _, s := range held {
+		b.WriteString("\n  :" + s.port + " (" + s.name + ")")
+		if holder := portHolder(s.port); holder != "" {
+			b.WriteString(" held by " + holder)
+			stale = stale || strings.HasPrefix(holder, "k3c ")
+		}
+	}
+	// A k3c process still on the port outlived the orphan reap, so point at the
+	// command that clears it rather than at some unrelated app.
+	if stale {
+		b.WriteString("\nrun `k3c daemons restart`, or stop the process holding the port, then retry")
+	} else {
+		b.WriteString("\nstop whatever holds the port, then retry")
+	}
+	return fmt.Errorf("%s", b.String())
+}
+
+// portHolder names the process listening on a TCP port, e.g.
+// "OrbStack (pid 51402)". Best-effort: returns "" when lsof is unavailable or
+// the socket belongs to another user.
+func portHolder(port string) string {
+	out, err := exec.Command("lsof", "-nP", "-F", "pc", "-iTCP:"+port, "-sTCP:LISTEN").Output()
+	if err != nil {
+		return ""
+	}
+	var pid, name string
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 2 {
+			continue
+		}
+		switch line[0] {
+		case 'p':
+			pid = line[1:]
+		case 'c':
+			name = line[1:]
+		}
+		if pid != "" && name != "" {
+			return name + " (pid " + pid + ")"
+		}
+	}
+	return ""
+}
+
 func pidAlive(pidFile string) bool {
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -589,9 +671,34 @@ func DaemonsState(cfg *config.Config) DaemonsInfo {
 		info.Spawned = strings.TrimSpace(string(recorded))
 	}
 
-	type spec struct{ name, port, detail string }
-	var specs []spec
-	add := func(name, port, detail string) { specs = append(specs, spec{name, port, detail}) }
+	specs := daemonListeners(cfg)
+	info.Listeners = make([]ListenerState, len(specs))
+	var wg sync.WaitGroup
+	for i, s := range specs {
+		wg.Add(1)
+		go func(i int, s listenerSpec) {
+			defer wg.Done()
+			info.Listeners[i] = ListenerState{Name: s.name, Port: s.port, Detail: s.detail, Up: portOpen(s.port)}
+		}(i, s)
+	}
+	wg.Wait()
+	return info
+}
+
+// listenerSpec is one host-daemon listener: its name, port, and optional detail.
+type listenerSpec struct{ name, port, detail string }
+
+// daemonListeners is the set of ports RunDaemons binds for this config — the
+// single source of truth behind `daemons status` and the pre-spawn port check.
+// The registry listener is unconditional, matching RunDaemons: it is bound even
+// when the local registry is disabled, so a conflict on that port is fatal too.
+func daemonListeners(cfg *config.Config) []listenerSpec {
+	var specs []listenerSpec
+	add := func(name, port, detail string) {
+		if port != "" {
+			specs = append(specs, listenerSpec{name, port, detail})
+		}
+	}
 	add("proxy", cfg.ProxyPort, "")
 	add("sni-gateway", "443", "")
 	for _, p := range cfg.EgressPorts {
@@ -605,24 +712,11 @@ func DaemonsState(cfg *config.Config) DaemonsInfo {
 	if len(ignoredResources(cfg)) > 0 {
 		add("webhook", webhookPort, "")
 	}
-	if cfg.RegistryEnabled {
-		add("registry", cfg.RegistryPort, "")
-	}
+	add("registry", cfg.RegistryPort, "")
 	if cfg.PullCacheEnabled {
 		add("pull-cache", cfg.PullCachePort, "")
 	}
-
-	info.Listeners = make([]ListenerState, len(specs))
-	var wg sync.WaitGroup
-	for i, s := range specs {
-		wg.Add(1)
-		go func(i int, s spec) {
-			defer wg.Done()
-			info.Listeners[i] = ListenerState{Name: s.name, Port: s.port, Detail: s.detail, Up: portOpen(s.port)}
-		}(i, s)
-	}
-	wg.Wait()
-	return info
+	return specs
 }
 
 // DaemonsStatus prints the host daemons' process and listener state.
@@ -690,8 +784,18 @@ func SpawnDaemons(cfg *config.Config) error {
 	// Reap any orphaned daemons (e.g. from an older build) and wait for the
 	// listener ports to free, so the fresh spawn can bind them cleanly.
 	reapOrphanDaemons()
-	for i := 0; i < 15 && portOpen(cfg.ProxyPort); i++ {
+	// Give the reaped daemons' listeners a moment to close, then refuse to
+	// spawn into a port we cannot bind: the daemon would start, die on the
+	// bind error, and surface only as "daemons did not come up".
+	var held []listenerSpec
+	for i := 0; i < 15; i++ {
+		if held = heldDaemonPorts(cfg); len(held) == 0 {
+			break
+		}
 		time.Sleep(200 * time.Millisecond)
+	}
+	if len(held) > 0 {
+		return portConflictError(held)
 	}
 	logger.Info("starting host daemons (proxy :" + cfg.ProxyPort + ", sni-gateway :443)")
 	if err := os.MkdirAll(cfg.BaseDir, 0o755); err != nil {
@@ -702,6 +806,12 @@ func SpawnDaemons(cfg *config.Config) error {
 		return err
 	}
 	defer logFile.Close()
+	// where this spawn's output starts, so a failure can quote its own last
+	// log line rather than a stale one from an earlier run
+	var logStart int64
+	if st, err := logFile.Stat(); err == nil {
+		logStart = st.Size()
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -733,7 +843,51 @@ func SpawnDaemons(cfg *config.Config) error {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+	// Lost a race, or died for a reason the port check cannot see — quote the
+	// daemon's own last line so the cause travels with the error.
+	if reason := daemonLogTail(cfg, logStart); reason != "" {
+		return fmt.Errorf("daemons did not come up: %s; see %s", reason, cfg.DaemonLogFile())
+	}
 	return fmt.Errorf("daemons did not come up; see %s", cfg.DaemonLogFile())
+}
+
+// ansiEscape matches the colour codes the logger writes to the daemon log.
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// daemonLogTail returns the last non-empty line the daemons logged from off
+// onward (the log size when this spawn started), stripped of colour and of the
+// logger's "[  12] " elapsed-time prefix.
+func daemonLogTail(cfg *config.Config, off int64) string {
+	f, err := os.Open(cfg.DaemonLogFile())
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	// Read at most the last 64K, but never behind this spawn's start — a
+	// chatty spawn must not push its own failure out of the window.
+	if st, err := f.Stat(); err == nil && st.Size()-off > 64<<10 {
+		off = st.Size() - 64<<10
+	}
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(ansiEscape.ReplaceAllString(string(data), ""), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(line, "[") {
+			if idx := strings.Index(line, "]"); idx != -1 {
+				line = strings.TrimSpace(line[idx+1:])
+			}
+		}
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // pullCacheHealthy reports whether the pull-cache is actually serving, not just
