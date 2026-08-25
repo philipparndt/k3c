@@ -82,7 +82,8 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            make git e2fsprogs libarchive-dev libbz2-dev liblzma-dev libssl-dev
+            make git curl ca-certificates e2fsprogs \
+            libarchive-dev libbz2-dev liblzma-dev libssl-dev
           apt-get clean
 
       - name: Checkout containerization fork
@@ -97,7 +98,17 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Install the Static Linux SDK
-        run: make -C vminitd linux-sdk
+        # linux-sdk curls the artifactbundle, so curl must be present — the
+        # fork's own dev image never needed it (`swift sdk install <url>` at
+        # image-build time fetches directly).
+        # The target ignores `swift sdk install` failures (`-@`, so re-installing
+        # an existing SDK is not fatal), so verify the SDK is actually there
+        # rather than failing later inside the build with a confusing error.
+        run: |
+          make -C vminitd linux-sdk
+          swift sdk list
+          swift sdk list | grep -q 'swift-linux-musl' \
+            || { echo "::error::Static Linux SDK missing after linux-sdk"; exit 1; }
 
       - name: Build the init image (vminitd + vmexec + initfs)
         run: |
