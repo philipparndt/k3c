@@ -76,7 +76,12 @@ jobs:
     needs: payload
     if: needs.payload.outputs.build == 'true'
     runs-on: ubuntu-24.04-arm
-    container: swift:6.3-noble
+    # Pinned to the exact patch release in the fork's .swift-version, NOT a
+    # floating 6.3-noble: the Static Linux SDK pinned in vminitd/Makefile is the
+    # 6.3.0 artifactbundle, and Swift refuses to import a module built by a
+    # different compiler patch ("module compiled with Swift 6.3 cannot be
+    # imported by the Swift 6.3.3 compiler"). Bump this together with the fork.
+    container: swift:6.3.0-noble
     steps:
       - name: Install the initfs build dependencies
         run: |
@@ -96,6 +101,20 @@ jobs:
       # git refuses to read a repo owned by another uid inside the container.
       - name: Trust the checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check the container Swift matches the fork's .swift-version
+        # `swift --version` prints "6.3" for a .0 release but "6.3.3" for a
+        # patch, while .swift-version spells out 6.3.0 — normalise a trailing
+        # .0 on both sides so this guard cannot false-fail a correct pin.
+        run: |
+          norm() { echo "$1" | sed 's/\.0$//'; }
+          want=$(norm "$(cat .swift-version)")
+          have=$(norm "$(swift --version | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p' | head -1)")
+          echo "fork wants $want, container has $have"
+          [ "$want" = "$have" ] || {
+            echo "::error::container swift $have != fork .swift-version $want — update the initfs job's container: tag"
+            exit 1
+          }
 
       - name: Install the Static Linux SDK
         # linux-sdk curls the artifactbundle, so curl must be present — the
