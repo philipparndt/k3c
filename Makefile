@@ -17,9 +17,9 @@ LDFLAGS := -s -w \
 # are reproducible; bump deliberately when the runtime needs a fork update.
 FORKS_DIR             ?= tmp
 CONTAINER_REPO        ?= https://github.com/philipparndt/container
-CONTAINER_REF         ?= 2201d0c744894b96cc6be93082645c9d9a8b899e
+CONTAINER_REF         ?= 1f752911cb98ac61bddb6d9dc0943e767fe15f3a
 CONTAINERIZATION_REPO ?= https://github.com/philipparndt/containerization
-CONTAINERIZATION_REF  ?= f6d77ce63b8da070b60644dc765508be87b614c6
+CONTAINERIZATION_REF  ?= c38670f3a8b78b46dbf4a0c062aab7b982e96861
 CONTAINER_DIR         := $(FORKS_DIR)/container
 CONTAINERIZATION_DIR  := $(FORKS_DIR)/containerization
 RUNTIME_STAGE         := $(FORKS_DIR)/stage
