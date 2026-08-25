@@ -113,7 +113,15 @@ clone-fork:
 	@git -C "$(DIR)" checkout -q --detach FETCH_HEAD
 
 # build the container app + init image from the forks and assemble the runtime
-# stage; the (slow) Swift builds are skipped when the forks are unchanged
+# stage; the (slow) Swift builds are skipped when the forks are unchanged.
+#
+# NOTE: since apple/containerization#810 the init image is built inside a Linux
+# dev container that containerization launches via apple/container, so a local
+# `make build` needs a working `container` on PATH. It used to cross-compile on
+# the host via `make -C vminitd cross-prep`, which upstream removed. The release
+# workflow cannot satisfy this (no nested virt on GitHub macOS runners) and
+# builds the init image on a Linux runner instead — see the initfs job in
+# .github/workflows/goreleaser.yaml.
 runtime: forks ## build the fork runtime (container app + init image) into ./tmp/stage
 	@CSHA=$$(git -C "$(CONTAINER_DIR)" rev-parse HEAD); \
 	ZSHA=$$(git -C "$(CONTAINERIZATION_DIR)" rev-parse HEAD); \
@@ -125,9 +133,7 @@ runtime: forks ## build the fork runtime (container app + init image) into ./tmp
 		$(MAKE) -C "$(CONTAINER_DIR)" container BUILD_CONFIGURATION=release; \
 		echo "staging the full install tree (all plugins) from the fork"; \
 		$(MAKE) -C "$(CONTAINER_DIR)" stage BUILD_CONFIGURATION=release; \
-		echo "preparing the Linux cross-compile toolchain for the init image"; \
-		$(MAKE) -C "$(CONTAINERIZATION_DIR)/vminitd" cross-prep; \
-		echo "building init image ($(CONTAINERIZATION_REF))"; \
+		echo "building init image ($(CONTAINERIZATION_REF)) — needs a running \`container\` (see note above)"; \
 		$(MAKE) -C "$(CONTAINERIZATION_DIR)" init BUILD_CONFIGURATION=release; \
 		"$(CONTAINERIZATION_DIR)/bin/cctl" images save -o "$(RUNTIME_INIT_TAR)" vminit:latest; \
 		echo "assembling runtime stage -> $(RUNTIME_STAGE)"; \

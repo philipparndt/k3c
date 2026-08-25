@@ -20,7 +20,106 @@ env:
   CONTAINERIZATION_REF: c38670f3a8b78b46dbf4a0c062aab7b982e96861
 
 jobs:
+  # The Swift builds dominate the release time (~30 minutes) but only depend on
+  # the fork sources, not on k3c. The finished payload (staging tree + init
+  # image) is therefore built once per fork state and stored permanently as an
+  # asset on a runtime-* prerelease; later k3c releases just download it. The
+  # key covers both fork commits and the workflow hash (a stand-in for the
+  # toolchain versions baked into the build).
+  #
+  # This job only decides whether that rebuild is needed, so the expensive jobs
+  # below can be skipped wholesale on a cache hit. Both refs are pinned full
+  # SHAs, so the key needs no checkout of the forks.
+  payload:
+    runs-on: ubuntu-latest
+    outputs:
+      key: ${{ steps.rt.outputs.key }}
+      build: ${{ steps.rt.outputs.build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Compute the runtime payload key and probe for a cached payload
+        id: rt
+        run: |
+          key="runtime-arm64"
+          key="$key-${CONTAINER_REF:0:12}"
+          key="$key-${CONTAINERIZATION_REF:0:12}"
+          key="$key-$(sha256sum .github/workflows/goreleaser.yaml | cut -c1-8)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "runtime payload key: $key"
+          if gh release view "$key" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "payload release $key exists; skipping the runtime build"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "no payload release $key; building from source"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+  # The guest init image (vminitd + vmexec + initfs) is a Linux artifact, so it
+  # is built on Linux. containerization used to cross-compile it from a macOS
+  # host (`make -C vminitd cross-prep`, plus a cctl that built the ext4 itself),
+  # but apple/containerization#810 moved that into a Linux dev container
+  # launched by apple/container — which a GitHub macOS runner cannot provide.
+  # Upstream split `init-image` out of `init` for exactly this case: build the
+  # initfs on Linux, create the OCI image from the tar afterwards. We do both
+  # here, so the macOS job below just consumes a finished init.tar.
+  #
+  # The container image mirrors images/linux-dev/Dockerfile in the fork (same
+  # Swift release, same apt packages); the Static Linux SDK is installed by the
+  # `linux-sdk` target rather than baked into the image. build-initfs.sh falls
+  # back to `mke2fs -d` when no loop device is available, which is the case in
+  # an unprivileged Actions container.
+  initfs:
+    needs: payload
+    if: needs.payload.outputs.build == 'true'
+    runs-on: ubuntu-24.04-arm
+    container: swift:6.3-noble
+    steps:
+      - name: Install the initfs build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            make git e2fsprogs libarchive-dev libbz2-dev liblzma-dev libssl-dev
+          apt-get clean
+
+      - name: Checkout containerization fork
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CONTAINERIZATION_REPO }}
+          ref: ${{ env.CONTAINERIZATION_REF }}
+
+      # vminitd/Makefile shells out to `git rev-parse HEAD` for GIT_COMMIT, and
+      # git refuses to read a repo owned by another uid inside the container.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install the Static Linux SDK
+        run: make -C vminitd linux-sdk
+
+      - name: Build the init image (vminitd + vmexec + initfs)
+        run: |
+          make init BUILD_CONFIGURATION=release
+          ./bin/cctl images save -o /tmp/k3c-init.tar vminit:latest
+          ls -lh /tmp/k3c-init.tar
+
+      - name: Upload the init image
+        uses: actions/upload-artifact@v4
+        with:
+          name: k3c-init-tar
+          path: /tmp/k3c-init.tar
+          retention-days: 1
+          if-no-files-found: error
+
   goreleaser:
+    needs: [payload, initfs]
+    # initfs is skipped on a payload cache hit; a skipped dependency must not
+    # block the release.
+    if: |
+      always() && needs.payload.result == 'success'
+      && (needs.initfs.result == 'success' || needs.initfs.result == 'skipped')
     permissions:
       contents: write
       packages: write
@@ -28,6 +127,9 @@ jobs:
     # macOS arm64: the container app is Swift/Virtualization.framework and
     # only runs on Apple Silicon.
     runs-on: macos-26
+    env:
+      BUILD_RUNTIME: ${{ needs.payload.outputs.build }}
+      PAYLOAD_KEY: ${{ needs.payload.outputs.key }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -35,6 +137,7 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout container fork
+        if: env.BUILD_RUNTIME == 'true'
         uses: actions/checkout@v5
         with:
           repository: ${{ env.CONTAINER_REPO }}
@@ -42,79 +145,46 @@ jobs:
           path: .forks/container
 
       - name: Checkout containerization fork
+        if: env.BUILD_RUNTIME == 'true'
         uses: actions/checkout@v5
         with:
           repository: ${{ env.CONTAINERIZATION_REPO }}
           ref: ${{ env.CONTAINERIZATION_REF }}
           path: .forks/containerization
 
-      # The Swift builds dominate the release time (~30 minutes) but only
-      # depend on the fork sources, not on k3c. The finished payload
-      # (staging tree + init image) is therefore built once per fork state
-      # and stored permanently as an asset on a runtime-* prerelease; later
-      # k3c releases just download it. The key covers both fork commits and
-      # the workflow hash (a stand-in for the toolchain versions baked into
-      # the build).
-      - name: Compute runtime payload key
-        id: rt
-        run: |
-          key="runtime-$(uname -m)"
-          key="$key-$(git -C .forks/container rev-parse --short=12 HEAD)"
-          key="$key-$(git -C .forks/containerization rev-parse --short=12 HEAD)"
-          key="$key-$(shasum -a 256 .github/workflows/goreleaser.yaml | cut -c1-8)"
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-          echo "runtime payload key: $key"
-
       - name: Restore runtime payload from release asset
-        id: payload
+        if: env.BUILD_RUNTIME == 'false'
         run: |
-          if gh release download "${{ steps.rt.outputs.key }}" -R "$GITHUB_REPOSITORY" \
-              -p runtime-payload.tar.gz -O /tmp/runtime-payload.tar.gz; then
-            mkdir -p /tmp/k3c-runtime
-            tar -xzf /tmp/runtime-payload.tar.gz -C /tmp/k3c-runtime
-            echo "build=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "no payload release ${{ steps.rt.outputs.key }}; building from source"
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          fi
+          gh release download "$PAYLOAD_KEY" -R "$GITHUB_REPOSITORY" \
+            -p runtime-payload.tar.gz -O /tmp/runtime-payload.tar.gz
+          mkdir -p /tmp/k3c-runtime
+          tar -xzf /tmp/runtime-payload.tar.gz -C /tmp/k3c-runtime
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Select Xcode
-        if: steps.payload.outputs.build == 'true'
+        if: env.BUILD_RUNTIME == 'true'
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
 
-      - name: Cache Swift cross-compile toolchain
-        if: steps.payload.outputs.build == 'true'
-        uses: actions/cache@v4
+      - name: Download the init image built on Linux
+        if: env.BUILD_RUNTIME == 'true'
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.swiftly
-            ~/Library/org.swift.swiftpm/swift-sdks
-          key: swiftly-${{ runner.os }}-${{ hashFiles('.forks/containerization/vminitd/Makefile') }}
-
-      - name: Install Linux cross-compile toolchain (swiftly + static musl SDK)
-        if: steps.payload.outputs.build == 'true'
-        run: make -C .forks/containerization/vminitd cross-prep
+          name: k3c-init-tar
+          path: /tmp
 
       - name: Build container app (release)
-        if: steps.payload.outputs.build == 'true'
+        if: env.BUILD_RUNTIME == 'true'
         run: make -C .forks/container container BUILD_CONFIGURATION=release
 
       - name: Stage the full install tree (all plugins)
-        if: steps.payload.outputs.build == 'true'
+        if: env.BUILD_RUNTIME == 'true'
         run: make -C .forks/container stage BUILD_CONFIGURATION=release
 
-      - name: Build init image (vminitd + vmexec, Linux cross-compile)
-        if: steps.payload.outputs.build == 'true'
-        run: |
-          make -C .forks/containerization init BUILD_CONFIGURATION=release
-          .forks/containerization/bin/cctl images save -o /tmp/k3c-init.tar vminit:latest
-
       - name: Assemble runtime payload
-        if: steps.payload.outputs.build == 'true'
+        if: env.BUILD_RUNTIME == 'true'
         run: |
           STAGE=/tmp/k3c-runtime/stage
           STG=.forks/container/bin/release/staging
@@ -136,12 +206,12 @@ jobs:
           du -sh /tmp/k3c-runtime
 
       - name: Publish runtime payload as permanent release asset
-        if: steps.payload.outputs.build == 'true'
+        if: env.BUILD_RUNTIME == 'true'
         run: |
           tar -czf /tmp/runtime-payload.tar.gz -C /tmp/k3c-runtime .
-          gh release create "${{ steps.rt.outputs.key }}" /tmp/runtime-payload.tar.gz \
+          gh release create "$PAYLOAD_KEY" /tmp/runtime-payload.tar.gz \
             -R "$GITHUB_REPOSITORY" --prerelease \
-            --title "container runtime payload (${{ steps.rt.outputs.key }})" \
+            --title "container runtime payload ($PAYLOAD_KEY)" \
             --notes "Prebuilt container runtime (bin, libexec, init.tar) from ${{ env.CONTAINER_REPO }}@${{ env.CONTAINER_REF }} and ${{ env.CONTAINERIZATION_REPO }}@${{ env.CONTAINERIZATION_REF }}. Created automatically by the goreleaser workflow; safe to delete once no longer referenced."
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
