@@ -107,7 +107,7 @@ jobs:
         run: |
           make -C vminitd linux-sdk
           swift sdk list
-          swift sdk list | grep -q 'swift-linux-musl' \
+          swift sdk list | grep -q 'static-linux' \
             || { echo "::error::Static Linux SDK missing after linux-sdk"; exit 1; }
 
       - name: Build the init image (vminitd + vmexec + initfs)
