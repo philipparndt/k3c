@@ -847,7 +847,7 @@ func ensurePullCacheDirs(cfg *config.Config, msg string) error {
 func (p *pullCache) upstreamRequest(method, ns, name, kind, ref, accept string) (*http.Response, error) {
 	endpoints := p.upstreams[ns]
 	if len(endpoints) == 0 {
-		endpoints = []string{"https://" + ns}
+		endpoints = []string{defaultUpstream(ns)}
 	}
 	var lastErr error
 	for _, endpoint := range endpoints {
@@ -895,7 +895,23 @@ func (p *pullCache) endpointRequest(method, endpoint, name, kind, ref, accept st
 		defer resp.Body.Close()
 		return nil, fmt.Errorf("%s: HTTP %d", reqURL, resp.StatusCode)
 	}
+	// a host that is not a registry API (e.g. a redirect to a web page)
+	// answers 200 with HTML; caching that as an image breaks every pull
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/html") {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("%s: not a registry response (%s)", reqURL, ct)
+	}
 	return resp, nil
+}
+
+// defaultUpstream is the registry API endpoint for a namespace without a
+// configured mirror. Docker Hub serves its API from registry-1.docker.io;
+// https://docker.io redirects to the website.
+func defaultUpstream(ns string) string {
+	if ns == "docker.io" {
+		return "https://registry-1.docker.io"
+	}
+	return "https://" + ns
 }
 
 var challengeParamRe = regexp.MustCompile(`(\w+)="([^"]*)"`)
