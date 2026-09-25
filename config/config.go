@@ -177,7 +177,10 @@ type Config struct {
 
 	ExtraK3sArgs []string
 
+	// the runtime's default (vmnet) network, as resolved from the running
+	// system; the defaults below apply until then (see cluster.resolveVmnet)
 	VmnetGateway string
+	VmnetSubnet  string
 	ProxyPort    string
 	IngressPort  string
 
@@ -523,7 +526,8 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		Sysctls:              sysctls,
 		IgnoreCPURequests:    fc.Cluster.IgnoreCPURequests != nil && *fc.Cluster.IgnoreCPURequests,
 		IgnoreMemoryRequests: fc.Cluster.IgnoreMemoryRequests != nil && *fc.Cluster.IgnoreMemoryRequests,
-		VmnetGateway:         "192.168.64.1",
+		VmnetGateway:         DefaultVmnetGateway,
+		VmnetSubnet:          DefaultVmnetSubnet,
 		ProxyPort:            port(fc.Ports.Proxy, 3128),
 		IngressPort:          port(fc.Ports.Ingress, 8444),
 		RegistryEnabled:      fc.LocalRegistry.Enabled != nil && *fc.LocalRegistry.Enabled,
@@ -596,16 +600,46 @@ func (c *Config) ContextPrefix() string {
 // dropped (breaking pod DNS) — masquerade-all forces service traffic through
 // the node instead. The modern kernel needs neither: flannel uses its default
 // (vxlan) and DNAT works natively.
+// DefaultVmnetGateway and DefaultVmnetSubnet are the runtime default network's
+// usual addresses. vmnet assigns the next free range when this one is taken,
+// so they are only a fallback until the running system has been inspected.
+const (
+	DefaultVmnetGateway = "192.168.64.1"
+	DefaultVmnetSubnet  = "192.168.64.0/24"
+)
+
+// VmnetCIDR returns the default network's CIDR, falling back to the usual
+// range for configs built without one.
+func (c *Config) VmnetCIDR() string {
+	if c.VmnetSubnet != "" {
+		return c.VmnetSubnet
+	}
+	return DefaultVmnetSubnet
+}
+
+// vmnetAwkPattern is an awk regex matching addresses on the default network,
+// e.g. 192[.]168[.]64[.] for a /24. Guest scripts use it to tell the vmnet NIC
+// from the gvnet NIC; the runtime only hands out /24 default networks.
+func (c *Config) vmnetAwkPattern() string {
+	ip := strings.SplitN(c.VmnetCIDR(), "/", 2)[0]
+	octets := strings.Split(ip, ".")
+	if len(octets) != 4 {
+		octets = strings.Split(strings.SplitN(DefaultVmnetSubnet, "/", 2)[0], ".")
+	}
+	return strings.Join(octets[:3], "[.]") + "[.]"
+}
+
 // GvnetRouteSnippet is a shell snippet for a VM entrypoint (transparent egress)
 // that repoints the guest at the gvnet NIC — the second, egress NIC — while the
 // vmnet NIC stays primary for host<->VM (published ports, containerIP). It
-// finds the sole 192.168.x interface that is not the vmnet subnet
-// (192.168.64.x), uses that subnet's .1 as the gateway, makes it the default
+// finds the sole 192.168.x interface that is not on the vmnet subnet, uses that subnet's .1 as the gateway, makes it the default
 // route, and points DNS at it: the gvnet netstack's resolver re-originates
 // queries from the host (the vmnet gateway does not resolve external names).
 // For k3s this becomes the CoreDNS upstream, so pods resolve + egress too.
-const GvnetRouteSnippet = `GV=$(ip -4 -o addr show | awk '$4 !~ /^192[.]168[.]64[.]/ && $4 ~ /^192[.]168[.]/ {print $2" "$4; exit}'); if [ -n "$GV" ]; then GVGW=$(echo "${GV#* }" | awk -F'[./]' '{print $1"."$2"."$3".1"}'); ip route replace default via "$GVGW" dev "${GV%% *}"; echo "nameserver $GVGW" > /etc/resolv.conf; fi
+func (c *Config) GvnetRouteSnippet() string {
+	return `GV=$(ip -4 -o addr show | awk '$4 !~ /^` + c.vmnetAwkPattern() + `/ && $4 ~ /^192[.]168[.]/ {print $2" "$4; exit}'); if [ -n "$GV" ]; then GVGW=$(echo "${GV#* }" | awk -F'[./]' '{print $1"."$2"."$3".1"}'); ip route replace default via "$GVGW" dev "${GV%% *}"; echo "nameserver $GVGW" > /etc/resolv.conf; fi
 `
+}
 
 // CATrustSnippet is a shell snippet for a VM entrypoint that installs the
 // mounted CA bundle (/k3c-ca/ca-bundle.pem — host system roots plus any
@@ -641,9 +675,10 @@ func (c *Config) K3sCommand(modernKernel bool) string {
 		// stays host-routable (published API port, kubelet) while egress goes
 		// out gvnet. Resolve the vmnet NIC/IP at boot (the runtime assigns it).
 		args = append(args, "--node-ip=$K3C_NODE_IP", "--flannel-iface=$K3C_VMNET_IF")
-		prefix = `K3C_VMNET_IF=$(ip -4 -o addr show | awk '/192[.]168[.]64[.]/{print $2; exit}')
-K3C_NODE_IP=$(ip -4 -o addr show | awk '/192[.]168[.]64[.]/{split($4,a,"/"); print a[1]; exit}')
-` + GvnetRouteSnippet
+		vmnet := c.vmnetAwkPattern()
+		prefix = `K3C_VMNET_IF=$(ip -4 -o addr show | awk '/` + vmnet + `/{print $2; exit}')
+K3C_NODE_IP=$(ip -4 -o addr show | awk '/` + vmnet + `/{split($4,a,"/"); print a[1]; exit}')
+` + c.GvnetRouteSnippet()
 	}
 	// The whole app stack schedules at once on a single node, so the kubelet's
 	// default image-pull rate limit (registryPullQPS=5, burst=10) rejects pulls
@@ -820,7 +855,7 @@ func (c *Config) EffectiveRegistries() string {
 func (c *Config) NoProxy() string {
 	return strings.Join([]string{
 		c.ClusterCIDR, c.ServiceCIDR,
-		".svc", ".cluster.local", "localhost", "127.0.0.1", "192.168.64.0/24",
+		".svc", ".cluster.local", "localhost", "127.0.0.1", c.VmnetCIDR(),
 	}, ",")
 }
 

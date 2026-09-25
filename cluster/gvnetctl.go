@@ -54,7 +54,7 @@ func gvnetPidFile(cfg *config.Config, vm string) string {
 // egress mode: the vmnet default network FIRST (it stays the primary NIC, so
 // the runtime keeps targeting its host-routable IP for published ports and
 // containerIP) and the gvnet network second. The guest default route is then
-// repointed at the gvnet NIC in the entrypoint (config.GvnetRouteSnippet) so
+// repointed at the gvnet NIC in the entrypoint (Config.GvnetRouteSnippet) so
 // egress is transparent. When transparent egress is off it returns nil and the
 // VM uses its implicit default network.
 func gvnetNetworks(cfg *config.Config, vm string) ([]string, error) {

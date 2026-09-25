@@ -241,3 +241,32 @@ func TestServeBlobHeadDoesNotDownload(t *testing.T) {
 		t.Error("HEAD cached the blob; it must not")
 	}
 }
+
+// An upstream that answers with a web page (e.g. https://docker.io redirecting
+// to the website) must not be cached as a manifest.
+func TestManifestRejectsHTMLUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		_, _ = w.Write([]byte("<!DOCTYPE html><html></html>"))
+	}))
+	defer upstream.Close()
+
+	p := newTestCache(t, upstream.URL)
+	rec := httptest.NewRecorder()
+	p.serveManifestByTag(rec, httptest.NewRequest(http.MethodGet, "/v2/img/manifests/latest", nil), "reg.example", "img", "latest")
+	if rec.Code == http.StatusOK {
+		t.Fatalf("served the HTML page as a manifest: %q", rec.Body.String())
+	}
+	if _, err := os.Stat(p.tagPath("reg.example", "img", "latest")); err == nil {
+		t.Error("cached a tag for the HTML response")
+	}
+}
+
+func TestDefaultUpstream(t *testing.T) {
+	if got := defaultUpstream("docker.io"); got != "https://registry-1.docker.io" {
+		t.Errorf("docker.io → %s", got)
+	}
+	if got := defaultUpstream("ghcr.io"); got != "https://ghcr.io" {
+		t.Errorf("ghcr.io → %s", got)
+	}
+}

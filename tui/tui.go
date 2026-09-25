@@ -458,6 +458,7 @@ func (m model) refresh() tea.Cmd {
 		// clusters". EnsureSystem runs its work at most once per process, so the
 		// periodic refreshes that follow are cheap.
 		_ = runtime.EnsureSystem()
+		cluster.ResolveVmnet(cfg)
 		clusters := cluster.Clusters(cfg)
 		// the docker sidecar is another managed VM: list it after the clusters
 		// so its lifecycle (pause/resume/suspend/up/down) is reachable here too
