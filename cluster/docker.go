@@ -3,6 +3,7 @@ package cluster
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,7 +33,7 @@ const dockerImage = "docker.io/library/docker:dind"
 // fresh — used by `docker up --cpus/--memory`, since a VM's resources are
 // fixed at creation. The image-store volume is preserved.
 func DockerUp(cfg *config.Config, recreate bool) error {
-	if err := preflight(); err != nil {
+	if err := preflight(cfg); err != nil {
 		return err
 	}
 	// a paused sidecar's engine cannot answer (dockerReady would hang); lift
@@ -97,10 +98,23 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		return err
 	}
 
+	// a sidecar that did not stop cleanly (e.g. the container system was
+	// killed) leaves its published forward socket behind, and the runtime
+	// refuses to publish over an existing file; nothing can be serving it
+	// while no sidecar exists, so clear it unless something answers
+	fwd := dockerForwardSocketPath(cfg)
+	if _, err := os.Stat(fwd); err == nil {
+		if c, err := net.DialTimeout("unix", fwd, time.Second); err == nil {
+			c.Close()
+		} else {
+			logger.Debug("removing stale docker forward socket " + fwd)
+			_ = os.Remove(fwd)
+		}
+	}
+
 	logger.Info(fmt.Sprintf("starting docker sidecar (%s cpus, %s memory)", cfg.DockerCPUs, cfg.DockerMemory))
 	args := []string{"run", "-d",
 		"--name", dockerName,
-		"--cap-add", "ALL",
 		"--rosetta",
 		"-m", cfg.DockerMemory,
 		"-c", cfg.DockerCPUs,
@@ -115,6 +129,8 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		// without dialing the guest vmnet IP (Phase 2, see ensureDockerForwarder)
 		"--publish-socket", dockerForwardSocketPath(cfg) + ":" + guestForwardSocket,
 	}
+	// dockerd enables ip_forward for its bridge networks
+	args = append(args, privilegedArgs()...)
 	// runtime-managed balloon: the footprint follows the workload
 	args = append(args, memoryPolicyCreateArgs(cfg)...)
 	if cfg.TransparentEgress {
@@ -157,7 +173,7 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 	// first. Then exec the dind entrypoint which prepares and runs the engine.
 	prelude := config.CATrustSnippet
 	if cfg.TransparentEgress {
-		prelude = config.GvnetRouteSnippet + prelude
+		prelude = cfg.GvnetRouteSnippet() + prelude
 	}
 	args = append(args, "--entrypoint", "/bin/sh", dockerImage, "-c",
 		prelude+"exec dockerd-entrypoint.sh "+strings.Join(dockerd, " "))
@@ -246,6 +262,7 @@ func DockerBuildkit(cfg *config.Config, name string) error {
 	if !containerExists(dockerName, true) {
 		return fmt.Errorf("docker sidecar is not running — start it with: k3c docker up")
 	}
+	ResolveVmnet(cfg)
 	if name == "" {
 		name = "multi-platform"
 	}
@@ -275,7 +292,7 @@ func DockerBuildkit(cfg *config.Config, name string) error {
 			"--driver-opt", "env.HTTPS_PROXY="+proxy,
 			// single comma-free value: --driver-opt splits on commas. The vmnet
 			// /24 covers the in-cluster registry so it skips the proxy.
-			"--driver-opt", "env.NO_PROXY="+vmnetCIDR(cfg.VmnetGateway))
+			"--driver-opt", "env.NO_PROXY="+cfg.VmnetCIDR())
 	}
 	args = append(args, "--bootstrap")
 	create := dockerCmd(args...)
@@ -325,14 +342,6 @@ func dockerCmd(args ...string) *exec.Cmd {
 	cmd := exec.Command("docker", args...) //nolint:gosec // args are k3c-controlled
 	cmd.Env = append(os.Environ(), "DOCKER_CONTEXT="+dockerContextName)
 	return cmd
-}
-
-// vmnetCIDR turns a gateway IP (e.g. 192.168.64.1) into its /24 (192.168.64.0/24).
-func vmnetCIDR(gateway string) string {
-	if i := strings.LastIndex(gateway, "."); i > 0 {
-		return gateway[:i] + ".0/24"
-	}
-	return gateway
 }
 
 // forwardRegistryLoopback makes 127.0.0.1:<RegistryPort> inside the sidecar

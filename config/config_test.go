@@ -208,3 +208,25 @@ configs:
 		t.Error("disabled pull cache must keep registries verbatim")
 	}
 }
+
+func TestVmnetSubnetDrivesGuestScripts(t *testing.T) {
+	cfg := &Config{TransparentEgress: true, VmnetSubnet: "192.168.65.0/24"}
+	cmd := cfg.K3sCommand(true)
+	if !strings.Contains(cmd, `awk '/192[.]168[.]65[.]/{split($4,a,"/"); print a[1]; exit}'`) {
+		t.Errorf("node-IP detection does not use the resolved subnet:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, `$4 !~ /^192[.]168[.]65[.]/`) {
+		t.Errorf("gvnet route snippet does not exclude the resolved subnet:\n%s", cmd)
+	}
+	if strings.Contains(cmd, "192[.]168[.]64[.]") {
+		t.Errorf("stale 192.168.64 pattern in:\n%s", cmd)
+	}
+	if !strings.Contains(cfg.NoProxy(), "192.168.65.0/24") {
+		t.Errorf("NO_PROXY lacks the resolved subnet: %s", cfg.NoProxy())
+	}
+
+	// configs built without a subnet keep the usual range
+	if got := (&Config{}).VmnetCIDR(); got != DefaultVmnetSubnet {
+		t.Errorf("VmnetCIDR() = %s, want %s", got, DefaultVmnetSubnet)
+	}
+}

@@ -399,11 +399,12 @@ func containerHolding(lsOut, ip string) string {
 // which lists several (comma-separated) when a VM has multiple NICs — e.g. a
 // transparent-egress gvnet NIC plus the vmnet NIC. The gvnet range lives in a
 // userspace netstack the host cannot route to, so prefer the vmnet address
-// (192.168.64.x, the VmnetGateway subnet); fall back to the first listed.
+// (on the default network's subnet); fall back to the first listed.
 func hostReachableIP(col string) string {
+	_, subnet := vmnet()
 	ips := strings.Split(col, ",")
 	for _, ip := range ips {
-		if addr := strings.SplitN(strings.TrimSpace(ip), "/", 2)[0]; strings.HasPrefix(addr, "192.168.64.") {
+		if addr := strings.SplitN(strings.TrimSpace(ip), "/", 2)[0]; onVmnet(addr, subnet) {
 			return addr
 		}
 	}

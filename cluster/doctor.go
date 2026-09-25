@@ -26,6 +26,7 @@ import (
 // broken with a hint how to fix it. All checks are read-only.
 func Doctor(cfg *config.Config) error {
 	d := &doctor{}
+	ResolveVmnet(cfg)
 
 	d.section("host")
 	d.checkKubectl()

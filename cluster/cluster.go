@@ -40,10 +40,11 @@ func runContainer(args ...string) (string, error) {
 
 // capabilities of the container CLI, probed once from its help output.
 type containerCapabilities struct {
-	pause        bool
-	suspend      bool
-	memory       bool
-	memoryPolicy bool // runtime-managed continuous balloon sizing
+	pause         bool
+	suspend       bool
+	memory        bool
+	memoryPolicy  bool // runtime-managed continuous balloon sizing
+	securityPaths bool // --masked-path / --read-only-path (runc-style defaults)
 }
 
 var (
@@ -61,8 +62,22 @@ func capabilities() containerCapabilities {
 			out, _ := runContainer("memory", "--help")
 			caps.memoryPolicy = strings.Contains(out, "policy")
 		}
+		out, _ = runContainer("run", "--help")
+		caps.securityPaths = strings.Contains(out, "--read-only-path")
 	})
 	return caps
+}
+
+// privilegedArgs returns the `container run` flags for a node VM that manages
+// its own kernel state (k3s, dockerd): all capabilities, and — on runtimes
+// that apply runc-style defaults — no masked or read-only /proc paths, so it
+// can write /proc/sys (e.g. net.ipv4.ip_forward for its bridge networks).
+func privilegedArgs() []string {
+	args := []string{"--cap-add", "ALL"}
+	if capabilities().securityPaths {
+		args = append(args, "--masked-path", "NONE", "--read-only-path", "NONE")
+	}
+	return args
 }
 
 // runOut executes a command and returns its combined output.
@@ -71,7 +86,7 @@ func runOut(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-func preflight() error {
+func preflight(cfg *config.Config) error {
 	// kubectl is always required from PATH. `container` is only required
 	// from PATH when no bundled runtime is embedded (the bundled runtime
 	// provides its own binary).
@@ -95,6 +110,7 @@ func preflight() error {
 	if err := runtime.EnsureSystem(); err != nil {
 		return err
 	}
+	ResolveVmnet(cfg)
 	return nil
 }
 
@@ -235,8 +251,6 @@ func startServer(cfg *config.Config) error {
 	}
 	args := []string{"run", "-d",
 		"--name", cfg.ServerName,
-		// k3s remounts /sys, mounts cgroups, etc. — needs full capabilities
-		"--cap-add", "ALL",
 		// amd64-only images run via Rosetta binfmt, matching Docker Desktop
 		"--rosetta",
 		"-m", cfg.Memory,
@@ -248,6 +262,8 @@ func startServer(cfg *config.Config) error {
 		// into it (used by `k3c image import`)
 		"-v", cfg.ImagesDir() + ":/var/lib/rancher/k3s/agent/images",
 	}
+	// k3s remounts /sys, mounts cgroups, sets sysctls, etc.
+	args = append(args, privilegedArgs()...)
 	// runtime-managed balloon: the footprint follows the workload
 	args = append(args, memoryPolicyCreateArgs(cfg)...)
 	if cfg.TransparentEgress {
@@ -306,6 +322,12 @@ func kubeconfig(cfg *config.Config, wait bool) (string, error) {
 			break
 		}
 		if wait {
+			// a server that exited never writes the kubeconfig: fail fast
+			// instead of polling out the full timeout
+			if !containerExists(cfg.ServerName, true) {
+				return "", fmt.Errorf("k3s server %s stopped before writing its kubeconfig; check: k3c container logs %s",
+					cfg.ServerName, cfg.ServerName)
+			}
 			time.Sleep(2 * time.Second)
 		}
 	}
@@ -510,7 +532,7 @@ var errServerExited = fmt.Errorf("the server container exited unexpectedly")
 
 // Create creates and starts a new cluster.
 func Create(cfg *config.Config) error {
-	if err := preflight(); err != nil {
+	if err := preflight(cfg); err != nil {
 		return err
 	}
 	// manage the kernel before the node VM is created: the bundled 16K
@@ -677,7 +699,7 @@ func Repair(cfg *config.Config) error {
 
 // Start resumes a stopped cluster.
 func Start(cfg *config.Config) error {
-	if err := preflight(); err != nil {
+	if err := preflight(cfg); err != nil {
 		return err
 	}
 	// refresh the persisted project config so edits to the project's
@@ -826,6 +848,7 @@ func List(cfg *config.Config) error {
 	if err := runtime.EnsureSystem(); err != nil {
 		return err
 	}
+	ResolveVmnet(cfg)
 	clusters := Clusters(cfg)
 	if ui.JSON() {
 		return ui.EmitJSON(clusters)

@@ -51,11 +51,9 @@ func allowedSource(addr net.Addr) bool {
 		return false
 	}
 	// dual-stack listeners hand IPv4 peers over as IPv4-mapped IPv6
-	// addresses (::ffff:192.168.64.x) — normalize before matching
-	if v4 := ip.To4(); v4 != nil {
-		host = v4.String()
-	}
-	return strings.HasPrefix(host, "192.168.64.") || ip.IsLoopback()
+	// addresses (::ffff:192.168.64.x); net.IPNet.Contains normalizes those
+	_, subnet := vmnetCached()
+	return subnet.Contains(ip) || ip.IsLoopback()
 }
 
 // isLoopback reports whether the connection originates from the host's own
@@ -439,9 +437,9 @@ func daemonsVersionFile(cfg *config.Config) string {
 // respawns them.
 func daemonsVersion(cfg *config.Config) string {
 	v := version.Get()
-	return fmt.Sprintf("%s %s %s ports=%v forwards=%v pullcache=%v:%s",
+	return fmt.Sprintf("%s %s %s ports=%v forwards=%v pullcache=%v:%s vmnet=%s",
 		v.Version, v.GitCommit, v.BuildDate, cfg.EgressPorts, cfg.EgressForwards,
-		cfg.PullCacheEnabled, cfg.PullCachePort)
+		cfg.PullCacheEnabled, cfg.PullCachePort, cfg.VmnetCIDR())
 }
 
 // daemonsManagedEnv is set on the daemons process spawned by cluster
@@ -461,6 +459,8 @@ func RunDaemons(cfg *config.Config) error {
 		return fmt.Errorf("host daemons already running (pid %s); "+
 			"use `k3c daemons restart` to apply config changes, or `k3c daemons stop`", pid)
 	}
+	// the client allow-list matches the default network's subnet
+	ResolveVmnet(cfg)
 	_ = os.WriteFile(daemonsVersionFile(cfg), []byte(daemonsVersion(cfg)+"\n"), 0o644)
 	startAutoReclaim(cfg)
 	startPriorityReconcile(cfg)
