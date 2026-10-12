@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/containers/gvisor-tap-vsock v0.8.9
 	github.com/klauspost/compress v1.18.6
-	github.com/mattn/go-isatty v0.0.20
+	github.com/mattn/go-isatty v0.0.24
 	github.com/philipparndt/go-logger v1.10.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.46.0
