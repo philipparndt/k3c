@@ -136,6 +136,11 @@ type FileConfig struct {
 		// the VM, so docker mounts an empty dir), and an emulated-amd64 node
 		// breaks containerd's seccomp detection. See cluster/nodeprep.go.
 		K3sNodeImages []string `yaml:"k3sNodeImages"`
+		// upper bound for the sidecar's BuildKit cache (docker build/buildx),
+		// e.g. "20GB" (default). BuildKit otherwise derives its GC limits from
+		// the size of the sparse 512 GB image-store disk, so the cache grows
+		// for hundreds of GB before anything is collected.
+		BuildCacheMax string `yaml:"buildCacheMax"`
 	} `yaml:"docker"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
 	Registries string `yaml:"registries"`
@@ -222,6 +227,7 @@ type Config struct {
 	DockerPort          string
 	DockerContext       string   // docker CLI context name ("off" disables)
 	DockerK3sNodeImages []string // k3s node images to bake the CA into for nested k3d
+	DockerBuildCacheMax string   // BuildKit GC cap (builder.gc.defaultMaxUsedSpace)
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
@@ -361,6 +367,7 @@ func merge(dst *FileConfig, src FileConfig) {
 	i(&dst.Docker.Port, src.Docker.Port)
 	s(&dst.Docker.Context, src.Docker.Context)
 	l(&dst.Docker.K3sNodeImages, src.Docker.K3sNodeImages)
+	s(&dst.Docker.BuildCacheMax, src.Docker.BuildCacheMax)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
 	if src.Egress.Transparent != nil {
 		dst.Egress.Transparent = src.Egress.Transparent
@@ -551,6 +558,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		DockerPort:          port(fc.Docker.Port, 2375),
 		DockerContext:       def(fc.Docker.Context, "k3c"),
 		DockerK3sNodeImages: fc.Docker.K3sNodeImages,
+		DockerBuildCacheMax: def(fc.Docker.BuildCacheMax, "20GB"),
 		Registries:          fc.Registries,
 		ContainerBinary:     def(fc.ContainerBinary, "container"),
 		AutoReclaim:         def(fc.Cluster.AutoReclaim, "10m"),

@@ -36,7 +36,26 @@ func Command(args ...string) *exec.Cmd {
 // output.
 func Output(args ...string) (string, error) {
 	out, err := Command(args...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	return strings.TrimSpace(stripDebugBanner(string(out))), err
+}
+
+// debugBanner is printed to stderr by every invocation of a debug build of the
+// container CLI. Output merges stderr, so without stripping it callers that
+// parse the output (JSON, versions, first lines) see the banner instead.
+const debugBanner = "Warning! Running debug build. Performance may be degraded."
+
+func stripDebugBanner(s string) string {
+	if !strings.Contains(s, debugBanner) {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	kept := lines[:0]
+	for _, l := range lines {
+		if strings.TrimSpace(l) != debugBanner {
+			kept = append(kept, l)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 var (

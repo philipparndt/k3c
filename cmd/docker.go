@@ -24,6 +24,7 @@ an env var, use: eval $(k3c docker env)`,
 var (
 	dockerUpCPUs   string
 	dockerUpMemory string
+	dockerRecreate bool
 )
 
 var dockerUpCmd = &cobra.Command{
@@ -34,11 +35,12 @@ var dockerUpCmd = &cobra.Command{
 
 --cpus and --memory override the sidecar's resources. Because a VM's
 resources are fixed at creation, passing either flag re-creates an existing
-sidecar (the image-store volume is preserved).`,
+sidecar (the image-store volume is preserved). --recreate does the same
+without changing resources.`,
 	Args: cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg := loadConfigDefault(nil)
-		recreate := false
+		recreate := dockerRecreate
 		if cmd.Flags().Changed("cpus") {
 			cfg.DockerCPUs = dockerUpCPUs
 			recreate = true
@@ -250,6 +252,7 @@ var dockerSnapshotRenameCmd = &cobra.Command{
 func init() {
 	dockerUpCmd.Flags().StringVar(&dockerUpCPUs, "cpus", "", "override sidecar CPU count (re-creates the sidecar)")
 	dockerUpCmd.Flags().StringVar(&dockerUpMemory, "memory", "", "override sidecar memory, e.g. 32G (re-creates the sidecar)")
+	dockerUpCmd.Flags().BoolVar(&dockerRecreate, "recreate", false, "re-create the sidecar (image store kept) to pick up a new k3c's engine settings")
 	dockerRmCmd.Flags().BoolVar(&dockerRmVolume, "volume", false, "also remove the image-store volume (deletes all sidecar data)")
 	dockerSnapshotSaveCmd.Flags().BoolVar(&dockerSnapCold, "cold", false, "quiesce with a stop instead of a warm suspend")
 	dockerSnapshotSaveCmd.Flags().BoolVar(&dockerSnapReplace, "replace", false, "recreate a same-named snapshot: delete the existing one, then save in its place")
