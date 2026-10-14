@@ -267,6 +267,8 @@ docker:                        # docker:dind sidecar VM: real engine API for
   # cpus: 4                    # creates+activates the "k3c" docker context,
   # memory: 8G                 # so docker just works; `down` restores default
   # context: k3c               # context name ("off" to not manage one)
+  # buildCacheMax: 20GB        # BuildKit cache cap ("off": BuildKit's own,
+                               # disk-derived limit of hundreds of GB)
 
 ui:                            # terminal UI (`k3c ui`) appearance
   theme:                       # any unset color falls back to the default

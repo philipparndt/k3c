@@ -96,6 +96,9 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 	if err := os.WriteFile(filepath.Join(certDir, "ca-bundle.pem"), bundle, 0o644); err != nil {
 		return err
 	}
+	if err := writeDockerDaemonConfig(cfg); err != nil {
+		return err
+	}
 
 	logger.Info(fmt.Sprintf("starting docker sidecar (%s cpus, %s memory)", cfg.DockerCPUs, cfg.DockerMemory))
 	args := []string{"run", "-d",
@@ -141,6 +144,12 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		"dockerd",
 		"--host=tcp://0.0.0.0:2375",
 		"--host=unix:///var/run/docker.sock",
+		// explicit intent: without it dockerd >= 27 sleeps ~16s at startup to
+		// show the unauthenticated-TCP deprecation warning (the engine is only
+		// published on host loopback)
+		"--tls=false",
+		// builder GC limits (written on every up, see writeDockerDaemonConfig)
+		"--config-file=" + dockerDaemonConfigGuest,
 	}
 	if cfg.PullCacheEnabled {
 		// docker.io pulls through the shared pull cache (the cache
@@ -433,13 +442,18 @@ func dockerAwait(cfg *config.Config) error {
 	// every start path funnels through here, so heal it before the engine
 	// is used (dead share = dockerd cannot read the corporate CA bundle)
 	repairDockerVirtiofs()
+	if err := writeDockerDaemonConfig(cfg); err != nil {
+		logger.Warn("writing docker daemon config: " + err.Error())
+	}
+	warnSlowDockerStartup()
 	logger.Info("waiting for the docker engine")
-	for i := 0; i < 60; i++ {
+	// dockerd is up ~1s after the VM boots; poll tightly (an exec is ~0.1s)
+	for deadline := time.Now().Add(2 * time.Minute); time.Now().Before(deadline); {
 		if out, err := runContainer("exec", dockerName, "docker", "version", "--format", "{{.Server.Version}}"); err == nil {
 			logger.Info("docker engine " + firstLine(out) + " ready")
 			return dockerReady(cfg)
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(250 * time.Millisecond)
 	}
 	return fmt.Errorf("docker engine did not become ready; check: k3c container logs %s", dockerName)
 }
@@ -461,6 +475,8 @@ func dockerReady(cfg *config.Config) error {
 	// launch the in-guest forwarder so nested published container ports are
 	// reachable from the host (without the guest vmnet IP)
 	ensureDockerForwarder(cfg)
+	// hand blocks freed inside the image store back to macOS
+	trimDockerVolume()
 	// nested-k3d node images are NOT prepared here — starting the engine
 	// shouldn't pay that one-time pull/bake. Run `k3c docker prepare-k3d`
 	// once before using `k3d cluster create` (see PrepareK3sNodeImages).
@@ -695,4 +711,52 @@ func DockerStatus(cfg *config.Config) error {
 		fmt.Println("docker sidecar: not created (k3c docker up creates it)")
 	}
 	return nil
+}
+
+// dockerDaemonConfigGuest is the sidecar's dockerd config file, staged in the
+// host dir the sidecar mounts at /k3c-ca.
+const dockerDaemonConfigGuest = "/k3c-ca/daemon.json"
+
+// writeDockerDaemonConfig stages the dockerd config file. It only carries the
+// builder GC cap: BuildKit sizes its default GC policy from the image-store
+// disk, and the sparse 512 GB volume makes that ~376 GB, so build cache was
+// effectively never collected. Settings that are also passed as flags must not
+// appear here (dockerd refuses to start on duplicates). Rewritten on every up,
+// so a changed docker.buildCacheMax applies on the next start.
+func writeDockerDaemonConfig(cfg *config.Config) error {
+	daemon := map[string]any{}
+	if max := cfg.DockerBuildCacheMax; max != "" && max != "off" {
+		daemon["builder"] = map[string]any{"gc": map[string]any{
+			"enabled":             true,
+			"defaultMaxUsedSpace": max,
+		}}
+	}
+	data, err := json.MarshalIndent(daemon, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(cfg.BaseDir, "docker", "daemon.json"), data, 0o644)
+}
+
+// trimDockerVolume makes the image store release freed space to the host. The
+// volume is a sparse disk image: without discard, every deleted image, layer
+// or build-cache entry stays allocated in the host file forever, so it only
+// ever grows. Mount it with online discard and trim what was freed so far.
+// Runs detached in the guest (a first trim of a large store takes seconds).
+func trimDockerVolume() {
+	script := "mount -o remount,discard /var/lib/docker; fstrim /var/lib/docker"
+	if out, err := runContainer("exec", "-d", dockerName, "sh", "-c", script); err != nil {
+		logger.Warn("docker: trimming the image store: " + out)
+	}
+}
+
+// warnSlowDockerStartup points sidecars created before --tls=false at the
+// recreate that removes dockerd's ~16s deliberate startup delay.
+func warnSlowDockerStartup() {
+	out, err := runContainer("inspect", dockerName)
+	if err != nil || strings.Contains(out, "--tls=false") {
+		return
+	}
+	logger.Warn("docker: this sidecar predates fast engine startup (dockerd sleeps ~16s on each start). " +
+		"Recreate it once, the image store is kept: k3c docker up --recreate")
 }
