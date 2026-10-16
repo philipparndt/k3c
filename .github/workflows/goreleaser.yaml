@@ -81,7 +81,7 @@ jobs:
     # 6.3.0 artifactbundle, and Swift refuses to import a module built by a
     # different compiler patch ("module compiled with Swift 6.3 cannot be
     # imported by the Swift 6.3.3 compiler"). Bump this together with the fork.
-    container: swift:6.3.0-noble
+    container: swift:6.4.1-noble
     steps:
       - name: Install the initfs build dependencies
         run: |
