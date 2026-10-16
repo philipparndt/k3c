@@ -18,7 +18,7 @@ jobs:
         id: go
 
       - name: Check out code into the Go module directory
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Build
         run: go build -v -ldflags "-s -w -X k3c/version.Version=$GITHUB_REF -X k3c/version.GitCommit=${GITHUB_SHA::8}" .

@@ -37,7 +37,7 @@ jobs:
       build: ${{ steps.rt.outputs.build }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Compute the runtime payload key and probe for a cached payload
         id: rt
@@ -92,7 +92,7 @@ jobs:
           apt-get clean
 
       - name: Checkout containerization fork
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.CONTAINERIZATION_REPO }}
           ref: ${{ env.CONTAINERIZATION_REF }}
@@ -162,13 +162,13 @@ jobs:
       PAYLOAD_KEY: ${{ needs.payload.outputs.key }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Checkout container fork
         if: env.BUILD_RUNTIME == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.CONTAINER_REPO }}
           ref: ${{ env.CONTAINER_REF }}
@@ -176,7 +176,7 @@ jobs:
 
       - name: Checkout containerization fork
         if: env.BUILD_RUNTIME == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.CONTAINERIZATION_REPO }}
           ref: ${{ env.CONTAINERIZATION_REF }}
