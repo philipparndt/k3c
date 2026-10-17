@@ -75,7 +75,7 @@ jobs:
   initfs:
     needs: payload
     if: needs.payload.outputs.build == 'true'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     # Pinned to the exact patch release in the fork's .swift-version, NOT a
     # floating 6.3-noble: the Static Linux SDK pinned in vminitd/Makefile is the
     # 6.3.0 artifactbundle, and Swift refuses to import a module built by a
