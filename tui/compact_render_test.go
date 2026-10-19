@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"k3c/cluster"
 )
@@ -169,14 +169,14 @@ func TestHelpDialogFitsNarrowTerminal(t *testing.T) {
 func TestHelpScrollKeysDoNotClose(t *testing.T) {
 	m := model{width: 56, height: 16}
 	m.openHelp()
-	top := m.helpVP.YOffset
+	top := m.helpVP.YOffset()
 	next, _ := m.Update(key("j"))
 	nm := next.(model)
 	if !nm.showHelp {
 		t.Fatal("scroll key closed the help dialog; want scroll")
 	}
-	if nm.helpVP.YOffset <= top {
-		t.Errorf("help did not scroll: offset %d -> %d", top, nm.helpVP.YOffset)
+	if nm.helpVP.YOffset() <= top {
+		t.Errorf("help did not scroll: offset %d -> %d", top, nm.helpVP.YOffset())
 	}
 	// esc still closes.
 	closed, _ := nm.Update(key("esc"))

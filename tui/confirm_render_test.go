@@ -4,23 +4,23 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // key builds a KeyMsg for the given string-ish key, matching how Update
 // switches on msg.String().
-func key(s string) tea.KeyMsg {
+func key(s string) tea.KeyPressMsg {
 	switch s {
 	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "left":
-		return tea.KeyMsg{Type: tea.KeyLeft}
+		return tea.KeyPressMsg{Code: tea.KeyLeft}
 	case "right":
-		return tea.KeyMsg{Type: tea.KeyRight}
+		return tea.KeyPressMsg{Code: tea.KeyRight}
 	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEscape}
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
 	default:
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+		return tea.KeyPressMsg{Code: []rune(s)[0], Text: s}
 	}
 }
 
