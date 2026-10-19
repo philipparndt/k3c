@@ -49,6 +49,12 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		return err
 	}
 	if recreate && containerExists(dockerName, false) {
+		// resolve the new sidecar's kernel first: fetching the 4K kernel can
+		// take minutes, and a failed fetch must not leave the user without
+		// the old sidecar
+		if _, err := vmKernel(cfg.DockerKernel); err != nil {
+			return err
+		}
 		logger.Info(fmt.Sprintf("recreating docker sidecar (%s cpus, %s memory)", cfg.DockerCPUs, cfg.DockerMemory))
 		if out, err := runContainer("rm", "-f", dockerName); err != nil {
 			return fmt.Errorf("removing docker sidecar: %s", out)
