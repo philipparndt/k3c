@@ -19,11 +19,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/philipparndt/go-logger"
 
@@ -159,7 +159,7 @@ func newSnapshotWizard(clusterName string, docker bool) *nameInput {
 	in.Placeholder = time.Now().Format("2006-01-02-1504")
 	in.Focus()
 	in.CharLimit = 64
-	in.Width = 24
+	in.SetWidth(24)
 	if docker {
 		clusterName = "docker"
 	}
@@ -313,7 +313,7 @@ func Run(cfg *config.Config) error {
 	runtime.DisablePrompts()
 	logger.LogTo(io.Discard)
 	defer logger.LogTo(os.Stderr)
-	_, err := tea.NewProgram(New(cfg), tea.WithAltScreen()).Run()
+	_, err := tea.NewProgram(New(cfg)).Run()
 	return err
 }
 
@@ -642,11 +642,15 @@ func waitOp(ch chan opEventMsg) tea.Cmd {
 // --- update ---
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.refresh(), m.spin.Tick, tick())
+	return tea.Batch(m.refresh(), m.spin.Tick, tick(), tea.RequestBackgroundColor)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		darkBackground = msg.IsDark()
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.showLog {
@@ -797,13 +801,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
-func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// the command-log dialog: scrolling keys drive the viewport, esc/o close
 	if m.showLog {
 		switch msg.String() {
@@ -881,7 +885,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			c.focus = (c.focus - 1 + len(btns)) % len(btns)
 			m.confirm = &c
 			return m, nil
-		case "enter", " ":
+		case "enter", "space":
 			b := btns[c.focus]
 			if b.action == nil {
 				return cancel()
@@ -907,19 +911,19 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// the frozen-export tier chooser eats every key
 	if m.exportPick != nil {
-		switch msg.Type {
-		case tea.KeyEscape:
+		switch msg.String() {
+		case "esc":
 			m.exportPick = nil
 			m.status = "cancelled"
 			m.failed = false
 			m.statusSeq++
 			return m, nil
-		case tea.KeyCtrlC:
+		case "ctrl+c":
 			return m, tea.Quit
-		case tea.KeyTab:
+		case "tab":
 			m.exportPick.cycle()
 			return m, nil
-		case tea.KeyEnter:
+		case "enter":
 			p := *m.exportPick
 			m.exportPick = nil
 			args := []string{"snapshot", "export", p.cluster, p.snap, "-o", p.out}
@@ -936,19 +940,19 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// the snapshot wizard eats every key
 	if m.input != nil {
-		switch msg.Type {
-		case tea.KeyEscape:
+		switch msg.String() {
+		case "esc":
 			m.input = nil
 			m.status = "cancelled"
 			m.failed = false
 			m.statusSeq++
 			return m, nil
-		case tea.KeyCtrlC:
+		case "ctrl+c":
 			return m, tea.Quit
-		case tea.KeyTab:
+		case "tab":
 			m.input.cycleMode()
 			return m, nil
-		case tea.KeyEnter:
+		case "enter":
 			in := *m.input
 			m.input = nil
 			// snapshot names are directory names and CLI arguments; typing
@@ -983,16 +987,16 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// the rename dialog eats every key
 	if m.rename != nil {
-		switch msg.Type {
-		case tea.KeyEscape:
+		switch msg.String() {
+		case "esc":
 			m.rename = nil
 			m.status = "cancelled"
 			m.failed = false
 			m.statusSeq++
 			return m, nil
-		case tea.KeyCtrlC:
+		case "ctrl+c":
 			return m, tea.Quit
-		case tea.KeyEnter:
+		case "enter":
 			rn := *m.rename
 			m.rename = nil
 			// snapshot names are directory names and CLI arguments; normalize
@@ -1186,7 +1190,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		in.Placeholder = snap
 		in.Focus()
 		in.CharLimit = 64
-		in.Width = 24
+		in.SetWidth(24)
 		m.rename = &renameInput{input: in, cluster: name, oldName: snap, docker: kind == "docker"}
 		return m, textinput.Blink
 
@@ -1368,7 +1372,7 @@ func (m *model) sizeLog() {
 	if h < 5 {
 		h = 5
 	}
-	vp := viewport.New(w, h)
+	vp := viewport.New(viewport.WithWidth(w), viewport.WithHeight(h))
 	vp.SetContent(m.logContent())
 	m.logVP = vp
 }
@@ -1399,16 +1403,32 @@ func (m model) logContent() string {
 
 // --- view ---
 
+// darkBackground selects the Dark side of every adaptiveColor. It defaults to
+// dark until the terminal answers the background-color query sent by Init.
+var darkBackground = true
+
+// adaptiveColor is a light/dark color pair resolved at render time from
+// darkBackground. lipgloss v2 dropped its own AdaptiveColor; the compat one
+// queries the terminal when the package loads, i.e. on every k3c command.
+type adaptiveColor struct{ Light, Dark string }
+
+func (c adaptiveColor) RGBA() (r, g, b, a uint32) {
+	if darkBackground {
+		return lipgloss.Color(c.Dark).RGBA()
+	}
+	return lipgloss.Color(c.Light).RGBA()
+}
+
 // Color roles. The defaults are the built-in light-blue theme; applyTheme
 // overrides any role from the resolved config. The derived styles below are
 // (re)built by rebuildStyles whenever the colors change.
 var (
-	accent = lipgloss.AdaptiveColor{Light: "#0E86C7", Dark: "#89D7FB"}
-	dim    = lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
-	good   = lipgloss.AdaptiveColor{Light: "#0F8A4C", Dark: "#42C883"}
-	warn   = lipgloss.AdaptiveColor{Light: "#B58A00", Dark: "#E2C04A"}
-	cool   = lipgloss.AdaptiveColor{Light: "#0072C6", Dark: "#56B2F2"}
-	bad    = lipgloss.AdaptiveColor{Light: "#C5283D", Dark: "#F2637E"}
+	accent = adaptiveColor{Light: "#0E86C7", Dark: "#89D7FB"}
+	dim    = adaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
+	good   = adaptiveColor{Light: "#0F8A4C", Dark: "#42C883"}
+	warn   = adaptiveColor{Light: "#B58A00", Dark: "#E2C04A"}
+	cool   = adaptiveColor{Light: "#0072C6", Dark: "#56B2F2"}
+	bad    = adaptiveColor{Light: "#C5283D", Dark: "#F2637E"}
 
 	// derived styles, (re)built by rebuildStyles from the colors above
 	titleSt   lipgloss.Style
@@ -1429,7 +1449,7 @@ func rebuildStyles() {
 	titleSt = lipgloss.NewStyle().Bold(true).Foreground(accent)
 	keySt = lipgloss.NewStyle().Bold(true).Foreground(cool)
 	dimSt = lipgloss.NewStyle().Foreground(dim)
-	selectSt = lipgloss.NewStyle().Bold(true).Background(accent).Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#1A1A1A"})
+	selectSt = lipgloss.NewStyle().Bold(true).Background(accent).Foreground(adaptiveColor{Light: "#FFFFFF", Dark: "#1A1A1A"})
 	statusOk = lipgloss.NewStyle().Foreground(good)
 	statusBad = lipgloss.NewStyle().Foreground(bad)
 	paneBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent)
@@ -1440,10 +1460,10 @@ func rebuildStyles() {
 // field keeps the built-in default) and rebuilds the derived styles. The TUI
 // is a single instance per process, so a package-level palette is safe.
 func applyTheme(t config.UITheme) {
-	set := func(dst *lipgloss.AdaptiveColor, v string) {
+	set := func(dst *adaptiveColor, v string) {
 		if v != "" {
 			// a single configured color applies to both light and dark terminals
-			*dst = lipgloss.AdaptiveColor{Light: v, Dark: v}
+			*dst = adaptiveColor{Light: v, Dark: v}
 		}
 	}
 	set(&accent, t.Accent)
@@ -1511,7 +1531,14 @@ func (m model) compact() bool {
 	return m.width < compactWidth || m.height < compactHeight
 }
 
-func (m model) View() string {
+func (m model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+// render draws the current screen.
+func (m model) render() string {
 	if m.width == 0 {
 		return "loading…"
 	}
@@ -1937,7 +1964,7 @@ func renderButton(label string, focused, destructive bool) string {
 			Foreground(lipgloss.Color("#FFFFFF")).Render(label)
 	case focused:
 		return st.BorderForeground(accent).Background(accent).
-			Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#1A1A1A"}).Render(label)
+			Foreground(adaptiveColor{Light: "#FFFFFF", Dark: "#1A1A1A"}).Render(label)
 	case destructive:
 		return st.BorderForeground(bad).Foreground(bad).Render(label)
 	default:
@@ -2081,7 +2108,7 @@ func listenerDot(up bool) string {
 // stateColor maps a machine state to the color of its status dot, so a block's
 // title can echo its symbol: running green, paused yellow, suspended blue,
 // stopped/unknown gray.
-func stateColor(state string) lipgloss.AdaptiveColor {
+func stateColor(state string) adaptiveColor {
 	switch state {
 	case "running":
 		return good
@@ -2209,7 +2236,7 @@ func (m *model) sizeDiagram() {
 	if h < 3 {
 		h = 3
 	}
-	vp := viewport.New(w, h)
+	vp := viewport.New(viewport.WithWidth(w), viewport.WithHeight(h))
 	// the diagram is fixed-width art that can be wider than a small terminal, so
 	// allow scrolling left/right as well as up/down.
 	vp.SetHorizontalStep(6)
@@ -2312,7 +2339,7 @@ func (m model) pullCacheBlock() string {
 	} else {
 		lines = append(lines, dimSt.Render("no pulls yet"))
 	}
-	border := lipgloss.AdaptiveColor(good)
+	border := adaptiveColor(good)
 	if !up {
 		border = bad
 	}
@@ -2490,7 +2517,7 @@ func (m *model) sizeHelp() {
 	if h < 3 {
 		h = 3
 	}
-	vp := viewport.New(w, h)
+	vp := viewport.New(viewport.WithWidth(w), viewport.WithHeight(h))
 	vp.SetContent(body)
 	m.helpVP = vp
 }

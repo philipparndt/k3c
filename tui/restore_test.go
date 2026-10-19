@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"k3c/cluster"
 )
@@ -32,7 +32,7 @@ func restoreModel(mode string) model {
 // fresh, less RAM held).
 func TestRestoreWarmSnapshotOffersColdChoice(t *testing.T) {
 	m := restoreModel(string(cluster.ModeWarm))
-	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	nm := mustModel(t, next)
 
 	if nm.confirm == nil {
@@ -63,7 +63,7 @@ func TestRestoreWarmSnapshotOffersColdChoice(t *testing.T) {
 func TestRestoreColdSnapshotKeepsPlainDialog(t *testing.T) {
 	for _, mode := range []string{string(cluster.ModeCold), string(cluster.ModeFrozen)} {
 		m := restoreModel(mode)
-		next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		next, _ := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 		nm := mustModel(t, next)
 
 		if nm.confirm == nil {

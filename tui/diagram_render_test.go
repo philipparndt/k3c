@@ -75,7 +75,7 @@ func TestDiagramScrollsOnShortTerminal(t *testing.T) {
 	if !nm.showDiagram {
 		t.Fatal("scroll key closed the diagram; want scroll")
 	}
-	if nm.diagramVP.YOffset == 0 {
+	if nm.diagramVP.YOffset() == 0 {
 		t.Error("diagram did not scroll on a short terminal")
 	}
 	if closed, _ := nm.Update(key("esc")); closed.(model).showDiagram {

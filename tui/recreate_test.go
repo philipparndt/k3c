@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"k3c/cluster"
 )
@@ -21,7 +21,7 @@ func recreateModel() model {
 	return m
 }
 
-func keyC() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}} }
+func keyC() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'c', Text: "c"} }
 
 func TestCreateOnSnapshotOpensRecreateDialog(t *testing.T) {
 	m := recreateModel()

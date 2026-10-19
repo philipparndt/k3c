@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-
 	"k3c/cluster"
 	"k3c/config"
 )
@@ -128,13 +126,13 @@ func TestApplyThemeOverride(t *testing.T) {
 	defer applyTheme(config.UITheme{}) // restore defaults for other tests
 
 	applyTheme(config.UITheme{Accent: "#89D7FB"})
-	want := lipgloss.AdaptiveColor{Light: "#89D7FB", Dark: "#89D7FB"}
+	want := adaptiveColor{Light: "#89D7FB", Dark: "#89D7FB"}
 	if accent != want {
 		t.Fatalf("accent = %+v, want %+v", accent, want)
 	}
 	// an empty field keeps the built-in default rather than blanking it
 	applyTheme(config.UITheme{})
-	if accent == (lipgloss.AdaptiveColor{}) {
+	if accent == (adaptiveColor{}) {
 		t.Fatalf("empty override should keep the default accent, got zero value")
 	}
 }
