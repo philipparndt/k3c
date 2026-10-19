@@ -58,7 +58,7 @@ func EnsureClusterKernel(cfg *config.Config) {
 	case "keep":
 		return
 	case "recommended":
-		EnsureRecommendedKernel()
+		ensureRosettaKernel()
 		return
 	}
 	bundled := k3cruntime.BundledKernel()
@@ -112,6 +112,41 @@ func fileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// ensureRosettaKernel implements cluster.kernel: recommended. Installing the
+// recommended kernel only when br_netfilter/vxlan are missing is not enough
+// here: the bundled 16K kernel has both, so a user switching from "bundled"
+// would silently stay on 16K pages, where Rosetta fails every amd64 binary
+// with "unable to mmap ELF: 22". So the recommended kernel is also installed
+// when the default kernel's embedded config shows a page size other than 4K.
+// An unreadable config falls back to the netfilter check alone.
+func ensureRosettaKernel() {
+	cfg, err := defaultKernelConfig()
+	if err != nil {
+		EnsureRecommendedKernel()
+		return
+	}
+	if kb := kernelPageSizeKB(cfg); kb != 0 && kb != 4 {
+		logger.Info(fmt.Sprintf("default kernel uses %dK pages; Rosetta/amd64 needs 4K — installing the recommended kernel (container system kernel set --recommended)", kb))
+		if out, err := runContainer("system", "kernel", "set", "--recommended"); err != nil {
+			logger.Warn("could not install the recommended kernel: " + firstLine(out) + " — amd64 images will not run")
+			return
+		}
+		logger.Info("recommended 4K kernel installed; existing VMs keep their kernel until re-created (e.g. k3c docker up --recreate)")
+	}
+	EnsureRecommendedKernel()
+}
+
+// kernelPageSizeKB returns the arm64 page size in KiB from a kernel .config
+// (CONFIG_ARM64_{4K,16K,64K}_PAGES=y), or 0 when none is set.
+func kernelPageSizeKB(cfg []byte) int {
+	for _, kb := range []int{4, 16, 64} {
+		if bytes.Contains(cfg, []byte(fmt.Sprintf("\nCONFIG_ARM64_%dK_PAGES=y\n", kb))) {
+			return kb
+		}
+	}
+	return 0
 }
 
 // EnsureRecommendedKernel upgrades the default container kernel to the

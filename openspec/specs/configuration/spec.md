@@ -124,6 +124,15 @@ scheduling priority of the cluster VMs relative to interactive apps: `low`
 - **THEN** the VM runs the runtime's 4K kata kernel so amd64 images run under
   Rosetta, rather than the bundled 16K-page kernel
 
+#### Scenario: Switch an existing install from the bundled to the recommended kernel
+
+- **WHEN** the default kernel is the bundled 16K-page kernel (which already has
+  `br_netfilter` and `vxlan`) and the user sets `cluster.kernel: recommended`
+- **THEN** k3c installs the recommended 4K kata kernel as the default, detected
+  from the page size in the kernel's embedded config rather than from its
+  netfilter capabilities, so VMs created afterwards (including a re-created
+  docker sidecar) run amd64 binaries under Rosetta
+
 #### Scenario: Give the VMs normal scheduling priority
 
 - **WHEN** the user sets `cluster.cpuPriority: normal`
