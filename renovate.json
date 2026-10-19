@@ -2,5 +2,13 @@
 	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
 	"extends": [
 		"config:recommended"
+	],
+	"packageRules": [
+		{
+			"description": "The initfs container must match the Swift patch in the container fork's .swift-version (see goreleaser.yaml); bump it together with the fork, not on its own.",
+			"matchDatasources": ["docker"],
+			"matchPackageNames": ["swift"],
+			"enabled": false
+		}
 	]
 }
