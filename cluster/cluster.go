@@ -243,7 +243,11 @@ func systemKeychainCerts() []byte {
 
 func startServer(cfg *config.Config) error {
 	logger.Info(fmt.Sprintf("starting k3s server (%s cpus, %s memory)", cfg.CPUs, cfg.Memory))
-	modernKernel := KernelHasModernNetfilter()
+	kernel, err := vmKernel(cfg.Kernel)
+	if err != nil {
+		return err
+	}
+	modernKernel := KernelHasModernNetfilter(kernel)
 	if modernKernel {
 		logger.Info("kernel has br_netfilter + vxlan: flannel default (vxlan), no masquerade workaround")
 	} else {
@@ -262,6 +266,8 @@ func startServer(cfg *config.Config) error {
 		// into it (used by `k3c image import`)
 		"-v", cfg.ImagesDir() + ":/var/lib/rancher/k3s/agent/images",
 	}
+	// the node's kernel (cluster.kernel), independent of the default kernel
+	args = append(args, kernelArgs(kernel)...)
 	// k3s remounts /sys, mounts cgroups, sets sysctls, etc.
 	args = append(args, privilegedArgs()...)
 	// runtime-managed balloon: the footprint follows the workload
@@ -535,9 +541,8 @@ func Create(cfg *config.Config) error {
 	if err := preflight(cfg); err != nil {
 		return err
 	}
-	// manage the kernel before the node VM is created: the bundled 16K
-	// kernel for host memory return (default), or the recommended 4K kata
-	// kernel for amd64/Rosetta workloads (cluster.kernel: recommended)
+	// manage the default kernel before the node VM is created; the node
+	// itself boots the kernel cluster.kernel selects (see vmKernel)
 	EnsureClusterKernel(cfg)
 	if containerExists(cfg.ServerName, false) {
 		return fmt.Errorf("cluster '%s' already exists; run delete (or start) first", cfg.Cluster)
