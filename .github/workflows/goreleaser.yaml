@@ -136,7 +136,7 @@ jobs:
           ls -lh /tmp/k3c-init.tar
 
       - name: Upload the init image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: k3c-init-tar
           path: /tmp/k3c-init.tar
@@ -200,7 +200,7 @@ jobs:
 
       - name: Download the init image built on Linux
         if: env.BUILD_RUNTIME == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: k3c-init-tar
           path: /tmp
