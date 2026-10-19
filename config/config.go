@@ -59,10 +59,12 @@ type FileConfig struct {
 		// boot-time memory returns to the host immediately: "on-create",
 		// or "off" (default: off — the first suspend/snapshot converts)
 		MemoryConvert string `yaml:"memoryConvert"`
-		// guest kernel management: "bundled" (default; install the 16K-page
+		// guest kernel of the cluster node VM: "16k" (default; the 16K-page
 		// kernel shipped with k3c — best memory return, but Rosetta/amd64
-		// images cannot run), "recommended" (the runtime's 4K kata kernel;
-		// needed for amd64 images), or "keep" (never touch the kernel)
+		// images cannot run), "4k" (the runtime's 4K kata kernel; amd64
+		// images run, but the VM returns memory poorly), or "keep" (boot the
+		// default kernel, never manage it). "bundled" and "recommended" are
+		// accepted as aliases of "16k" and "4k".
 		Kernel string `yaml:"kernel"`
 		// scheduling priority of the cluster VMs relative to interactive
 		// apps: "low" (clamped below GUI apps, default) or "normal"
@@ -141,6 +143,10 @@ type FileConfig struct {
 		// the size of the sparse 512 GB image-store disk, so the cache grows
 		// for hundreds of GB before anything is collected.
 		BuildCacheMax string `yaml:"buildCacheMax"`
+		// guest kernel of the sidecar VM, same values as cluster.kernel.
+		// Default "4k": amd64 image builds (`RUN` steps under Rosetta) and
+		// amd64 Testcontainers work, while the clusters keep the 16K kernel
+		Kernel string `yaml:"kernel"`
 	} `yaml:"docker"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
 	Registries string `yaml:"registries"`
@@ -214,7 +220,7 @@ type Config struct {
 	MemoryPolicy    string // "auto" (default) or "off"
 	MemoryHeadroom  string // guest memory kept available above the workload ("" = runtime default)
 	MemoryConvert   string // "on-create" or "off" (default)
-	Kernel          string // "bundled" (default), "recommended", or "keep"
+	Kernel          string // cluster node kernel: Kernel16K (default), Kernel4K or KernelKeep
 	CPUPriority     string // "low" (default) or "normal"
 
 	PullCacheEnabled   bool
@@ -228,6 +234,7 @@ type Config struct {
 	DockerContext       string   // docker CLI context name ("off" disables)
 	DockerK3sNodeImages []string // k3s node images to bake the CA into for nested k3d
 	DockerBuildCacheMax string   // BuildKit GC cap (builder.gc.defaultMaxUsedSpace)
+	DockerKernel        string   // sidecar kernel (default: Kernel4K)
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
@@ -368,6 +375,7 @@ func merge(dst *FileConfig, src FileConfig) {
 	s(&dst.Docker.Context, src.Docker.Context)
 	l(&dst.Docker.K3sNodeImages, src.Docker.K3sNodeImages)
 	s(&dst.Docker.BuildCacheMax, src.Docker.BuildCacheMax)
+	s(&dst.Docker.Kernel, src.Docker.Kernel)
 	l(&dst.Egress.IngressDomains, src.Egress.IngressDomains)
 	if src.Egress.Transparent != nil {
 		dst.Egress.Transparent = src.Egress.Transparent
@@ -411,6 +419,29 @@ func UserConfigDir() string {
 type Forward struct {
 	Port   string // gateway listen port
 	Target string // host:port dialed on the host side
+}
+
+// Guest kernel modes for cluster.kernel / docker.kernel.
+const (
+	Kernel16K  = "16k"  // the 16K-page kernel shipped with k3c (default)
+	Kernel4K   = "4k"   // the runtime's recommended 4K kata kernel (amd64/Rosetta)
+	KernelKeep = "keep" // boot the default kernel, never manage it
+)
+
+// parseKernel normalizes a kernel setting; "" yields fallback. "bundled" and
+// "recommended" are the earlier names of "16k" and "4k".
+func parseKernel(key, v, fallback string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return fallback, nil
+	case Kernel16K, "bundled":
+		return Kernel16K, nil
+	case Kernel4K, "recommended":
+		return Kernel4K, nil
+	case KernelKeep:
+		return KernelKeep, nil
+	}
+	return "", fmt.Errorf("invalid %s %q (want 16k, 4k or keep)", key, v)
 }
 
 // parseForwards parses "PORT:HOST:PORT" forward declarations.
@@ -514,6 +545,14 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 	}
 
 	contextPrefix := def(fc.Cluster.ContextPrefix, "k3c-")
+	kernel, err := parseKernel("cluster.kernel", fc.Cluster.Kernel, Kernel16K)
+	if err != nil {
+		return nil, err
+	}
+	dockerKernel, err := parseKernel("docker.kernel", fc.Docker.Kernel, Kernel4K)
+	if err != nil {
+		return nil, err
+	}
 	forwards, err := parseForwards(fc.Egress.Forwards)
 	if err != nil {
 		return nil, err
@@ -559,13 +598,14 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 		DockerContext:       def(fc.Docker.Context, "k3c"),
 		DockerK3sNodeImages: fc.Docker.K3sNodeImages,
 		DockerBuildCacheMax: def(fc.Docker.BuildCacheMax, "20GB"),
+		DockerKernel:        dockerKernel,
 		Registries:          fc.Registries,
 		ContainerBinary:     def(fc.ContainerBinary, "container"),
 		AutoReclaim:         def(fc.Cluster.AutoReclaim, "10m"),
 		MemoryPolicy:        def(fc.Cluster.MemoryPolicy, "auto"),
 		MemoryHeadroom:      fc.Cluster.MemoryHeadroom,
 		MemoryConvert:       def(fc.Cluster.MemoryConvert, "off"),
-		Kernel:              def(fc.Cluster.Kernel, "bundled"),
+		Kernel:              kernel,
 		CPUPriority:         def(fc.Cluster.CPUPriority, "low"),
 		BaseDir:             baseDir,
 		ConfigFile:          configFile,

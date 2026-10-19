@@ -189,7 +189,8 @@ priority, and SHALL be able to report the priority state as low, normal, or
 
 ### Requirement: Detect guest-kernel capabilities to choose workarounds
 
-k3c SHALL inspect the guest kernel's embedded build configuration to detect
+k3c SHALL inspect the embedded build configuration of the kernel the node VM
+boots (the one `cluster.kernel` selects, or the default kernel) to detect
 whether it provides `br_netfilter` and `vxlan`, and choose the k3s networking
 workarounds accordingly (falling back to `--flannel-backend=host-gw` and
 `kube-proxy --masquerade-all` when they are absent) rather than probe-booting a

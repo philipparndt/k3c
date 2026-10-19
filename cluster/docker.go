@@ -39,7 +39,8 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 	// a paused sidecar's engine cannot answer (dockerReady would hang); lift
 	// any freeze first so `docker up` on a paused sidecar just resumes it
 	dockerResumeIfPaused(cfg)
-	// match the cluster behavior: run the sidecar on the managed kernel
+	// manage the default kernel; the sidecar itself boots the kernel
+	// docker.kernel selects (see vmKernel)
 	EnsureClusterKernel(cfg)
 	// the sidecar pulls through the host proxy and pull-cache mirror, and
 	// its published ports are mirrored to the host — all served by the
@@ -48,6 +49,12 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		return err
 	}
 	if recreate && containerExists(dockerName, false) {
+		// resolve the new sidecar's kernel first: fetching the 4K kernel can
+		// take minutes, and a failed fetch must not leave the user without
+		// the old sidecar
+		if _, err := vmKernel(cfg.DockerKernel); err != nil {
+			return err
+		}
 		logger.Info(fmt.Sprintf("recreating docker sidecar (%s cpus, %s memory)", cfg.DockerCPUs, cfg.DockerMemory))
 		if out, err := runContainer("rm", "-f", dockerName); err != nil {
 			return fmt.Errorf("removing docker sidecar: %s", out)
@@ -115,7 +122,11 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		}
 	}
 
-	logger.Info(fmt.Sprintf("starting docker sidecar (%s cpus, %s memory)", cfg.DockerCPUs, cfg.DockerMemory))
+	kernel, err := vmKernel(cfg.DockerKernel)
+	if err != nil {
+		return err
+	}
+	logger.Info(fmt.Sprintf("starting docker sidecar (%s cpus, %s memory, %s kernel)", cfg.DockerCPUs, cfg.DockerMemory, cfg.DockerKernel))
 	args := []string{"run", "-d",
 		"--name", dockerName,
 		"--rosetta",
@@ -132,6 +143,8 @@ func DockerUp(cfg *config.Config, recreate bool) error {
 		// without dialing the guest vmnet IP (Phase 2, see ensureDockerForwarder)
 		"--publish-socket", dockerForwardSocketPath(cfg) + ":" + guestForwardSocket,
 	}
+	// the sidecar's kernel (docker.kernel), independent of the default kernel
+	args = append(args, kernelArgs(kernel)...)
 	// dockerd enables ip_forward for its bridge networks
 	args = append(args, privilegedArgs()...)
 	// runtime-managed balloon: the footprint follows the workload

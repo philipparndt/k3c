@@ -247,8 +247,10 @@ cluster:
   autoReclaim: 10m             # fallback reclaim interval for balloon-only
                                # builds without memoryPolicy ("off" disables)
   cpuPriority: low             # low: clamp VMs below GUI apps (default); normal
-  kernel: bundled              # bundled 16K-page kernel (best memory return, no
-                               # amd64); recommended = 4K kata (amd64); keep
+  kernel: 16k                  # node VM kernel: 16k = bundled 16K-page kernel
+                               # (default; best memory return, no amd64);
+                               # 4k = runtime's 4K kata kernel (amd64 runs,
+                               # memory returns poorly); keep = default kernel
 
 ports:
   ingress: 8444                # cluster :443 publish (fronted by SNI gateway)
@@ -269,6 +271,9 @@ docker:                        # docker:dind sidecar VM: real engine API for
   # context: k3c               # context name ("off" to not manage one)
   # buildCacheMax: 20GB        # BuildKit cache cap ("off": BuildKit's own,
                                # disk-derived limit of hundreds of GB)
+  # kernel: 4k                 # sidecar VM kernel, values as cluster.kernel;
+                               # default 4k: amd64 image builds (RUN under
+                               # Rosetta) work, 16k = best memory return
 
 ui:                            # terminal UI (`k3c ui`) appearance
   theme:                       # any unset color falls back to the default
