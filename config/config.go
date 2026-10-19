@@ -143,9 +143,9 @@ type FileConfig struct {
 		// the size of the sparse 512 GB image-store disk, so the cache grows
 		// for hundreds of GB before anything is collected.
 		BuildCacheMax string `yaml:"buildCacheMax"`
-		// guest kernel of the sidecar VM, same values as cluster.kernel
-		// (default: cluster.kernel); "4k" lets amd64 image builds (`RUN`
-		// steps under Rosetta) work while the clusters keep the 16K kernel
+		// guest kernel of the sidecar VM, same values as cluster.kernel.
+		// Default "4k": amd64 image builds (`RUN` steps under Rosetta) and
+		// amd64 Testcontainers work, while the clusters keep the 16K kernel
 		Kernel string `yaml:"kernel"`
 	} `yaml:"docker"`
 	// Verbatim k3s registries.yaml content (mirrors, auth, TLS).
@@ -234,7 +234,7 @@ type Config struct {
 	DockerContext       string   // docker CLI context name ("off" disables)
 	DockerK3sNodeImages []string // k3s node images to bake the CA into for nested k3d
 	DockerBuildCacheMax string   // BuildKit GC cap (builder.gc.defaultMaxUsedSpace)
-	DockerKernel        string   // sidecar kernel (default: Kernel)
+	DockerKernel        string   // sidecar kernel (default: Kernel4K)
 
 	BaseDir    string // state directory (~/.config/k3c)
 	ConfigFile string // project config in effect, for daemon respawn
@@ -549,7 +549,7 @@ func Resolve(cluster, projectPath string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	dockerKernel, err := parseKernel("docker.kernel", fc.Docker.Kernel, kernel)
+	dockerKernel, err := parseKernel("docker.kernel", fc.Docker.Kernel, Kernel4K)
 	if err != nil {
 		return nil, err
 	}

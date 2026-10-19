@@ -271,9 +271,9 @@ docker:                        # docker:dind sidecar VM: real engine API for
   # context: k3c               # context name ("off" to not manage one)
   # buildCacheMax: 20GB        # BuildKit cache cap ("off": BuildKit's own,
                                # disk-derived limit of hundreds of GB)
-  # kernel: 4k                 # sidecar VM kernel, values as cluster.kernel
-                               # (default: cluster.kernel); 4k = amd64 image
-                               # builds (RUN under Rosetta), clusters stay 16k
+  # kernel: 4k                 # sidecar VM kernel, values as cluster.kernel;
+                               # default 4k: amd64 image builds (RUN under
+                               # Rosetta) work, 16k = best memory return
 
 ui:                            # terminal UI (`k3c ui`) appearance
   theme:                       # any unset color falls back to the default

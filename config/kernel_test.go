@@ -50,9 +50,10 @@ func TestKernelResolution(t *testing.T) {
 		name, yaml           string
 		wantNode, wantDocker string
 	}{
-		{"defaults", "cluster:\n  name: kernels\n", Kernel16K, Kernel16K},
-		{"sidecar follows cluster", "cluster:\n  name: kernels\n  kernel: 4k\n", Kernel4K, Kernel4K},
-		{"4k sidecar, 16k clusters", "cluster:\n  name: kernels\ndocker:\n  kernel: 4k\n", Kernel16K, Kernel4K},
+		{"defaults: 16k clusters, 4k sidecar", "cluster:\n  name: kernels\n", Kernel16K, Kernel4K},
+		{"sidecar does not follow cluster", "cluster:\n  name: kernels\n  kernel: keep\n", KernelKeep, Kernel4K},
+		{"16k sidecar", "cluster:\n  name: kernels\ndocker:\n  kernel: 16k\n", Kernel16K, Kernel16K},
+		{"everything 4k", "cluster:\n  name: kernels\n  kernel: 4k\n", Kernel4K, Kernel4K},
 		{"legacy names", "cluster:\n  name: kernels\n  kernel: recommended\ndocker:\n  kernel: bundled\n", Kernel4K, Kernel16K},
 	}
 	for _, c := range cases {

@@ -57,10 +57,11 @@ func KernelHasModernNetfilter(kernel string) bool {
 //   - "4k": the runtime's recommended 4K kata kernel (amd64/Rosetta works)
 //   - "keep": no --kernel, the VM boots whatever the default kernel is
 //
-// cluster.kernel selects the kernel of the cluster node VM, docker.kernel the
-// one of the docker sidecar (default: cluster.kernel), so e.g. amd64 image
-// builds can run in a 4K sidecar while clusters keep the 16K kernel. A VM
-// keeps the kernel it was created with; a change applies when it is re-created.
+// cluster.kernel selects the kernel of the cluster node VM (default 16k),
+// docker.kernel the one of the docker sidecar (default 4k: amd64 image builds
+// are its common case), so the sidecar runs amd64 while clusters keep the 16K
+// kernel. A VM keeps the kernel it was created with; a change applies when it
+// is re-created.
 
 // vmKernel resolves the kernel file a new VM boots for the given mode, or ""
 // when the VM should boot the default kernel.

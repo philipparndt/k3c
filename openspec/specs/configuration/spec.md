@@ -118,7 +118,8 @@ memory poorly), and `keep` boots the default kernel without managing it.
 `bundled` and `recommended` SHALL be accepted as aliases of `16k` and `4k`, and
 any other value SHALL be rejected with an error. The config SHALL support
 `docker.kernel` with the same values for the docker sidecar VM, defaulting to
-`cluster.kernel`. k3c SHALL select the kernel per VM (`container run
+`4k` (independent of `cluster.kernel`), since amd64 image builds and amd64
+Testcontainers are the sidecar's common case. k3c SHALL select the kernel per VM (`container run
 --kernel`) rather than by switching the machine-wide default kernel, so one
 VM's setting never changes the kernel of another. A VM keeps the kernel it was
 created with; a changed setting applies when the VM is re-created. With
@@ -136,11 +137,17 @@ scheduling priority of the cluster VMs relative to interactive apps: `low`
 
 #### Scenario: Build amd64 images in the sidecar while clusters stay on 16K
 
-- **WHEN** the user sets `docker.kernel: 4k`, leaves `cluster.kernel` at its
-  default and (re-)creates the docker sidecar
+- **WHEN** the user leaves `cluster.kernel` and `docker.kernel` at their
+  defaults and (re-)creates the docker sidecar
 - **THEN** the sidecar VM boots the 4K kata kernel, so `RUN` steps in amd64
   image builds work under Rosetta, while cluster node VMs keep booting the
   16K kernel
+
+#### Scenario: Prefer memory return in the sidecar
+
+- **WHEN** the user sets `docker.kernel: 16k` and re-creates the sidecar
+- **THEN** the sidecar boots the bundled 16K kernel and returns memory to the
+  host well, but cannot run amd64 binaries
 
 #### Scenario: Fetch the 4K kernel without switching the default
 
