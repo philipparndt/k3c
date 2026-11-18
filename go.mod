@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.0
-	charm.land/lipgloss/v2 v2.0.6
+	charm.land/lipgloss/v2 v2.1.1
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/containers/gvisor-tap-vsock v0.9.0
 	github.com/klauspost/compress v1.20.3
