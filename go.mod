@@ -3,8 +3,8 @@ module k3c
 go 1.27.2
 
 require (
-	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.1.0
+	charm.land/bubbles/v2 v2.2.2
+	charm.land/bubbletea/v2 v2.1.1
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/containers/gvisor-tap-vsock v0.9.0
@@ -40,7 +40,7 @@ require (
 	github.com/miekg/dns v1.1.73 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/rivo/uniseg v0.4.8-0.20261110175422-3a370411ca06 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
