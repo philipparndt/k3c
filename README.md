@@ -178,8 +178,10 @@ Two ways to run locally built images:
   reference it in pods; add a `registries` mirror entry so the node reaches
   it via the vmnet gateway (see the example config).
 - **`k3c image import IMAGE [CLUSTER]`**: loads an image from the host's
-  `container` image store into the cluster under its original name — no
-  registry involved.
+  `container` image store into the cluster — no registry involved. The image
+  is imported into k3s's containerd from inside the node and tagged under its
+  normalised name (`my-app:dev` → `docker.io/library/my-app:dev`), which is
+  the name the kubelet looks up, so `imagePullPolicy: Never` finds it.
 
 ### Ignoring resource requests
 
